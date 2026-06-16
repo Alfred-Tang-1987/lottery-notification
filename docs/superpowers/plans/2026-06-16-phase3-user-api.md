@@ -779,6 +779,18 @@ def list_rules(u: User = Depends(current_user), session: Session = Depends(get_s
         NotificationRule.user_id == u.id)).all()
     return [{"lottery_code": r.lottery_code, "strategy": r.strategy, "timing": r.timing}
             for r in rows]
+
+
+@router.get("/logs")
+def list_logs(u: User = Depends(current_user), session: Session = Depends(get_session)):
+    """#11：用户查询自己的推送日志（用户隔离，最近 50 条）。"""
+    from app.db.models import NotificationLog
+    rows = session.exec(select(NotificationLog).where(
+        NotificationLog.user_id == u.id
+    ).order_by(NotificationLog.sent_at.desc()).limit(50)).all()
+    return [{"lottery_code": r.lottery_code, "draw_no": r.draw_no, "status": r.status,
+             "channel_type": r.channel_type, "sent_at": str(r.sent_at),
+             "error": r.error} for r in rows]
 ```
 
 - [ ] **Step 3: 跑测试通过 + Commit**
@@ -924,15 +936,23 @@ def _build_fetcher():
 
 async def fetch_compare_push(session: Session, lottery_code: str, channel_factory,
                              cross_check: bool = True):
-    """核心闭环编排：fetch → (verified?) → compare → push。"""
+    """核心闭环编排：fetch → (verified?) → compare → push。
+    双源失败/不一致时不推送本期、告警（spec §7.2/§10 准确性优先）；历史 draw_results 仍可查询页查看。"""
+    from app.db.models import ApiSourceHealth
     dto, verified = await _build_fetcher().fetch(lottery_code, cross_check=cross_check)
     if dto is None or not verified:
-        log.error("跳过 %s：获取失败或双源不一致", lottery_code)
-        return
+        log.error("获取 %s 失败/双源不一致，不推送本期（准确性优先）", lottery_code)
+        h = session.get(ApiSourceHealth, "mxnzp") or ApiSourceHealth(source="mxnzp")
+        h.status, h.last_error, h.last_success_at = "error", "fetch failed/mismatch", None
+        session.add(h); session.commit()  # 健康面板标红 + 告警 admin
+        return  # 历史开奖仍可从 draw_results 查询（缓存降级用于展示，非推送过时结果）
     draw = dr.upsert(session, {
         "lottery_code": dto.lottery_code, "draw_no": dto.draw_no, "draw_date": dto.draw_date,
         "numbers_json": json.dumps({"front": dto.front, "back": dto.back}),
         "source": dto.source, "verified": True})
+    h = session.get(ApiSourceHealth, dto.source) or ApiSourceHealth(source=dto.source)
+    h.status, h.last_success_at, h.last_error = "ok", draw.fetched_at, None
+    session.add(h); session.commit()
     CompareEngine().compare_draw(session, draw)
     disp = NotifyDispatcher(channel_factory=channel_factory)
     await disp.dispatch_summary(session, lottery_code, dto.draw_no)

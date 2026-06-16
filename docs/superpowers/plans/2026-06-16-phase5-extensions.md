@@ -95,6 +95,7 @@ _BUILDERS = {"bark": lambda c: BarkNotifier(c["device_key"]),
              "wecom": lambda c: WecomNotifier(c["webhook"])}
 
 def build_notifiers(session: Session, user_id: int) -> list[Notifier]:
+    from app.core.crypto import decrypt_config   # #8：渠道配置加密存储
     rows = session.exec(select(NotificationChannel).where(
         NotificationChannel.user_id == user_id,
         NotificationChannel.enabled == True)).all()  # noqa: E712
@@ -102,12 +103,24 @@ def build_notifiers(session: Session, user_id: int) -> list[Notifier]:
     for ch in rows:
         builder = _BUILDERS.get(ch.type)
         if builder:
-            try: out.append(builder(json.loads(ch.config_json)))
+            try: out.append(builder(decrypt_config(ch.config_json)))
             except KeyError: continue
     return out
 ```
 
 > **重构：** `orchestration.py`/`cli.py`/`notify_dispatcher` 的 `channel_factory` 改为调用 `build_notifiers(session, user_id)`，消除 Plan 2-3 的临时嵌套。
+>
+> **#8 渠道配置加密（spec §10）：** 新增 `app/core/crypto.py`，用 Fernet 对称加密（密钥 `Settings.crypto_key` 从 env，部署时生成）：
+> ```python
+> from cryptography.fernet import Fernet
+> from app.core.config import get_settings
+> def _f() -> Fernet: return Fernet(get_settings().crypto_key.encode())
+> def encrypt_config(config: dict) -> str:
+>     import json; return _f().encrypt(json.dumps(config).encode()).decode()
+> def decrypt_config(ciphertext: str) -> dict:
+>     import json; return json.loads(_f().decrypt(ciphertext.encode()))
+> ```
+> 写入端：Plan 3 `notifications.add_channel` 存 `config_json` 前调 `encrypt_config(body.config)`；读取端：本处 `build_notifiers` 调 `decrypt_config`。`pyproject.toml` 依赖加 `cryptography>=42`，`Settings` 加 `crypto_key: str`，`.env.example`（Plan 6）加 `CRYPTO_KEY`。
 
 - [ ] **Step 4: 测试通过 + Commit**
 
@@ -158,6 +171,23 @@ def seed_prizes(session: Session):
             session.add(PrizeRule(lottery_code=code, tier=t.tier, name=t.name,
                 conditions_json=json.dumps([list(c) for c in t.conditions]),
                 amount=t.amount, amount_type=t.amount_type.value, sort_order=i))
+    session.commit()
+
+
+def seed_lottery_types(session: Session):
+    """#3：把 Plan 1 的 LotterySpec 迁移到 lottery_types 表（彩种配置 DB 化）。"""
+    from app.domain.lottery_types import LOTTERY_TYPES
+    if session.exec(__import__("sqlmodel").select(LotteryType)).first():
+        return
+    for code, spec in LOTTERY_TYPES.items():
+        session.add(LotteryType(
+            code=spec.code, name=spec.name, category=spec.category,
+            spec_json=json.dumps({"front": [spec.front.min, spec.front.max, spec.front.count],
+                                  "back": ([spec.back.min, spec.back.max, spec.back.count]
+                                           if spec.back else None),
+                                  "number_style": spec.number_style.value}),
+            draw_schedule_json=json.dumps(list(spec.draw_days)),
+            enabled=True))
     session.commit()
 ```
 
@@ -555,6 +585,78 @@ Expected: 全部通过，覆盖率 ≥ 80%
 
 ```bash
 git commit --allow-empty -m "test: Plan 5 全量测试通过"
+```
+
+---
+
+## Task 8: 数据导出（CSV/JSON）
+
+**Files:**
+- Create: `app/api/export.py`
+- Test: `tests/api/test_export.py`
+
+- [ ] **Step 1: 写测试 `tests/api/test_export.py`**
+
+```python
+def test_export_csv(client, alice_token, session):
+    from app.db.models import Ticket
+    session.add(Ticket(user_id=1, lottery_code="ssq",
+        numbers_json='{"front":[1,2,3,4,5,6],"back":[7]}'))
+    session.commit()
+    r = client.get("/api/export?format=csv", headers={"Authorization": f"Bearer {alice_token}"})
+    assert r.status_code == 200 and "text/csv" in r.headers["content-type"]
+    assert "ssq" in r.text
+
+
+def test_export_json(client, alice_token):
+    r = client.get("/api/export?format=json", headers={"Authorization": f"Bearer {alice_token}"})
+    assert r.status_code == 200 and r.json()["user"] == "alice"
+```
+
+- [ ] **Step 2: 实现 `app/api/export.py`（用户隔离：号码+比对+盈亏）**
+
+```python
+import csv, io, json
+from fastapi import APIRouter, Depends, Query
+from fastapi.responses import StreamingResponse
+from sqlmodel import Session, select
+from app.core.deps import current_user
+from app.db.database import get_session
+from app.db.models import Ticket, Comparison, User
+from app.services.stats import compute_user_stats
+
+router = APIRouter(prefix="/api/export", tags=["export"])
+
+@router.get("")
+def export(fmt: str = Query("csv", pattern="^(csv|json)$"),
+           u: User = Depends(current_user), session: Session = Depends(get_session)):
+    tickets = session.exec(select(Ticket).where(Ticket.user_id == u.id)).all()
+    comps = session.exec(select(Comparison).where(Comparison.user_id == u.id)).all()
+    stats = compute_user_stats(session, u.id)
+    data = {"user": u.username, "stats": stats,
+            "tickets": [{"lottery": t.lottery_code, "numbers": json.loads(t.numbers_json),
+                         "label": t.label} for t in tickets],
+            "comparisons": [{"lottery": c.lottery_code, "draw_no": c.draw_no,
+                             "tier": c.prize_tier, "amount": c.prize_amount,
+                             "is_win": c.is_win} for c in comps]}
+    if fmt == "json":
+        return data
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["彩种", "期号", "奖级", "中奖", "奖金(分)"])
+    for c in comps:
+        w.writerow([c.lottery_code, c.draw_no, c.prize_tier, c.is_win, c.prize_amount])
+    buf.seek(0)
+    return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv",
+                             headers={"Content-Disposition": "attachment; filename=export.csv"})
+```
+
+- [ ] **Step 3: 注册路由 `router.py` + 测试通过 + Commit**
+
+Run: `pytest tests/api/test_export.py -v` → PASS
+```bash
+git add app/api/export.py app/api/router.py tests/api/test_export.py
+git commit -m "feat(api): 数据导出 CSV/JSON(用户隔离)"
 ```
 
 ---
