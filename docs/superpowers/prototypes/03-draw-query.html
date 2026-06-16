@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>开奖结果 — 兑奖了吗？</title>
+    <style>
+        :root {
+            --bg: #f5f5f7; --surface: #ffffff; --fg: #1d1d1f; --muted: #6e6e73;
+            --border: #d2d2d7; --accent: #0071e3; --accent-hover: #0077ed;
+            --red-ball: #e11d2a; --blue-ball: #0071e3;
+            --success: #059669; --danger: #dc2626; --warning: #d97706;
+            --font-display: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', system-ui, sans-serif;
+            --font-body: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', system-ui, sans-serif;
+            --font-mono: 'SF Mono', 'JetBrains Mono', ui-monospace, monospace;
+            --field-h: 40px;
+        }
+        :root.dark {
+            --bg: #000000; --surface: #1c1c1e; --fg: #f5f5f7; --muted: #98989d;
+            --border: #38383a; --accent: #0a84ff; --red-ball: #ff453a;
+            --blue-ball: #0a84ff; --success: #30d158; --danger: #ff453a;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: var(--font-body); background: var(--bg); color: var(--fg); line-height: 1.47059; -webkit-font-smoothing: antialiased; }
+        .app { display: flex; min-height: 100vh; }
+        .sidebar { width: 240px; background: var(--surface); border-right: 1px solid var(--border); position: fixed; top: 0; left: 0; bottom: 0; z-index: 100; display: flex; flex-direction: column; }
+        .sidebar-header { padding: 20px 24px; border-bottom: 1px solid var(--border); }
+        .sidebar-brand { font-family: var(--font-display); font-size: 18px; font-weight: 600; letter-spacing: -0.022em; }
+        .sidebar-brand-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+        .nav { flex: 1; padding: 12px 10px; overflow-y: auto; }
+        .nav-section { margin-bottom: 16px; }
+        .nav-section-label { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; padding: 0 14px; margin-bottom: 6px; }
+        .nav-item { display: flex; align-items: center; gap: 10px; padding: 9px 14px; border-radius: 8px; font-size: 14px; color: var(--fg); cursor: pointer; transition: background 0.15s; text-decoration: none; }
+        .nav-item:hover { background: var(--bg); }
+        .nav-item.active { background: var(--bg); font-weight: 600; }
+        .nav-item.active .nav-icon { color: var(--accent); }
+        .nav-icon { width: 18px; height: 18px; color: var(--muted); flex-shrink: 0; }
+        .sidebar-footer { padding: 12px 24px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); }
+        .main { flex: 1; margin-left: 240px; min-height: 100vh; }
+        .content { max-width: 1080px; padding: 32px; margin: 0 auto; }
+        .header { margin-bottom: 22px; }
+        .welcome-row { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 14px; gap: 16px; }
+        .page-title { font-family: var(--font-display); font-size: 32px; font-weight: 600; letter-spacing: -0.021em; line-height: 1.125; }
+        .page-subtitle { font-size: 14px; color: var(--muted); margin-top: 4px; }
+        .disclaimer-banner { background: #fefce8; border: 1px solid #fbbf24; border-radius: 12px; padding: 11px 18px; display: flex; align-items: center; gap: 10px; font-size: 14px; color: #92400e; }
+        .disclaimer-banner svg { width: 18px; height: 18px; color: #d97706; flex-shrink: 0; }
+        :root.dark .disclaimer-banner { background: #3a2e00; border-color: #7a5c00; color: #ffd60a; }
+        .topbar-right { display: flex; align-items: center; gap: 14px; }
+        .theme-toggle { width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; border: 1px solid var(--border); background: var(--surface); }
+        .theme-toggle svg { width: 18px; height: 18px; color: var(--fg); }
+        .user-wrap { position: relative; }
+        .user-cluster { display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 4px 12px 4px 4px; border-radius: 20px; border: 1px solid var(--border); background: var(--surface); }
+        .user-avatar { width: 30px; height: 30px; border-radius: 50%; background: var(--accent); color: #fff; font-weight: 600; font-size: 13px; display: flex; align-items: center; justify-content: center; }
+        .user-name { font-size: 14px; font-weight: 500; }
+        .user-menu { position: absolute; right: 0; top: 46px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 6px; box-shadow: 0 4px 16px rgba(0,0,0,0.12); min-width: 180px; display: none; z-index: 200; }
+        .user-menu.show { display: block; }
+        .user-menu-item { padding: 8px 12px; border-radius: 8px; font-size: 14px; cursor: pointer; }
+        .user-menu-item:hover { background: var(--bg); }
+        .user-menu-divider { height: 1px; background: var(--border); margin: 4px 0; }
+        .user-menu-hint { padding: 8px 12px 4px; font-size: 12px; color: var(--muted); }
+
+        /* 彩种选择条 */
+        .lottery-tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 18px; }
+        .lottery-tab { padding: 9px 18px; border-radius: 980px; border: 1px solid var(--border); background: var(--surface); color: var(--fg); font-size: 14px; font-weight: 500; cursor: pointer; transition: all 0.15s; font-family: inherit; }
+        .lottery-tab:hover { border-color: var(--accent); color: var(--accent); }
+        .lottery-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+        /* 期号选择条 */
+        .issue-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 22px; flex-wrap: wrap; }
+        .issue-nav { width: 38px; height: 38px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface); cursor: pointer; display: flex; align-items: center; justify-content: center; color: var(--fg); }
+        .issue-nav:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+        .issue-nav:disabled { opacity: 0.35; cursor: not-allowed; }
+        .issue-nav svg { width: 18px; height: 18px; }
+        .issue-select-wrap { position: relative; flex: 1; min-width: 240px; }
+        .issue-select { width: 100%; height: 38px; padding: 0 36px 0 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); color: var(--fg); font-family: inherit; font-size: 14px; font-weight: 600; outline: none; cursor: pointer; appearance: none; -webkit-appearance: none; }
+        .issue-select:focus { border-color: var(--accent); }
+        :root.dark .issue-select { background: #2c2c2e; }
+        .issue-select-arrow { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); pointer-events: none; color: var(--muted); }
+        .issue-select-arrow svg { width: 16px; height: 16px; }
+        .verified-badge { display: inline-flex; align-items: center; gap: 6px; padding: 7px 13px; border-radius: 980px; background: #dcfce7; color: #166534; font-size: 12px; font-weight: 600; }
+        .verified-badge svg { width: 14px; height: 14px; }
+        :root.dark .verified-badge { background: #1a3a1a; color: #30d158; }
+
+        .card { background: var(--surface); border-radius: 18px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); overflow: hidden; margin-bottom: 22px; }
+        .card-header { padding: 20px 24px 0; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+        .card-title { font-family: var(--font-display); font-size: 21px; font-weight: 600; letter-spacing: -0.021em; }
+        .card-subtitle { font-size: 13px; color: var(--muted); margin-top: 2px; }
+        .card-body { padding: 22px 24px 26px; }
+
+        /* 开奖号码展示 */
+        .draw-head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 6px; flex-wrap: wrap; }
+        .draw-no { font-family: var(--font-display); font-size: 20px; font-weight: 600; }
+        .draw-date { font-size: 13px; color: var(--muted); }
+        .draw-rule-hint { font-size: 12px; color: var(--muted); margin-bottom: 18px; }
+        .draw-balls { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+        .ball-group { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .ball-group-label { font-size: 12px; color: var(--muted); font-weight: 600; margin-right: 2px; align-self: center; }
+        .ball-sep { color: var(--muted); font-size: 16px; align-self: center; }
+        .ball { width: 44px; height: 44px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 17px; font-weight: 600; color: #fff; flex-shrink: 0; font-family: var(--font-mono); }
+        .ball.red { background: var(--red-ball); }
+        .ball.blue { background: var(--blue-ball); }
+        .ball.num { border-radius: 10px; background: var(--surface); color: var(--fg); border: 1.5px solid var(--border); }
+        .ball.num-blue { border-radius: 10px; background: var(--blue-ball); color: #fff; border: none; }
+        :root.dark .ball.num { background: #2c2c2e; color: #f5f5f7; border-color: #48484a; }
+        .digit-balls { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+        .digit-pos { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+        .digit-pos-label { font-size: 10px; color: var(--muted); }
+        .digit-pos .ball { width: 38px; height: 38px; font-size: 15px; }
+
+        .draw-meta { display: flex; gap: 28px; margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--border); flex-wrap: wrap; }
+        .meta-item { display: flex; flex-direction: column; gap: 3px; }
+        .meta-label { font-size: 12px; color: var(--muted); }
+        .meta-value { font-size: 16px; font-weight: 600; font-family: var(--font-display); }
+
+        /* 我的比对 */
+        .hit-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+        .hit-table thead th { text-align: left; padding: 10px 12px; color: var(--muted); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: 0.03em; border-bottom: 1px solid var(--border); }
+        .hit-table tbody td { padding: 14px 12px; border-bottom: 1px solid #f0f0f0; vertical-align: middle; }
+        .hit-table tbody tr:last-child td { border-bottom: none; }
+        .hit-table tbody tr.winner { background: #f0fdf4; }
+        .hit-table tbody tr.winner td { border-bottom-color: #bbf7d0; }
+        .hit-table tbody tr.loser { color: var(--muted); }
+        :root.dark .hit-table tbody td { border-bottom-color: #2c2c2e; }
+        :root.dark .hit-table tbody tr.winner { background: #1a3a1a; }
+        :root.dark .hit-table tbody tr.winner td { border-bottom-color: #2a5a2a; }
+        .badge { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+        .badge-winner { background: #dcfce7; color: #166534; }
+        .badge-loser { background: #f3f4f6; color: var(--muted); }
+        :root.dark .badge-loser { background: #3a3a3c; }
+        :root.dark .badge-winner { background: #1a3a1a; color: #30d158; }
+        .prize-amount { font-weight: 600; color: var(--success); }
+        .mini-ball { width: 26px; height: 26px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; color: #fff; font-family: var(--font-mono); }
+        .mini-ball.red { background: var(--red-ball); }
+        .mini-ball.blue { background: var(--blue-ball); }
+        .mini-ball.num { border-radius: 6px; background: var(--surface); color: var(--fg); border: 1.2px solid var(--border); }
+        :root.dark .mini-ball.num { background: #2c2c2e; color: #f5f5f7; border-color: #48484a; }
+        .mini-sep { color: var(--muted); font-size: 12px; }
+        .my-num-cell { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+
+        /* 奖级表 */
+        .tier-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+        .tier-table thead th { text-align: left; padding: 10px 12px; color: var(--muted); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: 0.03em; border-bottom: 1px solid var(--border); }
+        .tier-table thead th.right { text-align: right; }
+        .tier-table tbody td { padding: 13px 12px; border-bottom: 1px solid #f0f0f0; }
+        .tier-table tbody tr:last-child td { border-bottom: none; }
+        :root.dark .tier-table tbody td { border-bottom-color: #2c2c2e; }
+        .tier-name { font-weight: 600; }
+        .tier-count, .tier-amount { text-align: right; font-family: var(--font-mono); }
+        .tier-float { font-size: 12px; color: var(--muted); font-weight: 400; }
+
+        .empty { text-align: center; padding: 44px 24px; color: var(--muted); }
+        .empty-icon { font-size: 34px; margin-bottom: 10px; }
+        .empty-title { font-size: 15px; font-weight: 600; color: var(--fg); margin-bottom: 4px; }
+        .empty-hint { font-size: 13px; }
+        .hidden { display: none !important; }
+        @media (max-width: 768px) { .sidebar { display: none; } .main { margin-left: 0; } .ball { width: 38px; height: 38px; font-size: 15px; } .draw-meta { gap: 18px; } }
+    </style>
+</head>
+<body>
+<div class="app">
+    <aside class="sidebar">
+        <div class="sidebar-header"><div class="sidebar-brand">兑奖了吗？</div><div class="sidebar-brand-sub">开奖自动核对与中奖推送</div></div>
+        <nav class="nav">
+            <div class="nav-section"><div class="nav-section-label">核心</div>
+                <a class="nav-item"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>仪表盘</a>
+                <a class="nav-item"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/></svg>我的号码</a>
+            </div>
+            <div class="nav-section"><div class="nav-section-label">数据</div>
+                <a class="nav-item active"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>开奖结果</a>
+                <a class="nav-item"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg>中奖记录</a>
+            </div>
+            <div class="nav-section"><div class="nav-section-label">分析</div>
+                <a class="nav-item"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 8v8m-4-5v5m-4-2v2m-2 4h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>我的统计</a>
+                <a class="nav-item"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 17l6-6 4 4 8-8"/><path d="M14 7h7v7"/></svg>开奖走势</a>
+                <a class="nav-item"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>开奖日历</a>
+            </div>
+            <div class="nav-section"><div class="nav-section-label">系统</div>
+                <a class="nav-item"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09a1.65 1.65 0 00-1-1.51 1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09a1.65 1.65 0 001.51-1 1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>设置</a>
+                <a class="nav-item"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>后台管理</a>
+            </div>
+        </nav>
+        <div class="sidebar-footer">理性购彩 · 量力而行</div>
+    </aside>
+
+    <main class="main">
+        <div class="content">
+            <div class="header">
+                <div class="welcome-row">
+                    <div><h1 class="page-title">开奖结果</h1><div class="page-subtitle">查询任意彩种任意期开奖号码，并与你追投的号码自动比对</div></div>
+                    <div class="topbar-right">
+                        <div class="theme-toggle" id="themeToggle"><svg id="themeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg></div>
+                        <div class="user-wrap"><div class="user-cluster" id="userCluster"><div class="user-avatar">A</div><div class="user-name">Alfred</div><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></div>
+                            <div class="user-menu" id="userMenu"><div class="user-menu-hint">当前账号 · Alfred</div><div class="user-menu-divider"></div><div class="user-menu-item">切换账号…</div><div class="user-menu-item">通知设置</div><div class="user-menu-item">导出我的数据</div><div class="user-menu-divider"></div><div class="user-menu-item" style="color:var(--danger)">退出登录</div></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="disclaimer-banner"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v2m0 4h.01m-6.938 4h13.876c1.121 0 2.182-.542 2.817-1.46a3.5 3.5 0 00.496-3.184A9 9 0 0112 3a9 9 0 00-8.241 4.356 3.5 3.5 0 00.496 3.184 3.5 3.5 0 002.817 1.46z"/></svg>所有开奖数据双源交叉校验后入库，以官方开奖为准。</div>
+            </div>
+
+            <div class="lottery-tabs" id="lotteryTabs"></div>
+
+            <div class="issue-bar">
+                <button class="issue-nav" id="prevIssue" title="上一期"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg></button>
+                <div class="issue-select-wrap">
+                    <select class="issue-select" id="issueSelect"></select>
+                    <span class="issue-select-arrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></span>
+                </div>
+                <button class="issue-nav" id="nextIssue" title="下一期"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg></button>
+                <div class="verified-badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 12l2 2 4-4"/><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>双源校验通过</div>
+            </div>
+
+            <!-- 开奖号码 -->
+            <div class="card">
+                <div class="card-header"><div><div class="card-title">开奖号码</div><div class="card-subtitle">本期官方开奖结果</div></div></div>
+                <div class="card-body" id="drawBody"></div>
+            </div>
+
+            <!-- 我的比对详情 -->
+            <div class="card">
+                <div class="card-header"><div><div class="card-title">我的比对详情</div><div class="card-subtitle">仅比对你在号码池追投的该彩种 · 命中即标绿</div></div></div>
+                <div class="card-body" id="compareBody"></div>
+            </div>
+
+            <!-- 各奖级中奖情况 -->
+            <div class="card">
+                <div class="card-header"><div><div class="card-title">各奖级中奖情况</div><div class="card-subtitle">本期全国中奖注数与单注奖金</div></div></div>
+                <div class="card-body" id="tierBody"></div>
+            </div>
+        </div>
+    </main>
+</div>
+
+<script>
+// 主题 + 用户菜单（复用）
+(function(){
+    var r=document.documentElement,s=localStorage.getItem("theme");
+    function a(){var h=new Date().getHours();return(h>=18||h<6)?"dark":"light";}
+    function p(t){r.classList.toggle("dark",t==="dark");var i=document.getElementById("themeIcon");if(i)i.innerHTML=t==="dark"?'<circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>':'<path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>';}
+    p(s||a());
+    document.getElementById("themeToggle").addEventListener("click",function(){var n=r.classList.contains("dark")?"light":"dark";localStorage.setItem("theme",n);p(n);});
+    var c=document.getElementById("userCluster"),m=document.getElementById("userMenu");
+    c.addEventListener("click",function(e){e.stopPropagation();m.classList.toggle("show");});
+    document.addEventListener("click",function(){m.classList.remove("show");});
+})();
+
+// 彩种规格（docs/reference/lottery-rules.md 复核修正）
+var SPECS = {
+    ssq:{name:"双色球", front:[1,33,6], back:[1,16,1], positional:false, shortF:"红球", shortB:"蓝球", rule:"红球 6（01–33）+ 蓝球 1（01–16）"},
+    dlt:{name:"大乐透", front:[1,35,5], back:[1,12,2], positional:false, shortF:"前区", shortB:"后区", rule:"前区 5（01–35）+ 后区 2（01–12）"},
+    qlc:{name:"七乐彩", front:[1,30,7], back:[1,30,1], positional:false, shortF:"基本", shortB:"特别", rule:"基本号码 7（01–30）+ 特别号码 1（同 01–30 池）"},
+    qxc:{name:"七星彩", front:[0,9,6], back:[0,14,1], positional:"mix", shortF:"前区", shortB:"后区", rule:"前区 6 位（每位 0–9）+ 后区 1 位（0–14）· 2020 改版"},
+    fc3d:{name:"福彩3D", front:[0,9,3], back:null, positional:true, shortF:"数字", shortB:null, rule:"3 位数字（000–999），按位"},
+    pl3:{name:"排列3", front:[0,9,3], back:null, positional:true, shortF:"数字", shortB:null, rule:"3 位数字（000–999），按位"},
+    pl5:{name:"排列5", front:[0,9,5], back:null, positional:true, shortF:"数字", shortB:null, rule:"5 位数字（00000–99999），按位"}
+};
+var PLAY_NAMES = {single:"单式", fushi:"复式", dantuo:"胆拖", danxuan:"单选", zhixuan:"直选", zuxuan3:"组选三", zuxuan6:"组选六"};
+var WEEKDAY = ["周日","周一","周二","周三","周四","周五","周六"];
+
+// 开奖数据（模拟；真实由双源交叉校验后入库）。数组按新→旧，index 0 为最新期。
+var DRAWS = {
+    ssq:[
+        {no:"2025015", date:"2025-01-14", front:[3,12,18,25,28,33], back:[16], pool:"18.6亿", sales:"3.82亿", tiers:[{n:"一等奖",c:5,a:"5,000,000",float:true},{n:"二等奖",c:123,a:"85,341",float:true},{n:"三等奖",c:1842,a:"3,000"},{n:"四等奖",c:91503,a:"200"},{n:"五等奖",c:1862050,a:"10"},{n:"六等奖",c:8421333,a:"5"}]},
+        {no:"2025014", date:"2025-01-12", front:[5,9,17,21,30,32], back:[8], pool:"18.2亿", sales:"3.76亿", tiers:[{n:"一等奖",c:8,a:"5,000,000",float:true},{n:"二等奖",c:101,a:"92,108",float:true},{n:"三等奖",c:2014,a:"3,000"},{n:"四等奖",c:88420,a:"200"},{n:"五等奖",c:1720110,a:"10"},{n:"六等奖",c:8102341,a:"5"}]},
+        {no:"2025013", date:"2025-01-09", front:[1,7,14,19,26,31], back:[11], pool:"17.9亿", sales:"3.69亿", tiers:[{n:"一等奖",c:3,a:"5,000,000",float:true},{n:"二等奖",c:88,a:"103,220",float:true},{n:"三等奖",c:1577,a:"3,000"},{n:"四等奖",c:81204,a:"200"},{n:"五等奖",c:1645330,a:"10"},{n:"六等奖",c:7892100,a:"5"}]}
+    ],
+    dlt:[
+        {no:"2025015", date:"2025-01-13", front:[5,14,22,28,35], back:[2,9], pool:"12.3亿", sales:"2.14亿", tiers:[{n:"一等奖（基本）",c:2,a:"10,000,000",float:true},{n:"一等奖（追加）",c:1,a:"8,000,000",float:true},{n:"二等奖（基本）",c:77,a:"81,432",float:true},{n:"二等奖（追加）",c:30,a:"65,145",float:true},{n:"三等奖",c:201,a:"10,000"},{n:"四等奖",c:602,a:"3,000"}]},
+        {no:"2025014", date:"2025-01-11", front:[2,11,19,27,33], back:[4,10], pool:"12.0亿", sales:"2.08亿", tiers:[{n:"一等奖（基本）",c:1,a:"10,000,000",float:true},{n:"二等奖（基本）",c:65,a:"95,201",float:true},{n:"三等奖",c:189,a:"10,000"},{n:"四等奖",c:560,a:"3,000"}]},
+        {no:"2025013", date:"2025-01-08", front:[7,15,23,29,31], back:[6,12], pool:"11.7亿", sales:"2.02亿", tiers:[{n:"一等奖（基本）",c:0,a:"—",float:true},{n:"二等奖（基本）",c:54,a:"112,033",float:true},{n:"三等奖",c:172,a:"10,000"},{n:"四等奖",c:533,a:"3,000"}]}
+    ],
+    qlc:[
+        {no:"2025015", date:"2025-01-14", front:[4,9,17,22,26,29,30], back:[13], pool:"0.82亿", sales:"0.31亿", tiers:[{n:"一等奖",c:1,a:"5,000,000",float:true},{n:"二等奖",c:3,a:"97,220",float:true},{n:"三等奖",c:88,a:"3,000"},{n:"四等奖",c:1422,a:"500"},{n:"五等奖",c:18503,a:"50"}]},
+        {no:"2025014", date:"2025-01-12", front:[2,8,14,19,23,27,28], back:[5], pool:"0.79亿", sales:"0.30亿", tiers:[{n:"一等奖",c:0,a:"—",float:true},{n:"二等奖",c:5,a:"82,410",float:true},{n:"三等奖",c:101,a:"3,000"},{n:"四等奖",c:1389,a:"500"}]}
+    ],
+    qxc:[
+        {no:"2025015", date:"2025-01-13", front:[3,6,1,8,5,2], back:[7], pool:"2.14亿", sales:"0.92亿", tiers:[{n:"一等奖",c:6,a:"5,000,000",float:true},{n:"二等奖",c:42,a:"18,330",float:true},{n:"三等奖",c:231,a:"3,000"},{n:"四等奖",c:3050,a:"500"},{n:"五等奖",c:38201,a:"100"}]},
+        {no:"2025014", date:"2025-01-11", front:[8,0,4,9,1,6], back:[12], pool:"2.08亿", sales:"0.90亿", tiers:[{n:"一等奖",c:3,a:"5,000,000",float:true},{n:"二等奖",c:55,a:"15,210",float:true},{n:"三等奖",c:210,a:"3,000"},{n:"四等奖",c:2988,a:"500"}]}
+    ],
+    fc3d:[
+        {no:"2025015", date:"2025-01-14", front:[9,2,5], back:null, pool:null, sales:"0.51亿", tiers:[{n:"单选",c:12345,a:"1,040"},{n:"组选三",c:8821,a:"346"},{n:"组选六",c:4203,a:"173"}]},
+        {no:"2025014", date:"2025-01-13", front:[7,7,3], back:null, pool:null, sales:"0.49亿", tiers:[{n:"单选",c:9888,a:"1,040"},{n:"组选三",c:12044,a:"346"}]},
+        {no:"2025013", date:"2025-01-12", front:[1,6,8], back:null, pool:null, sales:"0.48亿", tiers:[{n:"单选",c:11002,a:"1,040"},{n:"组选六",c:5601,a:"173"}]}
+    ],
+    pl3:[
+        {no:"2025015", date:"2025-01-14", front:[4,1,8], back:null, pool:null, sales:"0.21亿", tiers:[{n:"直选",c:5233,a:"1,040"},{n:"组选三",c:4102,a:"346"},{n:"组选六",c:2104,a:"173"}]},
+        {no:"2025014", date:"2025-01-13", front:[6,6,2], back:null, pool:null, sales:"0.20亿", tiers:[{n:"直选",c:3890,a:"1,040"},{n:"组选三",c:7821,a:"346"}]}
+    ],
+    pl5:[
+        {no:"2025015", date:"2025-01-14", front:[7,3,9,1,4], back:null, pool:"0.61亿", sales:"0.11亿", tiers:[{n:"直选",c:12,a:"100,000"}]},
+        {no:"2025014", date:"2025-01-13", front:[2,5,8,0,3], back:null, pool:"0.58亿", sales:"0.10亿", tiers:[{n:"直选",c:8,a:"100,000"}]}
+    ]
+};
+
+// 我的号码（仅展示最新期 idx=0 的追投；非追投彩种 → 空状态。体现"只比对追投彩种"范围设计）
+var MY = {
+    ssq:[
+        {front:[3,8,15,22,27,31], back:[12], play:"single", multi:1, res:{won:false}},
+        {front:[3,12,18,25,28,33], back:[16], play:"single", multi:1, res:{won:true, level:"一等奖", amount:"5,000,000"}},
+        {front:[1,7,18,25,28,33], back:[9], play:"fushi", multi:2, res:{won:true, level:"四等奖", amount:"400"}}
+    ],
+    dlt:[
+        {front:[5,14,22,28,35], back:[2,9], play:"single", multi:1, append:true, res:{won:false}}
+    ],
+    fc3d:[
+        {front:[9,2,5], back:[], play:"danxuan", multi:1, res:{won:true, level:"单选", amount:"1,040"}},
+        {front:[2,5,9], back:[], play:"zuxuan6", multi:1, res:{won:true, level:"组选六", amount:"173"}}
+    ]
+};
+
+var curCode = "ssq";
+var curIdx = 0;
+
+function pad(n){ return String(n).padStart(2,"0"); }
+function fmtDate(iso){ var d=new Date(iso); return d.getFullYear()+"年"+(d.getMonth()+1)+"月"+d.getDate()+"日 "+WEEKDAY[d.getDay()]; }
+
+function renderTabs(){
+    document.getElementById("lotteryTabs").innerHTML = Object.keys(SPECS).map(function(c){
+        return '<button class="lottery-tab'+(c===curCode?" active":"")+'" onclick="selectCode(\''+c+'\')">'+SPECS[c].name+'</button>';
+    }).join("");
+}
+function renderIssueSelect(){
+    var sel=document.getElementById("issueSelect");
+    sel.innerHTML = DRAWS[curCode].map(function(d,i){ return '<option value="'+i+'">第'+d.no+'期 · '+fmtDate(d.date)+'</option>'; }).join("");
+    sel.value = curIdx;
+    document.getElementById("prevIssue").disabled = (curIdx>=DRAWS[curCode].length-1);
+    document.getElementById("nextIssue").disabled = (curIdx<=0);
+}
+
+function drawBallHTML(code){
+    var s=SPECS[code], d=DRAWS[code][curIdx];
+    if(s.positional===true){
+        // 纯按位（3D/排列3/排列5）：每位带位标签
+        var posLabel = code==="pl5"?["万位","千位","百位","十位","个位"]:["百位","十位","个位"];
+        var h='<div class="digit-balls">';
+        d.front.forEach(function(n,i){ h+='<div class="digit-pos"><div class="ball num">'+n+'</div><div class="digit-pos-label">'+posLabel[i]+'</div></div>'; });
+        h+='</div>';
+        return h;
+    }
+    if(s.positional==="mix"){
+        // 七星彩：前区 6 位（num 方块）+ 后区 1 位 0-14（num-blue）
+        var f=d.front.map(function(n){ return '<div class="ball num">'+n+'</div>'; }).join("");
+        var b='<div class="ball num-blue">'+d.back[0]+'</div>';
+        return '<div class="draw-balls"><div class="ball-group"><span class="ball-group-label">前区（6 位）</span>'+f+'</div><span class="ball-sep">|</span><div class="ball-group"><span class="ball-group-label">后区（0–14）</span>'+b+'</div></div>';
+    }
+    // partition：前区 red + 后区 blue
+    var f2=d.front.map(function(n){ return '<div class="ball red">'+pad(n)+'</div>'; }).join("");
+    var h2='<div class="draw-balls"><div class="ball-group"><span class="ball-group-label">'+s.shortF+'</span>'+f2+'</div>';
+    if(s.back){ var b2=d.back.map(function(n){ return '<div class="ball blue">'+pad(n)+'</div>'; }).join(""); h2+='<span class="ball-sep">|</span><div class="ball-group"><span class="ball-group-label">'+s.shortB+'</span>'+b2+'</div>'; }
+    h2+='</div>';
+    return h2;
+}
+
+function renderDraw(){
+    var s=SPECS[curCode], d=DRAWS[curCode][curIdx];
+    var html='<div class="draw-head"><div class="draw-no">第'+d.no+'期</div><div class="draw-date">'+fmtDate(d.date)+'</div></div>';
+    html+='<div class="draw-rule-hint">'+s.name+' · '+s.rule+'</div>';
+    html+=drawBallHTML(curCode);
+    html+='<div class="draw-meta">';
+    if(d.pool) html+='<div class="meta-item"><div class="meta-label">奖池累积</div><div class="meta-value">¥'+d.pool+'</div></div>';
+    html+='<div class="meta-item"><div class="meta-label">本期销售额</div><div class="meta-value">¥'+d.sales+'</div></div>';
+    html+='<div class="meta-item"><div class="meta-label">数据状态</div><div class="meta-value" style="color:var(--success)">已校验入库</div></div>';
+    html+='</div>';
+    document.getElementById("drawBody").innerHTML=html;
+}
+
+// 命中数计算（partition 集合命中；positional 按位命中；qxc 按位）
+function hitCount(item, draw, spec){
+    if(spec.positional==="mix"){
+        var fh=0; for(var i=0;i<draw.front.length;i++) if(item.front[i]===draw.front[i]) fh++;
+        var bh=(item.back[0]===draw.back[0])?1:0;
+        return {f:fh,ft:6,b:bh,bt:1};
+    }
+    if(spec.positional===true){
+        if(item.play==="zuxuan3"||item.play==="zuxuan6"){
+            var m=item.front.filter(function(n){return draw.front.indexOf(n)>=0;}).length;
+            return {f:m,ft:3,b:0,bt:0};
+        }
+        var fh2=0; for(var j=0;j<draw.front.length;j++) if(item.front[j]===draw.front[j]) fh2++;
+        return {f:fh2,ft:draw.front.length,b:0,bt:0};
+    }
+    // partition
+    var fc=item.front.filter(function(n){return draw.front.indexOf(n)>=0;}).length;
+    var bc=spec.back?item.back.filter(function(n){return draw.back.indexOf(n)>=0;}).length:0;
+    return {f:fc,ft:spec.front[2],b:bc,bt:spec.back?spec.back[2]:0};
+}
+function hitText(h, spec){
+    if(spec.positional===true){
+        if(spec.front[2]===5) return "数字 "+h.f+"/"+h.ft;
+        return "数字 "+h.f+"/"+h.ft;
+    }
+    var s=spec.shortF+" "+h.f+"/"+h.ft;
+    if(spec.back) s+="，"+spec.shortB+" "+h.b+"/"+h.bt;
+    return s;
+}
+
+function miniBallsHTML(item, spec){
+    if(spec.positional==="mix"){
+        var f=item.front.map(function(n){return '<span class="mini-ball num">'+n+'</span>';}).join("");
+        var b='<span class="mini-sep">|</span><span class="mini-ball" style="background:var(--blue-ball)">'+item.back[0]+'</span>';
+        return '<div class="my-num-cell">'+f+b+'</div>';
+    }
+    if(spec.positional===true){
+        var c="num";
+        return '<div class="my-num-cell">'+item.front.map(function(n){return '<span class="mini-ball '+c+'">'+n+'</span>';}).join("")+'</div>';
+    }
+    var fc2=spec.shortF==="红球"?"red":"red";
+    var f2=item.front.map(function(n){return '<span class="mini-ball red">'+pad(n)+'</span>';}).join("");
+    var h='<div class="my-num-cell">'+f2;
+    if(spec.back){ h+='<span class="mini-sep">+</span>'+item.back.map(function(n){return '<span class="mini-ball blue">'+pad(n)+'</span>';}).join(""); }
+    h+='</div>';
+    return h;
+}
+
+function renderCompare(){
+    var spec=SPECS[curCode], draw=DRAWS[curCode][curIdx], body=document.getElementById("compareBody");
+    // 只在最新期（idx=0）展示追投比对；历史期无追投记录
+    var mine = (curIdx===0 && MY[curCode]) ? MY[curCode] : null;
+    if(!mine || mine.length===0){
+        body.innerHTML='<div class="empty"><div class="empty-icon">🎯</div><div class="empty-title">'+(curIdx===0?'本期未追投 '+spec.name:'历史期无追投记录')+'</div><div class="empty-hint">系统仅核对你追投的彩种与号码 · 前往「我的号码」添加</div></div>';
+        return;
+    }
+    var html='<table class="hit-table"><thead><tr><th>我的号码</th><th>玩法</th><th>命中情况</th><th>结果</th><th>奖级</th><th style="text-align:right">奖金</th></tr></thead><tbody>';
+    mine.forEach(function(item){
+        var h=hitCount(item,draw,spec), won=item.res.won;
+        var playTag = '<span style="font-size:12px;color:var(--muted)">'+PLAY_NAMES[item.play]+(item.append?' · 追加':'')+(item.multi>1?' · '+item.multi+'倍':'')+'</span>';
+        html+='<tr class="'+(won?'winner':'loser')+'">';
+        html+='<td>'+miniBallsHTML(item,spec)+'</td>';
+        html+='<td>'+playTag+'</td>';
+        html+='<td>'+hitText(h,spec)+'</td>';
+        html+='<td>'+(won?'<span class="badge badge-winner">中奖</span>':'<span class="badge badge-loser">未中</span>')+'</td>';
+        html+='<td>'+(item.res.level||'—')+'</td>';
+        html+='<td style="text-align:right">'+(won?'<span class="prize-amount">¥'+item.res.amount+'</span>':'—')+'</td>';
+        html+='</tr>';
+    });
+    html+='</tbody></table>';
+    body.innerHTML=html;
+}
+
+function renderTiers(){
+    var d=DRAWS[curCode][curIdx];
+    var html='<table class="tier-table"><thead><tr><th>奖级</th><th class="right">中奖注数</th><th class="right">单注奖金</th></tr></thead><tbody>';
+    d.tiers.forEach(function(t){
+        html+='<tr><td class="tier-name">'+t.n+(t.float?' <span class="tier-float">浮动</span>':'')+'</td>';
+        html+='<td class="tier-count">'+t.c.toLocaleString()+' 注</td>';
+        html+='<td class="tier-amount">'+(t.a==='—'?'—':'¥'+t.a)+'</td></tr>';
+    });
+    html+='</tbody></table>';
+    document.getElementById("tierBody").innerHTML=html;
+}
+
+function selectCode(c){ curCode=c; curIdx=0; renderTabs(); renderIssueSelect(); renderAll(); }
+function changeIssue(delta){ var n=curIdx+delta; if(n>=0&&n<DRAWS[curCode].length){ curIdx=n; renderIssueSelect(); renderAll(); } }
+function renderAll(){ renderDraw(); renderCompare(); renderTiers(); }
+
+document.getElementById("issueSelect").addEventListener("change",function(){ curIdx=parseInt(this.value); document.getElementById("prevIssue").disabled=(curIdx>=DRAWS[curCode].length-1); document.getElementById("nextIssue").disabled=(curIdx<=0); renderAll(); });
+document.getElementById("prevIssue").addEventListener("click",function(){ changeIssue(1); });
+document.getElementById("nextIssue").addEventListener("click",function(){ changeIssue(-1); });
+
+renderTabs();
+renderIssueSelect();
+renderAll();
+</script>
+</body>
+</html>
