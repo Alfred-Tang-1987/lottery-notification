@@ -1,0 +1,507 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>彩票开奖核对系统 — 仪表盘</title>
+  <style>
+    :root {
+      --bg: #f5f5f7;
+      --surface: #ffffff;
+      --fg: #1d1d1f;
+      --muted: #6e6e73;
+      --border: #d2d2d7;
+      --accent: #2563eb;
+      --red-ball: #dc2626;
+      --blue-ball: #2563eb;
+      --success: #059669;
+      --danger: #dc2626;
+      --warning: #d97706;
+      --font-display: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', system-ui, sans-serif;
+      --font-body: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', system-ui, sans-serif;
+      --font-mono: 'SF Mono', 'JetBrains Mono', ui-monospace, monospace;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: var(--font-body);
+      background: var(--bg);
+      color: var(--fg);
+      line-height: 1.47;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .app { display: flex; min-height: 100vh; }
+
+    /* ---------- 侧边栏 ---------- */
+    .sidebar {
+      width: 240px;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      position: fixed;
+      top: 0; left: 0; bottom: 0;
+      z-index: 100;
+      display: flex;
+      flex-direction: column;
+    }
+    .sidebar-header { padding: 20px 24px; border-bottom: 1px solid var(--border); }
+    .sidebar-brand { font-family: var(--font-display); font-size: 18px; font-weight: 600; letter-spacing: -0.022em; }
+    .sidebar-brand-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+    .nav { flex: 1; padding: 12px 10px; overflow-y: auto; }
+    .nav-section { margin-bottom: 16px; }
+    .nav-section-label {
+      font-size: 11px; font-weight: 600; color: var(--muted);
+      text-transform: uppercase; letter-spacing: 0.05em;
+      padding: 0 14px; margin-bottom: 6px;
+    }
+    .nav-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 9px 14px; border-radius: 8px;
+      font-size: 14px; color: var(--fg);
+      cursor: pointer; transition: background 0.15s; text-decoration: none;
+    }
+    .nav-item:hover { background: var(--bg); }
+    .nav-item.active { background: var(--bg); font-weight: 600; }
+    .nav-item.active .nav-icon { color: var(--accent); }
+    .nav-icon { width: 18px; height: 18px; color: var(--muted); flex-shrink: 0; }
+    .nav-badge { margin-left: auto; font-size: 11px; font-weight: 600; color: var(--danger); }
+
+    .sidebar-footer { padding: 12px 24px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); }
+
+    /* ---------- 主区 ---------- */
+    .main { flex: 1; margin-left: 240px; min-height: 100vh; }
+    .content { max-width: 1200px; padding: 32px; margin: 0 auto; }
+
+    .header { margin-bottom: 24px; }
+    .welcome-row { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 16px; }
+    .welcome-title { font-family: var(--font-display); font-size: 32px; font-weight: 600; letter-spacing: -0.021em; line-height: 1.125; }
+    .welcome-meta { font-size: 14px; color: var(--muted); }
+
+    .disclaimer-banner {
+      background: #fefce8; border: 1px solid #fbbf24; border-radius: 12px;
+      padding: 12px 20px; display: flex; align-items: center; gap: 10px;
+      font-size: 14px; color: #92400e;
+    }
+    .disclaimer-banner svg { width: 20px; height: 20px; color: #d97706; flex-shrink: 0; }
+
+    /* ---------- 卡片 ---------- */
+    .card {
+      background: var(--surface); border-radius: 18px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+      overflow: hidden; margin-bottom: 24px;
+    }
+    .card-header { padding: 20px 24px 0; display: flex; align-items: center; justify-content: space-between; }
+    .card-title { font-family: var(--font-display); font-size: 21px; font-weight: 600; letter-spacing: -0.021em; }
+    .card-subtitle { font-size: 14px; color: var(--muted); margin-top: 2px; }
+    .card-body { padding: 20px 24px 24px; }
+    .card-link { font-size: 13px; color: var(--accent); text-decoration: none; font-weight: 500; }
+    .card-link:hover { text-decoration: underline; }
+
+    /* ---------- 彩种卡片 ---------- */
+    .lottery-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+      gap: 16px; margin-top: 4px;
+    }
+    .lottery-card { background: var(--bg); border-radius: 16px; padding: 20px; }
+    .lottery-card-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 4px; }
+    .lottery-name { font-size: 17px; font-weight: 600; }
+    .lottery-date { font-size: 12px; color: var(--muted); }
+    .lottery-official { font-size: 11px; color: var(--muted); margin-top: 8px; }
+
+    .ball-row { display: flex; align-items: center; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+    .ball {
+      width: 34px; height: 34px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 14px; font-weight: 600; color: #fff; flex-shrink: 0;
+      font-family: var(--font-mono);
+    }
+    .ball.red { background: var(--red-ball); }
+    .ball.blue { background: var(--blue-ball); }
+    .ball.num { border-radius: 8px; background: var(--fg); }
+    .ball-sep { width: 1px; height: 22px; background: var(--border); margin: 0 4px; }
+
+    /* ---------- 命中表格 ---------- */
+    .hit-table { width: 100%; border-collapse: collapse; margin-top: 4px; font-size: 14px; }
+    .hit-table thead th {
+      text-align: left; padding: 10px 12px; color: var(--muted);
+      font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: 0.03em;
+      border-bottom: 1px solid var(--border);
+    }
+    .hit-table tbody td { padding: 14px 12px; border-bottom: 1px solid #f0f0f0; }
+    .hit-table tbody tr:last-child td { border-bottom: none; }
+    .hit-table tbody tr.winner { background: #f0fdf4; }
+    .hit-table tbody tr.winner td { border-bottom-color: #bbf7d0; }
+    .hit-table tbody tr.loser td { color: var(--muted); }
+    .mini-ball { display: inline-flex; width: 22px; height: 22px; border-radius: 50%; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; color: #fff; font-family: var(--font-mono); margin-right: 4px; }
+    .mini-ball.red { background: var(--red-ball); }
+    .mini-ball.blue { background: var(--blue-ball); }
+    .mini-ball.miss { background: #e5e5ea; color: var(--muted); }
+
+    .badge { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+    .badge-winner { background: #dcfce7; color: #166534; }
+    .badge-loser { background: #f3f4f6; color: var(--muted); }
+    .prize-amount { font-weight: 600; color: var(--success); }
+
+    /* ---------- 待兑奖 ---------- */
+    .claim-list { display: flex; flex-direction: column; gap: 12px; margin-top: 4px; }
+    .claim-item {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 20px; background: var(--bg); border-radius: 14px;
+      border: 1px solid transparent;
+    }
+    .claim-item.urgent { border-color: #fecaca; background: #fef2f2; }
+    .claim-info { display: flex; align-items: center; gap: 14px; }
+    .claim-amount { font-family: var(--font-display); font-size: 20px; font-weight: 600; }
+    .claim-detail { font-size: 13px; color: var(--muted); margin-top: 2px; }
+    .claim-countdown { text-align: right; }
+    .countdown-value { font-family: var(--font-mono); font-size: 18px; font-weight: 600; }
+    .countdown-value.urgent { color: var(--danger); }
+    .countdown-label { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+    /* ---------- 盈亏 ---------- */
+    .stats-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 4px; }
+    .stat-card { background: var(--bg); border-radius: 16px; padding: 24px; text-align: center; }
+    .stat-label { font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+    .stat-value { font-family: var(--font-display); font-size: 30px; font-weight: 600; letter-spacing: -0.02em; }
+    .stat-value.pos { color: var(--success); }
+    .stat-value.neg { color: var(--danger); }
+    .stat-sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+    /* ---------- 日历条 ---------- */
+    .cal-row { display: grid; grid-template-columns: repeat(7, 1fr); gap: 10px; margin-top: 4px; }
+    .cal-day { background: var(--bg); border-radius: 12px; padding: 14px; text-align: center; }
+    .cal-day.today { background: var(--accent); color: #fff; }
+    .cal-day.today .cal-dow, .cal-day.today .cal-lot { color: #fff; }
+    .cal-dow { font-size: 12px; color: var(--muted); font-weight: 600; }
+    .cal-date { font-family: var(--font-display); font-size: 18px; font-weight: 600; margin: 4px 0; }
+    .cal-lot { font-size: 11px; color: var(--muted); line-height: 1.5; }
+
+    .empty-hint { color: var(--muted); font-size: 14px; padding: 8px 0; }
+
+    @media (max-width: 768px) {
+      .sidebar { display: none; }
+      .main { margin-left: 0; }
+      .stats-row, .cal-row { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <!-- 侧边栏 -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="sidebar-brand">彩票核对</div>
+        <div class="sidebar-brand-sub">开奖结果自动核对</div>
+      </div>
+      <nav class="nav">
+        <div class="nav-section">
+          <div class="nav-section-label">主要</div>
+          <a class="nav-item active">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+            仪表盘
+          </a>
+          <a class="nav-item">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/></svg>
+            我的号码
+          </a>
+          <a class="nav-item">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+            开奖结果
+          </a>
+          <a class="nav-item">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg>
+            中奖记录
+            <span class="nav-badge">2</span>
+          </a>
+        </div>
+        <div class="nav-section">
+          <div class="nav-section-label">分析</div>
+          <a class="nav-item">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="m7 14 4-4 4 4 5-5"/></svg>
+            统计分析
+          </a>
+          <a class="nav-item">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+            开奖日历
+          </a>
+        </div>
+        <div class="nav-section">
+          <div class="nav-section-label">系统</div>
+          <a class="nav-item">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            设置
+          </a>
+          <a class="nav-item">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"/></svg>
+            管理后台
+          </a>
+        </div>
+      </nav>
+      <div class="sidebar-footer">理性购彩 · 量力而行</div>
+    </aside>
+
+    <!-- 主内容 -->
+    <main class="main">
+      <div class="content">
+        <div class="header">
+          <div class="welcome-row">
+            <div>
+              <div class="welcome-title">晚上好，Alfred</div>
+              <div class="welcome-meta">今天是 2026年6月16日 周二 · 今晚开奖：福彩3D · 排列3 · 排列5 · 七星彩</div>
+            </div>
+            <div class="welcome-meta">数据更新于 19:42</div>
+          </div>
+          <div class="disclaimer-banner">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg>
+            理性购彩，量力而行。彩票为公益事业，中奖属随机事件，请勿沉迷。所有数据以官方开奖为准。
+          </div>
+        </div>
+
+        <!-- 本期开奖概览 -->
+        <section class="card">
+          <div class="card-header">
+            <div>
+              <div class="card-title">本期开奖概览</div>
+              <div class="card-subtitle">最近一期各彩种开奖号码</div>
+            </div>
+            <a class="card-link" href="#">查看全部 ›</a>
+          </div>
+          <div class="card-body">
+            <div class="lottery-grid">
+              <div class="lottery-card">
+                <div class="lottery-card-header">
+                  <div>
+                    <div class="lottery-name">双色球</div>
+                    <div class="lottery-date">第 2026066 期 · 2026-06-14（周日）</div>
+                  </div>
+                </div>
+                <div class="ball-row">
+                  <span class="ball red">03</span><span class="ball red">08</span><span class="ball red">15</span><span class="ball red">22</span><span class="ball red">27</span><span class="ball red">31</span>
+                  <span class="ball-sep"></span>
+                  <span class="ball blue">12</span>
+                </div>
+                <div class="lottery-official">数据来源：MXNZP · 以官方开奖为准</div>
+              </div>
+
+              <div class="lottery-card">
+                <div class="lottery-card-header">
+                  <div>
+                    <div class="lottery-name">大乐透</div>
+                    <div class="lottery-date">第 2026066 期 · 2026-06-15（周一）</div>
+                  </div>
+                </div>
+                <div class="ball-row">
+                  <span class="ball red">05</span><span class="ball red">12</span><span class="ball red">19</span><span class="ball red">28</span><span class="ball red">33</span>
+                  <span class="ball-sep"></span>
+                  <span class="ball blue">04</span><span class="ball blue">09</span>
+                </div>
+                <div class="lottery-official">数据来源：MXNZP · 以官方开奖为准</div>
+              </div>
+
+              <div class="lottery-card">
+                <div class="lottery-card-header">
+                  <div>
+                    <div class="lottery-name">福彩3D</div>
+                    <div class="lottery-date">第 2026168 期 · 2026-06-16（周二）</div>
+                  </div>
+                </div>
+                <div class="ball-row">
+                  <span class="ball num">3</span><span class="ball num">7</span><span class="ball num">1</span>
+                </div>
+                <div class="lottery-official">数据来源：聚合数据 · 以官方开奖为准</div>
+              </div>
+
+              <div class="lottery-card">
+                <div class="lottery-card-header">
+                  <div>
+                    <div class="lottery-name">排列3</div>
+                    <div class="lottery-date">第 2026168 期 · 2026-06-16（周二）</div>
+                  </div>
+                </div>
+                <div class="ball-row">
+                  <span class="ball num">4</span><span class="ball num">8</span><span class="ball num">2</span>
+                </div>
+                <div class="lottery-official">数据来源：MXNZP · 以官方开奖为准</div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 我的命中 -->
+        <section class="card">
+          <div class="card-header">
+            <div>
+              <div class="card-title">我的命中 · 双色球 第2026066期</div>
+              <div class="card-subtitle">你追投的 5 注号码本期核对结果</div>
+            </div>
+            <a class="card-link" href="#">管理号码 ›</a>
+          </div>
+          <div class="card-body">
+            <table class="hit-table">
+              <thead>
+                <tr><th>我的号码</th><th>命中</th><th>结果</th><th>奖金</th></tr>
+              </thead>
+              <tbody>
+                <tr class="winner">
+                  <td>
+                    <span class="mini-ball red">03</span><span class="mini-ball red">08</span><span class="mini-ball red">15</span><span class="mini-ball red">22</span><span class="mini-ball miss">29</span><span class="mini-ball miss">30</span>
+                    <span class="mini-ball blue miss">07</span>
+                  </td>
+                  <td>红 4 / 蓝 0</td>
+                  <td><span class="badge badge-winner">五等奖</span></td>
+                  <td class="prize-amount">¥10</td>
+                </tr>
+                <tr class="winner">
+                  <td>
+                    <span class="mini-ball red">03</span><span class="mini-ball miss">11</span><span class="mini-ball miss">14</span><span class="mini-ball miss">20</span><span class="mini-ball miss">25</span><span class="mini-ball miss">33</span>
+                    <span class="mini-ball blue">12</span>
+                  </td>
+                  <td>红 1 / 蓝 1</td>
+                  <td><span class="badge badge-winner">六等奖</span></td>
+                  <td class="prize-amount">¥5</td>
+                </tr>
+                <tr class="loser">
+                  <td>
+                    <span class="mini-ball red miss">01</span><span class="mini-ball red miss">09</span><span class="mini-ball red miss">16</span><span class="mini-ball red miss">21</span><span class="mini-ball red miss">26</span><span class="mini-ball red miss">32</span>
+                    <span class="mini-ball blue miss">05</span>
+                  </td>
+                  <td>红 0 / 蓝 0</td>
+                  <td><span class="badge badge-loser">未中奖</span></td>
+                  <td>—</td>
+                </tr>
+                <tr class="loser">
+                  <td>
+                    <span class="mini-ball red">08</span><span class="mini-ball red">27</span><span class="mini-ball red miss">10</span><span class="mini-ball red miss">18</span><span class="mini-ball red miss">24</span><span class="mini-ball red miss">31</span>
+                    <span class="mini-ball blue miss">09</span>
+                  </td>
+                  <td>红 2 / 蓝 0</td>
+                  <td><span class="badge badge-loser">未中奖</span></td>
+                  <td>—</td>
+                </tr>
+                <tr class="loser">
+                  <td>
+                    <span class="mini-ball red">15</span><span class="mini-ball red">22</span><span class="mini-ball red">31</span><span class="mini-ball red miss">02</span><span class="mini-ball red miss">17</span><span class="mini-ball red miss">28</span>
+                    <span class="mini-ball blue miss">14</span>
+                  </td>
+                  <td>红 3 / 蓝 0</td>
+                  <td><span class="badge badge-loser">未中奖</span></td>
+                  <td>—</td>
+                </tr>
+              </tbody>
+            </table>
+            <div class="lottery-official" style="margin-top:14px">本期合计中奖 ¥15 · 最终以官方兑奖为准</div>
+          </div>
+        </section>
+
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:24px">
+          <!-- 待兑奖 -->
+          <section class="card">
+            <div class="card-header">
+              <div><div class="card-title">待兑奖</div><div class="card-subtitle">中奖后 60 天内有效</div></div>
+            </div>
+            <div class="card-body">
+              <div class="claim-list">
+                <div class="claim-item urgent">
+                  <div class="claim-info">
+                    <div>
+                      <div class="claim-amount">¥5</div>
+                      <div class="claim-detail">双色球 第2026060期 · 六等奖</div>
+                    </div>
+                  </div>
+                  <div class="claim-countdown">
+                    <div class="countdown-value urgent">12 天</div>
+                    <div class="countdown-label">即将过期</div>
+                  </div>
+                </div>
+                <div class="claim-item">
+                  <div class="claim-info">
+                    <div>
+                      <div class="claim-amount">¥10</div>
+                      <div class="claim-detail">双色球 第2026066期 · 五等奖</div>
+                    </div>
+                  </div>
+                  <div class="claim-countdown">
+                    <div class="countdown-value">58 天</div>
+                    <div class="countdown-label">截止 08-14</div>
+                  </div>
+                </div>
+              </div>
+              <div class="lottery-official" style="margin-top:14px">单注奖金超 ¥10,000 需缴 20% 偶然所得税，请到福彩中心兑奖</div>
+            </div>
+          </section>
+
+          <!-- 盈亏速览 -->
+          <section class="card">
+            <div class="card-header">
+              <div><div class="card-title">盈亏速览</div><div class="card-subtitle">累计（基于号码池假设每期购买）</div></div>
+            </div>
+            <div class="card-body">
+              <div class="stats-row" style="grid-template-columns:1fr">
+                <div class="stat-card">
+                  <div class="stat-label">累计投入</div>
+                  <div class="stat-value">¥1,240</div>
+                  <div class="stat-sub">共 124 期</div>
+                </div>
+              </div>
+              <div class="stats-row" style="grid-template-columns:1fr 1fr; margin-top:16px">
+                <div class="stat-card">
+                  <div class="stat-label">累计中奖</div>
+                  <div class="stat-value pos">¥385</div>
+                </div>
+                <div class="stat-card">
+                  <div class="stat-label">净盈亏</div>
+                  <div class="stat-value neg">-¥855</div>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <!-- 近期开奖日历 -->
+        <section class="card">
+          <div class="card-header">
+            <div><div class="card-title">近期开奖</div><div class="card-subtitle">未来 7 天</div></div>
+            <a class="card-link" href="#">完整日历 ›</a>
+          </div>
+          <div class="card-body">
+            <div class="cal-row">
+              <div class="cal-day today">
+                <div class="cal-dow">周二</div><div class="cal-date">6/16</div>
+                <div class="cal-lot">3D · 排列3/5<br>七星彩</div>
+              </div>
+              <div class="cal-day">
+                <div class="cal-dow">周三</div><div class="cal-date">6/17</div>
+                <div class="cal-lot">大乐透<br>七乐彩</div>
+              </div>
+              <div class="cal-day">
+                <div class="cal-dow">周四</div><div class="cal-date">6/18</div>
+                <div class="cal-lot">双色球<br>3D · 排列</div>
+              </div>
+              <div class="cal-day">
+                <div class="cal-dow">周五</div><div class="cal-date">6/19</div>
+                <div class="cal-lot">七星彩<br>3D · 排列</div>
+              </div>
+              <div class="cal-day">
+                <div class="cal-dow">周六</div><div class="cal-date">6/20</div>
+                <div class="cal-lot">大乐透<br>3D · 排列</div>
+              </div>
+              <div class="cal-day">
+                <div class="cal-dow">周日</div><div class="cal-date">6/21</div>
+                <div class="cal-lot">双色球 · 七星彩<br>3D · 排列</div>
+              </div>
+              <div class="cal-day">
+                <div class="cal-dow">周一</div><div class="cal-date">6/22</div>
+                <div class="cal-lot">大乐透 · 七乐彩<br>3D · 排列</div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+      </div>
+    </main>
+  </div>
+</body>
+</html>
