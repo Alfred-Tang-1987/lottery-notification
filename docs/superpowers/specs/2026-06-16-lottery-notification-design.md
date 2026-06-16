@@ -46,7 +46,9 @@
 | 模块 | 内容 |
 |---|---|
 | **用户体系** | 邀请制注册、账号密码认证、数据隔离、角色(user/admin) |
-| **号码管理** | 固定号码池、按彩种分组、CRUD、批量粘贴导入、合法性校验、命名备注、玩法标记 |
+| **号码管理** | 固定号码池、按彩种分组、CRUD、号码盘点击选号（按玩法约束）、批量导入、合法性校验、命名备注、玩法标记 |
+| **倍投** | 每注 2–99 倍（影响投入与中奖金额，按注设置） |
+| **追加投注** | 仅大乐透（基本 2 元 + 追加 1 元，追加仅参与一二等奖 80%） |
 | **玩法** | MVP 单式先行；架构支持复式/胆拖/组选（Phase 2） |
 | **彩种** | 7 大主流（双色球、大乐透、七乐彩、七星彩、福彩3D、排列3、排列5），策略模式插件化 |
 | **开奖获取** | 双源容灾（MXNZP 主 + 聚合数据备）、定时 + 手动、多源交叉校验 |
@@ -140,14 +142,14 @@ LotterySpec(
 | 大乐透 | dlt | 1-35 × 5 | 1-12 × 2 | 一/三/六 | partition |
 | 七乐彩 | qlc | 1-30 × 7 | 1-30 × 1(特别号) | 一/三/五 | partition |
 | 福彩3D | fc3d | 0-9 × 3 | — | 每日 | positional |
-| 七星彩 | qxc | 0-9 × 7 | — | 二/五/日 | positional |
+| 七星彩 | qxc | 前区 0-9 × 6（按位）| 后区 0-14 × 1 | 二/五/日 | partition*（混合）|
 | 排列3 | pl3 | 0-9 × 3 | — | 每日 | positional |
 | 排列5 | pl5 | 0-9 × 5 | — | 每日 | positional |
 
-> 七乐彩后区为"特别号"（从剩余号码中抽取，参与奖级判定）。七星彩/3D/排列为按位数字（每位 0-9，顺序敏感）。
+> 七乐彩后区为"特别号"（从剩余号码中抽取，参与奖级判定）。福彩3D/排列3/排列5 为按位数字（每位 0-9，顺序敏感）。**七星彩 2020-10-13 改版**后为"前区 6 位（0-9）+ 后区 1 位（0-14）"混合型，非纯按位。完整规则见 [`docs/reference/lottery-rules.md`](../reference/lottery-rules.md)。
 
 ### 5.2 号码/玩法模型 `Entry`
-- `play_type`: `single`(单式) / `fushi`(复式) / `dantuo`(胆拖) / `zhixuan`(直选) / `zuxuan`(组选)
+- `play_type` 按彩种配套：分区型（双色球/大乐透/七乐彩/七星彩）= `single`(单式)/`fushi`(复式)/`dantuo`(胆拖)；按位型（福彩3D/排列3/排列5）= `danxuan`(单选,3D)/`zhixuan`(直选,排列)/`zuxuan3`(组选三)/`zuxuan6`(组选六)
 - 复式/胆拖存储原始选择，**比对前由领域层展开成多个单式组合**再逐一比对。
 - MVP 仅实现 `single`（+ 按位型的 `zhixuan`）；其余玩法 Phase 2。
 
@@ -174,7 +176,8 @@ PrizeTier(lottery="ssq", tier=5, condition="front_hit==4 and back_hit==0",
 接口: compare(spec, draw_numbers, entry) -> HitResult(hits, tier, amount, is_win)
 实现:
   - PartitionCompare : 双色球/大乐透/七乐彩（集合匹配红/蓝球个数）
-  - PositionalCompare: 3D/排列3/排列5/七星彩（逐位比对；直选全对、组选看数字集合）
+  - PositionalCompare: 福彩3D/排列3/排列5（逐位比对；单选/直选全对、组选看数字集合）
+  - 七星彩（混合型）：前区按位 6 位 + 后区单值 0-14，需专门比对处理（Plan 1 实现时归类）
 ```
 
 ---
@@ -193,7 +196,7 @@ PrizeTier(lottery="ssq", tier=5, condition="front_hit==4 and back_hit==0",
 |---|---|---|
 | `users` | id, username, password_hash, role(user/admin), invite_code, created_at | 邀请制 |
 | `lottery_types` | code, name, category, spec_json, draw_schedule_json, enabled | 彩种配置（种子内置 7 大彩种） |
-| `tickets` | id, **user_id**, lottery_code, play_type, numbers_json, label, enabled, created_at | 号码池 |
+| `tickets` | id, **user_id**, lottery_code, play_type, numbers_json, tuo_json(胆拖拖码), label, multiplier(倍投1-99), append(追加), enabled, created_at | 号码池 |
 | `draw_results` | id, lottery_code, draw_no(期号), draw_date, numbers_json, source, fetched_at, verified | 唯一约束 (lottery_code+draw_no) 保证幂等 |
 | `comparisons` | id, **user_id**, draw_result_id, ticket_id, hits_json, prize_tier, prize_amount, is_win | 比对结果（冗余 user_id 便于隔离查询） |
 | `prize_claims` | id, comparison_id, status(pending/claimed/expired), deadline, claimed_at | 兑奖台账 |
@@ -338,7 +341,7 @@ PrizeTier(lottery="ssq", tier=5, condition="front_hit==4 and back_hit==0",
 |---|---|---|
 | 1 | 登录/注册 | 邀请码注册、账号密码登录 |
 | 2 | 仪表盘 | 开奖概览（各彩种期号+号码+日期）、近期开奖日程、我的命中（多彩种混合表）、待兑奖（含"已领取"操作）、盈亏速览（按时段筛选）、右上角用户身份区、理性提示常驻 |
-| 3 | 我的号码 | 按彩种分组的号码池、CRUD、批量导入、玩法标记 |
+| 3 | 我的号码 | 号码盘点击选号（按玩法：单式/复式/胆拖/单选/直选/组选）、批量导入、每注倍投（2-99）、大乐透追加、左右布局（号码池为主） |
 | 4 | 开奖查询 | 选彩种+期号查开奖号码、比对详情 |
 | 5 | 中奖记录 | 中奖历史、兑奖状态、兑奖指引 |
 | 6 | 我的统计 | 累计盈亏、号码命中率、中奖等级分布、周/月报 |
