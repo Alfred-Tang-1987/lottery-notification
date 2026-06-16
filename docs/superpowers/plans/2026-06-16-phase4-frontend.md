@@ -303,10 +303,20 @@ export const useAuthStore = defineStore("auth", () => {
   }
   async function login(u: string, p: string) {
     const { data } = await api.post("/auth/login", { username: u, password: p });
-    setAuth(data.access_token, "user", u);  // role 从 JWT 解析（生产用 jwt-decode）
+    const payload = parseJwt(data.access_token);   // #10：从 JWT 解析 role
+    setAuth(data.access_token, payload.role || "user", u);
   }
   return { token, role, username, setAuth, logout, login };
 });
+
+// JWT payload 解析（浏览器原生 atob，无需第三方库；#10 从 token 取 role）
+function parseJwt(token: string): { role?: string; sub?: string } {
+  try {
+    return JSON.parse(atob(token.split(".")[1]));
+  } catch {
+    return {};
+  }
+}
 ```
 
 - [ ] **Step 2: `web/src/components/Sidebar.vue`（照 prototype 导航）**

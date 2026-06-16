@@ -321,6 +321,34 @@ class NotificationLog(SQLModel, table=True):
     status: str                 # sent / failed
     error: str | None = None
     sent_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class LotteryType(SQLModel, table=True):
+    __tablename__ = "lottery_types"
+    code: str = Field(primary_key=True)            # ssq / dlt / ...
+    name: str
+    category: str                                   # welfare / sports
+    spec_json: str                                  # LotterySpec 序列化（号码规则）
+    draw_schedule_json: str                         # 开奖日表 [0..6]
+    enabled: bool = Field(default=True)
+
+
+class PrizeClaim(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    comparison_id: int = Field(index=True, unique=True)
+    user_id: int = Field(index=True)
+    status: str = Field(default="pending")          # pending / claimed / expired
+    deadline: date
+    claimed_at: datetime | None = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class ApiSourceHealth(SQLModel, table=True):
+    source: str = Field(primary_key=True)           # mxnzp / juhe
+    last_success_at: datetime | None = None
+    last_error: str | None = None
+    status: str = Field(default="unknown")          # ok / error / unknown
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
 ```
 
 - [ ] **Step 5: 实现 `app/db/database.py`**
@@ -1077,17 +1105,22 @@ class Notifier(Protocol):
     async def send(self, msg: Message) -> bool: ...
 
 
-async def dispatch(notifiers: list[Notifier], msg: Message) -> bool:
-    """依次尝试，任一成功即 True（多渠道冗余）。"""
-    import logging
+async def dispatch(notifiers: list[Notifier], msg: Message, max_retries: int = 3) -> bool:
+    """依次尝试每个渠道；单渠道失败指数退避重试 max_retries 次；任一渠道成功即 True（spec §10）。"""
+    import logging, asyncio
     log = logging.getLogger(__name__)
     any_ok = False
     for n in notifiers:
-        try:
-            if await n.send(msg):
-                any_ok = True
-        except Exception as e:
-            log.warning("通知失败 %s: %s", getattr(n, "type", "?"), e)
+        for attempt in range(max_retries):
+            try:
+                if await n.send(msg):
+                    any_ok = True
+                    break
+            except Exception as e:
+                log.warning("通知失败 %s (尝试 %d/%d): %s",
+                            getattr(n, "type", "?"), attempt + 1, max_retries, e)
+            if attempt < max_retries - 1:
+                await asyncio.sleep(2 ** attempt)   # 指数退避：1s, 2s, 4s
     return any_ok
 ```
 
@@ -1356,10 +1389,10 @@ def build_summary_trigger(hour: int) -> CronTrigger:
     return CronTrigger(hour=hour, minute=0, timezone="Asia/Shanghai")
 
 
-def build_poll_trigger(draw_days: tuple[int, ...]) -> CronTrigger:
-    # 开奖日 21:30 起每 15 分钟（路径 A 轮询），简化为开奖日傍晚触发
-    return CronTrigger(day_of_week=",".join(str(d) for d in draw_days),
-                       hour="21-23", minute="*/15", timezone="Asia/Shanghai")
+def build_poll_trigger() -> CronTrigger:
+    # 每日 21:00 起每 15 分钟轮询，跨日至次日 00:59（spec §7.3：21:30→次日01:00）。
+    # 是否为某彩种开奖日由 poll_job 内判断（weekday in spec.draw_days），非开奖日跳过。
+    return CronTrigger(hour="21-23,0", minute="*/15", timezone="Asia/Shanghai")
 
 
 class Scheduler:
@@ -1371,7 +1404,7 @@ class Scheduler:
             spec = LOTTERY_TYPES[code]
             self.scheduler.add_job(
                 lambda c=code: None,  # 占位；真实回调由 main 装配时注入
-                trigger=build_poll_trigger(spec.draw_days),
+                trigger=build_poll_trigger(),
                 id=f"poll_{code}", replace_existing=True)
         self.scheduler.add_job(lambda: None, trigger=build_summary_trigger(7),
                                id="summary", replace_existing=True)
