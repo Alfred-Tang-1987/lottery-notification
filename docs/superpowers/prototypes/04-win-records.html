@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>中奖记录 — 兑奖了吗？</title>
+    <style>
+        :root {
+            --bg: #f5f5f7; --surface: #ffffff; --fg: #1d1d1f; --muted: #6e6e73;
+            --border: #d2d2d7; --accent: #0071e3; --red-ball: #e11d2a; --blue-ball: #0071e3;
+            --success: #059669; --danger: #dc2626; --warning: #d97706;
+            --font-display: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', system-ui, sans-serif;
+            --font-body: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', system-ui, sans-serif;
+            --font-mono: 'SF Mono', 'JetBrains Mono', ui-monospace, monospace;
+        }
+        :root.dark {
+            --bg: #000000; --surface: #1c1c1e; --fg: #f5f5f7; --muted: #98989d;
+            --border: #38383a; --accent: #0a84ff; --red-ball: #ff453a;
+            --blue-ball: #0a84ff; --success: #30d158; --danger: #ff453a;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: var(--font-body); background: var(--bg); color: var(--fg); line-height: 1.47059; -webkit-font-smoothing: antialiased; }
+        .app { display: flex; min-height: 100vh; }
+        .sidebar { width: 240px; background: var(--surface); border-right: 1px solid var(--border); position: fixed; top: 0; left: 0; bottom: 0; z-index: 100; display: flex; flex-direction: column; }
+        .sidebar-header { padding: 20px 24px; border-bottom: 1px solid var(--border); }
+        .sidebar-brand { font-family: var(--font-display); font-size: 18px; font-weight: 600; letter-spacing: -0.022em; }
+        .sidebar-brand-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+        .nav { flex: 1; padding: 12px 10px; overflow-y: auto; }
+        .nav-section { margin-bottom: 16px; }
+        .nav-section-label { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; padding: 0 14px; margin-bottom: 6px; }
+        .nav-item { display: flex; align-items: center; gap: 10px; padding: 9px 14px; border-radius: 8px; font-size: 14px; color: var(--fg); cursor: pointer; transition: background 0.15s; text-decoration: none; }
+        .nav-item:hover { background: var(--bg); }
+        .nav-item.active { background: var(--bg); font-weight: 600; }
+        .nav-item.active .nav-icon { color: var(--accent); }
+        .nav-icon { width: 18px; height: 18px; color: var(--muted); flex-shrink: 0; }
+        .sidebar-footer { padding: 12px 24px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); }
+        .main { flex: 1; margin-left: 240px; min-height: 100vh; }
+        .content { max-width: 1080px; padding: 32px; margin: 0 auto; }
+        .header { margin-bottom: 22px; }
+        .welcome-row { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 14px; gap: 16px; }
+        .page-title { font-family: var(--font-display); font-size: 32px; font-weight: 600; letter-spacing: -0.021em; line-height: 1.125; }
+        .page-subtitle { font-size: 14px; color: var(--muted); margin-top: 4px; }
+        .disclaimer-banner { background: #fefce8; border: 1px solid #fbbf24; border-radius: 12px; padding: 11px 18px; display: flex; align-items: center; gap: 10px; font-size: 14px; color: #92400e; }
+        .disclaimer-banner svg { width: 18px; height: 18px; color: #d97706; flex-shrink: 0; }
+        :root.dark .disclaimer-banner { background: #3a2e00; border-color: #7a5c00; color: #ffd60a; }
+        .topbar-right { display: flex; align-items: center; gap: 14px; }
+        .theme-toggle { width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; border: 1px solid var(--border); background: var(--surface); }
+        .theme-toggle svg { width: 18px; height: 18px; color: var(--fg); }
+        .user-wrap { position: relative; }
+        .user-cluster { display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 4px 12px 4px 4px; border-radius: 20px; border: 1px solid var(--border); background: var(--surface); }
+        .user-avatar { width: 30px; height: 30px; border-radius: 50%; background: var(--accent); color: #fff; font-weight: 600; font-size: 13px; display: flex; align-items: center; justify-content: center; }
+        .user-name { font-size: 14px; font-weight: 500; }
+        .user-menu { position: absolute; right: 0; top: 46px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 6px; box-shadow: 0 4px 16px rgba(0,0,0,0.12); min-width: 180px; display: none; z-index: 200; }
+        .user-menu.show { display: block; }
+        .user-menu-item { padding: 8px 12px; border-radius: 8px; font-size: 14px; cursor: pointer; }
+        .user-menu-item:hover { background: var(--bg); }
+        .user-menu-divider { height: 1px; background: var(--border); margin: 4px 0; }
+        .user-menu-hint { padding: 8px 12px 4px; font-size: 12px; color: var(--muted); }
+
+        /* 统计概览 */
+        .stats-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 22px; }
+        .stat-card { background: var(--surface); border-radius: 16px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+        .stat-label { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+        .stat-value { font-family: var(--font-display); font-size: 24px; font-weight: 600; letter-spacing: -0.021em; }
+        .stat-value.profit { color: var(--success); }
+        .stat-value.muted { color: var(--muted); }
+        .stat-value.danger { color: var(--danger); }
+        .stat-sub { font-size: 13px; color: var(--muted); margin-top: 4px; }
+
+        /* 筛选条 */
+        .filter-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; flex-wrap: wrap; }
+        .filter-group { display: flex; gap: 6px; background: var(--surface); border-radius: 980px; padding: 4px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+        .filter-btn { padding: 6px 14px; border-radius: 980px; border: none; background: none; color: var(--muted); font-size: 13px; cursor: pointer; font-family: inherit; transition: all 0.15s; }
+        .filter-btn:hover { color: var(--fg); }
+        .filter-btn.active { background: var(--accent); color: #fff; font-weight: 600; }
+        .filter-select { height: 34px; padding: 0 30px 0 12px; border: 1px solid var(--border); border-radius: 980px; background: var(--surface); color: var(--fg); font-family: inherit; font-size: 13px; outline: none; cursor: pointer; appearance: none; -webkit-appearance: none; }
+        :root.dark .filter-select { background: #1c1c1e; }
+        .filter-select-wrap { position: relative; }
+        .filter-select-arrow { position: absolute; right: 11px; top: 50%; transform: translateY(-50%); pointer-events: none; color: var(--muted); }
+        .filter-select-arrow svg { width: 14px; height: 14px; }
+        .filter-count { font-size: 13px; color: var(--muted); margin-left: auto; }
+
+        .card { background: var(--surface); border-radius: 18px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); overflow: hidden; margin-bottom: 22px; }
+        .card-header { padding: 20px 24px 0; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+        .card-title { font-family: var(--font-display); font-size: 21px; font-weight: 600; letter-spacing: -0.021em; }
+        .card-subtitle { font-size: 13px; color: var(--muted); margin-top: 2px; }
+        .card-body { padding: 18px 24px 24px; }
+
+        /* 中奖记录卡片 */
+        .record-list { display: flex; flex-direction: column; gap: 12px; }
+        .record-item { display: flex; align-items: center; gap: 18px; padding: 18px 20px; background: var(--bg); border-radius: 14px; border: 1.5px solid transparent; transition: border-color 0.15s; }
+        :root.dark .record-item { background: #2c2c2e; }
+        .record-item.urgent { border-color: #fecaca; background: #fef2f2; }
+        :root.dark .record-item.urgent { border-color: #5a2a2a; background: #2a1818; }
+        .record-item.expired { opacity: 0.6; }
+        .record-main { flex: 1; min-width: 0; }
+        .record-top { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+        .record-lottery { font-size: 15px; font-weight: 600; }
+        .record-issue { font-size: 12px; color: var(--muted); font-family: var(--font-mono); }
+        .record-level { font-size: 12px; font-weight: 600; padding: 2px 9px; border-radius: 980px; background: rgba(0,113,227,0.1); color: var(--accent); }
+        .record-amount { font-family: var(--font-display); font-size: 22px; font-weight: 600; color: var(--success); margin-bottom: 8px; }
+        .record-amount.expired-amt { color: var(--muted); text-decoration: line-through; }
+        .my-num-cell { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+        .mini-ball { width: 24px; height: 24px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; color: #fff; font-family: var(--font-mono); }
+        .mini-ball.red { background: var(--red-ball); }
+        .mini-ball.blue { background: var(--blue-ball); }
+        .mini-ball.num { border-radius: 6px; background: var(--surface); color: var(--fg); border: 1.2px solid var(--border); }
+        :root.dark .mini-ball.num { background: #1c1c1e; color: #f5f5f7; border-color: #48484a; }
+        .mini-sep { color: var(--muted); font-size: 11px; }
+        .tax-hint { font-size: 11px; color: var(--warning); margin-top: 6px; display: flex; align-items: center; gap: 4px; }
+        .tax-hint svg { width: 12px; height: 12px; }
+        .record-side { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; flex-shrink: 0; }
+        .status-badge { display: inline-flex; align-items: center; gap: 5px; padding: 4px 11px; border-radius: 980px; font-size: 12px; font-weight: 600; }
+        .status-pending { background: #dcfce7; color: #166534; }
+        .status-claimed { background: #f3f4f6; color: var(--muted); }
+        .status-expired { background: #fee2e2; color: #991b1b; }
+        :root.dark .status-pending { background: #1a3a1a; color: #30d158; }
+        :root.dark .status-claimed { background: #3a3a3c; color: #98989d; }
+        :root.dark .status-expired { background: #3a1a1a; color: #ff453a; }
+        .countdown { text-align: right; }
+        .countdown-value { font-family: var(--font-mono); font-size: 15px; font-weight: 600; }
+        .countdown-value.urgent { color: var(--danger); }
+        .countdown-label { font-size: 11px; color: var(--muted); margin-top: 1px; }
+        .btn { display: inline-flex; align-items: center; justify-content: center; gap: 5px; height: 32px; padding: 0 14px; border-radius: 980px; font-size: 12px; font-weight: 600; cursor: pointer; border: none; font-family: inherit; }
+        .btn-primary { background: var(--accent); color: #fff; }
+        .btn-primary:hover { filter: brightness(1.08); }
+        .btn-secondary { background: var(--surface); color: var(--muted); border: 1px solid var(--border); }
+        .btn-secondary svg { width: 13px; height: 13px; }
+
+        /* 兑奖指引 */
+        .guide-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+        .guide-item { padding: 16px 18px; background: var(--bg); border-radius: 12px; }
+        :root.dark .guide-item { background: #2c2c2e; }
+        .guide-icon { width: 30px; height: 30px; border-radius: 8px; background: rgba(0,113,227,0.1); color: var(--accent); display: flex; align-items: center; justify-content: center; margin-bottom: 10px; }
+        .guide-icon svg { width: 17px; height: 17px; }
+        .guide-title { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+        .guide-text { font-size: 12px; color: var(--muted); line-height: 1.5; }
+
+        .empty { text-align: center; padding: 50px 24px; color: var(--muted); }
+        .empty-icon { font-size: 36px; margin-bottom: 10px; }
+        .empty-title { font-size: 15px; font-weight: 600; color: var(--fg); margin-bottom: 4px; }
+        .empty-hint { font-size: 13px; }
+        @media (max-width: 860px) { .stats-row { grid-template-columns: repeat(2, 1fr); } .record-item { flex-direction: column; align-items: flex-start; } .record-side { flex-direction: row; align-items: center; align-self: stretch; justify-content: space-between; } }
+        @media (max-width: 768px) { .sidebar { display: none; } .main { margin-left: 0; } }
+    </style>
+</head>
+<body>
+<div class="app">
+    <aside class="sidebar">
+        <div class="sidebar-header"><div class="sidebar-brand">兑奖了吗？</div><div class="sidebar-brand-sub">开奖自动核对与中奖推送</div></div>
+        <nav class="nav">
+            <div class="nav-section"><div class="nav-section-label">核心</div>
+                <a class="nav-item"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>仪表盘</a>
+                <a class="nav-item"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/></svg>我的号码</a>
+            </div>
+            <div class="nav-section"><div class="nav-section-label">数据</div>
+                <a class="nav-item"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>开奖结果</a>
+                <a class="nav-item active"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg>中奖记录</a>
+            </div>
+            <div class="nav-section"><div class="nav-section-label">分析</div>
+                <a class="nav-item"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 8v8m-4-5v5m-4-2v2m-2 4h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>我的统计</a>
+                <a class="nav-item"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 17l6-6 4 4 8-8"/><path d="M14 7h7v7"/></svg>开奖走势</a>
+                <a class="nav-item"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>开奖日历</a>
+            </div>
+            <div class="nav-section"><div class="nav-section-label">系统</div>
+                <a class="nav-item"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09a1.65 1.65 0 00-1-1.51 1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09a1.65 1.65 0 001.51-1 1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>设置</a>
+                <a class="nav-item"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>后台管理</a>
+            </div>
+        </nav>
+        <div class="sidebar-footer">理性购彩 · 量力而行</div>
+    </aside>
+
+    <main class="main">
+        <div class="content">
+            <div class="header">
+                <div class="welcome-row">
+                    <div><h1 class="page-title">中奖记录</h1><div class="page-subtitle">你的全部中奖历史、兑奖状态与有效期提醒</div></div>
+                    <div class="topbar-right">
+                        <div class="theme-toggle" id="themeToggle"><svg id="themeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg></div>
+                        <div class="user-wrap"><div class="user-cluster" id="userCluster"><div class="user-avatar">A</div><div class="user-name">Alfred</div><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></div>
+                            <div class="user-menu" id="userMenu"><div class="user-menu-hint">当前账号 · Alfred</div><div class="user-menu-divider"></div><div class="user-menu-item">切换账号…</div><div class="user-menu-item">通知设置</div><div class="user-menu-item">导出我的数据</div><div class="user-menu-divider"></div><div class="user-menu-item" style="color:var(--danger)">退出登录</div></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="disclaimer-banner"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v2m0 4h.01m-6.938 4h13.876c1.121 0 2.182-.542 2.817-1.46a3.5 3.5 0 00.496-3.184A9 9 0 0112 3a9 9 0 00-8.241 4.356 3.5 3.5 0 00.496 3.184 3.5 3.5 0 002.817 1.46z"/></svg>兑奖期限为开奖之日起 60 个自然日，逾期作废。请及时办理。</div>
+            </div>
+
+            <!-- 全局筛选条（作用于下方统计与列表） -->
+            <div class="filter-bar">
+                <div class="filter-group" id="periodFilter">
+                    <button class="filter-btn active" data-v="all">全部</button>
+                    <button class="filter-btn" data-v="year">本年</button>
+                    <button class="filter-btn" data-v="month">本月</button>
+                </div>
+                <div class="filter-select-wrap">
+                    <select class="filter-select" id="codeFilter"><option value="all">全部彩种</option></select>
+                    <span class="filter-select-arrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></span>
+                </div>
+                <div class="filter-group" id="statusFilter">
+                    <button class="filter-btn active" data-v="all">全部</button>
+                    <button class="filter-btn" data-v="pending">待兑奖</button>
+                    <button class="filter-btn" data-v="claimed">已领取</button>
+                    <button class="filter-btn" data-v="expired">已过期</button>
+                </div>
+                <div class="filter-count" id="filterCount"></div>
+            </div>
+
+            <!-- 统计概览（随筛选联动） -->
+            <div class="stats-row">
+                <div class="stat-card"><div class="stat-label">累计中奖</div><div class="stat-value profit" id="statTotal">—</div><div class="stat-sub" id="statCount">— 笔</div></div>
+                <div class="stat-card"><div class="stat-label">待兑奖</div><div class="stat-value" id="statPending">—</div><div class="stat-sub" id="statPendingCount">— 笔</div></div>
+                <div class="stat-card"><div class="stat-label">已领取</div><div class="stat-value muted" id="statClaimed">—</div><div class="stat-sub" id="statClaimedCount">— 笔</div></div>
+                <div class="stat-card"><div class="stat-label">已过期</div><div class="stat-value danger" id="statExpired">—</div><div class="stat-sub" id="statExpiredCount">— 笔</div></div>
+            </div>
+
+            <!-- 中奖记录列表 -->
+            <div class="card">
+                <div class="card-header"><div><div class="card-title">中奖记录</div><div class="card-subtitle">按时间倒序 · 临近过期标红</div></div></div>
+                <div class="card-body"><div class="record-list" id="recordList"></div></div>
+            </div>
+
+            <div style="text-align:center;font-size:12px;color:var(--muted);padding:6px 4px 4px;line-height:1.7">兑奖须知：小额在投注站兑取 · ≥1 万元到市级中心 · 大奖到省级中心，需携带彩票原件（大奖另需身份证件，单注 ≥1 万元扣 20% 偶然所得税）· 以官方规则为准</div>
+        </div>
+    </main>
+</div>
+
+<script>
+// 主题 + 用户菜单
+(function(){
+    var r=document.documentElement,s=localStorage.getItem("theme");
+    function a(){var h=new Date().getHours();return(h>=18||h<6)?"dark":"light";}
+    function p(t){r.classList.toggle("dark",t==="dark");var i=document.getElementById("themeIcon");if(i)i.innerHTML=t==="dark"?'<circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>':'<path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>';}
+    p(s||a());
+    document.getElementById("themeToggle").addEventListener("click",function(){var n=r.classList.contains("dark")?"light":"dark";localStorage.setItem("theme",n);p(n);});
+    var c=document.getElementById("userCluster"),m=document.getElementById("userMenu");
+    c.addEventListener("click",function(e){e.stopPropagation();m.classList.toggle("show");});
+    document.addEventListener("click",function(){m.classList.remove("show");});
+})();
+
+var SPECS = {
+    ssq:{name:"双色球", positional:false}, dlt:{name:"大乐透", positional:false},
+    qlc:{name:"七乐彩", positional:false}, qxc:{name:"七星彩", positional:"mix"},
+    fc3d:{name:"福彩3D", positional:true}, pl3:{name:"排列3", positional:true}, pl5:{name:"排列5", positional:true}
+};
+var WEEKDAY = ["周日","周一","周二","周三","周四","周五","周六"];
+var DAY = 86400000;
+var TODAY = new Date("2025-01-15"); // 演示参考日期（倒计时基准）
+
+function pad(n){ return String(n).padStart(2,"0"); }
+function yuan(cents){ return "¥"+(cents/100).toLocaleString(); } // 分→元
+function fmtDate(iso){ var d=new Date(iso); return d.getFullYear()+"年"+(d.getMonth()+1)+"月"+d.getDate()+"日 "+WEEKDAY[d.getDay()]; }
+function daysLeft(deadline){ return Math.ceil((new Date(deadline)-TODAY)/DAY); }
+
+// 中奖记录（金额用「分」存储，渲染除 100；与 spec 数据约定一致）
+var RECORDS = [
+    {id:1, code:"ssq", no:"2025015", date:"2025-01-14", deadline:"2025-03-15", front:[3,12,18,25,28,33], back:[16], level:"一等奖", amount:500000000, status:"pending"},
+    {id:2, code:"ssq", no:"2024134", date:"2024-11-17", deadline:"2025-01-16", front:[2,8,15,21,27,32], back:[4], level:"二等奖", amount:8534100, status:"pending"},
+    {id:3, code:"pl5", no:"2025013", date:"2025-01-13", deadline:"2025-03-14", front:[7,3,9,1,4], back:[], level:"直选", amount:10000000, status:"pending"},
+    {id:4, code:"dlt", no:"2025014", date:"2025-01-11", deadline:"2025-03-12", front:[5,14,22,28,35], back:[2,9], level:"三等奖", amount:1000000, status:"pending", append:true},
+    {id:5, code:"fc3d", no:"2025015", date:"2025-01-14", deadline:"2025-03-15", front:[9,2,5], back:[], level:"单选", amount:104000, status:"pending"},
+    {id:6, code:"pl3", no:"2024320", date:"2024-11-20", deadline:"2025-01-19", front:[4,1,8], back:[], level:"直选", amount:104000, status:"pending"},
+    {id:7, code:"ssq", no:"2025014", date:"2025-01-12", deadline:"2025-03-13", front:[1,7,14,18,25,33], back:[6], level:"六等奖", amount:500, status:"claimed"},
+    {id:8, code:"fc3d", no:"2025014", date:"2025-01-13", deadline:"2025-03-13", front:[2,5,9], back:[], level:"组选六", amount:17300, status:"claimed"},
+    {id:9, code:"qlc", no:"2024132", date:"2024-10-25", deadline:"2024-12-24", front:[2,8,14,19,23,27,28], back:[5], level:"三等奖", amount:300000, status:"expired"}
+];
+
+var fPeriod="all", fCode="all", fStatus="all";
+
+function inPeriod(date,period){
+    if(period==="all") return true;
+    var d=new Date(date);
+    if(period==="month") return d.getFullYear()===TODAY.getFullYear() && d.getMonth()===TODAY.getMonth();
+    return d.getFullYear()===TODAY.getFullYear();
+}
+function filtered(){
+    return RECORDS.filter(function(r){
+        return inPeriod(r.date,fPeriod) && (fCode==="all"||r.code===fCode) && (fStatus==="all"||r.status===fStatus);
+    }).sort(function(a,b){ return new Date(b.date)-new Date(a.date); });
+}
+
+function miniBallsHTML(r){
+    var spec=SPECS[r.code];
+    if(spec.positional===true || spec.positional==="mix"){
+        var f=r.front.map(function(n){return '<span class="mini-ball num">'+n+'</span>';}).join("");
+        var h='<div class="my-num-cell">'+f;
+        if(r.back && r.back.length){ h+='<span class="mini-sep">|</span><span class="mini-ball num" style="background:var(--blue-ball);color:#fff;border:none">'+r.back[0]+'</span>'; }
+        return h+'</div>';
+    }
+    var f2=r.front.map(function(n){return '<span class="mini-ball red">'+pad(n)+'</span>';}).join("");
+    var h='<div class="my-num-cell">'+f2;
+    if(r.back && r.back.length){ h+='<span class="mini-sep">+</span>'+r.back.map(function(n){return '<span class="mini-ball blue">'+pad(n)+'</span>';}).join(""); }
+    return h+'</div>';
+}
+
+function statusBadge(status){
+    if(status==="pending") return '<span class="status-badge status-pending"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>待兑奖</span>';
+    if(status==="claimed") return '<span class="status-badge status-claimed"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6L9 17l-5-5"/></svg>已领取</span>';
+    return '<span class="status-badge status-expired">已过期</span>';
+}
+
+function renderStats(){
+    var list=filtered();
+    var sum=function(s){ return list.filter(function(r){return r.status===s;}).reduce(function(a,r){return a+r.amount;},0); };
+    var cnt=function(s){ return list.filter(function(r){return r.status===s;}).length; };
+    var total=list.reduce(function(a,r){return a+r.amount;},0);
+    document.getElementById("statTotal").textContent = yuan(total);
+    document.getElementById("statCount").textContent = list.length+" 笔";
+    document.getElementById("statPending").textContent = yuan(sum("pending"));
+    document.getElementById("statPendingCount").textContent = cnt("pending")+" 笔";
+    document.getElementById("statClaimed").textContent = yuan(sum("claimed"));
+    document.getElementById("statClaimedCount").textContent = cnt("claimed")+" 笔";
+    document.getElementById("statExpired").textContent = yuan(sum("expired"));
+    document.getElementById("statExpiredCount").textContent = cnt("expired")+" 笔";
+}
+
+function renderList(){
+    var list=filtered();
+    document.getElementById("filterCount").textContent = "共 "+list.length+" 条";
+    var box=document.getElementById("recordList");
+    if(list.length===0){ box.innerHTML='<div class="empty"><div class="empty-icon">🎉</div><div class="empty-title">暂无符合条件的中奖记录</div><div class="empty-hint">调整筛选条件，或等待下一期开奖核对</div></div>'; return; }
+    box.innerHTML = list.map(function(r){
+        var spec=SPECS[r.code], isBig = r.amount>=1000000; // ≥1万元
+        var cls = r.status==="expired"?"expired":(r.status==="pending" && daysLeft(r.deadline)<=15?"urgent":"");
+        var h='<div class="record-item '+cls+'"><div class="record-main">';
+        h+='<div class="record-top"><span class="record-lottery">'+spec.name+'</span><span class="record-issue">第'+r.no+'期 · '+fmtDate(r.date)+'</span><span class="record-level">'+r.level+(r.append?' · 追加':'')+'</span></div>';
+        h+='<div class="record-amount'+(r.status==="expired"?" expired-amt":"")+'">'+yuan(r.amount)+'</div>';
+        h+=miniBallsHTML(r);
+        if(isBig && r.status!=="expired"){ h+='<div class="tax-hint"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v2m0 4h.01m-6.938 4h13.876c1.121 0 2.182-.542 2.817-1.46a3.5 3.5 0 00.496-3.184A9 9 0 0112 3a9 9 0 00-8.241 4.356 3.5 3.5 0 00.496 3.184 3.5 3.5 0 002.817 1.46z"/></svg>单注 ≥1 万元，兑奖时扣 20% 偶然所得税（实得约 '+yuan(Math.round(r.amount*0.8))+'）</div>'; }
+        h+='</div><div class="record-side">';
+        h+=statusBadge(r.status);
+        if(r.status==="pending"){
+            var dl=daysLeft(r.deadline), urg=dl<=15;
+            h+='<div class="countdown"><div class="countdown-value'+(urg?" urgent":"")+'">'+dl+'</div><div class="countdown-label">天后过期</div></div>';
+            h+='<button class="btn btn-secondary" onclick="markClaimed('+r.id+')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6L9 17l-5-5"/></svg>已领取</button>';
+        } else if(r.status==="claimed"){
+            h+='<div class="countdown"><div class="countdown-label">已于兑奖期内领取</div></div>';
+        } else {
+            h+='<div class="countdown"><div class="countdown-label">逾期未兑，奖金作废</div></div>';
+        }
+        h+='</div></div>';
+        return h;
+    }).join("");
+}
+
+// 兑奖状态跨页共享：与仪表盘「待兑奖」联动，同一 localStorage 键（lottery_claimed，值为 "code:no" 数组）
+function getClaimed(){ try{return JSON.parse(localStorage.getItem("lottery_claimed")||"[]");}catch(e){return [];} }
+function addClaimed(code,no){ var c=getClaimed(),k=code+":"+no; if(c.indexOf(k)<0){c.push(k);localStorage.setItem("lottery_claimed",JSON.stringify(c));} }
+function syncClaimed(){ var c=getClaimed(); RECORDS.forEach(function(r){ if(r.status==="pending"&&c.indexOf(r.code+":"+r.no)>=0) r.status="claimed"; }); }
+function markClaimed(id){
+    var r=RECORDS.find(function(x){return x.id===id;});
+    if(r){ r.status="claimed"; addClaimed(r.code,r.no); renderStats(); renderList(); }
+}
+
+// 绑定筛选
+document.getElementById("codeFilter").innerHTML = '<option value="all">全部彩种</option>'+Object.keys(SPECS).map(function(c){return '<option value="'+c+'">'+SPECS[c].name+'</option>';}).join("");
+function bindGroup(id, setter){
+    document.getElementById(id).addEventListener("click",function(e){
+        var b=e.target.closest(".filter-btn"); if(!b) return;
+        this.querySelectorAll(".filter-btn").forEach(function(x){x.classList.remove("active");});
+        b.classList.add("active"); setter(b.getAttribute("data-v")); renderStats(); renderList();
+    });
+}
+bindGroup("periodFilter", function(v){ fPeriod=v; });
+bindGroup("statusFilter", function(v){ fStatus=v; });
+document.getElementById("codeFilter").addEventListener("change",function(){ fCode=this.value; renderStats(); renderList(); });
+
+syncClaimed();
+renderStats();
+renderList();
+</script>
+</body>
+</html>
