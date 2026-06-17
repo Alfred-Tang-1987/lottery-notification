@@ -390,20 +390,19 @@
             display: flex;
             align-items: center;
             gap: 4px;
-            padding: 6px 12px;
+            padding: 7px 14px;
             border-radius: 8px;
-            border: 1px solid var(--border);
-            background: var(--surface);
-            color: var(--muted);
+            border: 1px solid var(--success);
+            background: var(--success);
+            color: #fff;
             font-size: 12px;
+            font-weight: 600;
             cursor: pointer;
             transition: all 0.15s;
         }
 
         .claim-delete:hover {
-            border-color: var(--danger);
-            color: var(--danger);
-            background: #fef2f2;
+            filter: brightness(1.08);
         }
 
         .claim-delete svg {
@@ -413,7 +412,7 @@
 
         .stats-row {
             display: grid;
-            grid-template-columns: repeat(3, 1fr);
+            grid-template-columns: repeat(4, 1fr);
             gap: 16px;
             margin-top: 16px;
         }
@@ -1049,9 +1048,9 @@
                     <div class="card-header">
                         <div class="card-title">盈亏速览</div>
                         <div class="stats-filter">
-                            <button class="stats-filter-btn active">全部</button>
                             <button class="stats-filter-btn">本月</button>
                             <button class="stats-filter-btn">本年</button>
+                            <button class="stats-filter-btn active">全部</button>
                         </div>
                     </div>
                     <div class="card-body">
@@ -1067,6 +1066,11 @@
                             <div class="stat-card">
                                 <div class="stat-label">净盈亏</div>
                                 <div class="stat-value profit">+¥5,000,185</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-label">公益贡献 <span style="font-size:10px;opacity:.7">购彩额 36%</span></div>
+                                <div class="stat-value" style="color:var(--danger)">¥446</div>
+                                <div style="font-size:11px;color:var(--muted);margin-top:6px">体彩 ¥186 · 福彩 ¥260</div>
                             </div>
                         </div>
                     </div>
