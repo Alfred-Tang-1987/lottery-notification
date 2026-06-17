@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>后台管理 — 兑奖了吗？</title>
+    <style>
+        :root {
+            --bg: #f5f5f7; --surface: #ffffff; --fg: #1d1d1f; --muted: #6e6e73;
+            --border: #d2d2d7; --accent: #0071e3; --red-ball: #e11d2a; --blue-ball: #0071e3;
+            --success: #059669; --danger: #dc2626; --warning: #d97706;
+            --font-display: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', system-ui, sans-serif;
+            --font-body: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', system-ui, sans-serif;
+            --font-mono: 'SF Mono', 'JetBrains Mono', ui-monospace, monospace;
+            --field-h: 40px;
+        }
+        :root.dark {
+            --bg: #000000; --surface: #1c1c1e; --fg: #f5f5f7; --muted: #98989d;
+            --border: #38383a; --accent: #0a84ff; --red-ball: #ff453a;
+            --blue-ball: #0a84ff; --success: #30d158; --danger: #ff453a;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: var(--font-body); background: var(--bg); color: var(--fg); line-height: 1.47059; -webkit-font-smoothing: antialiased; }
+        .app { display: flex; min-height: 100vh; }
+        .sidebar { width: 240px; background: var(--surface); border-right: 1px solid var(--border); position: fixed; top: 0; left: 0; bottom: 0; z-index: 100; display: flex; flex-direction: column; }
+        .sidebar-header { padding: 20px 24px; border-bottom: 1px solid var(--border); }
+        .sidebar-brand { font-family: var(--font-display); font-size: 18px; font-weight: 600; letter-spacing: -0.022em; }
+        .sidebar-brand-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+        .nav { flex: 1; padding: 12px 10px; overflow-y: auto; }
+        .nav-section { margin-bottom: 16px; }
+        .nav-section-label { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; padding: 0 14px; margin-bottom: 6px; }
+        .nav-item { display: flex; align-items: center; gap: 10px; padding: 9px 14px; border-radius: 8px; font-size: 14px; color: var(--fg); cursor: pointer; transition: background 0.15s; text-decoration: none; }
+        .nav-item:hover { background: var(--bg); }
+        .nav-item.active { background: var(--bg); font-weight: 600; }
+        .nav-item.active .nav-icon { color: var(--accent); }
+        .nav-icon { width: 18px; height: 18px; color: var(--muted); flex-shrink: 0; }
+        .sidebar-footer { padding: 12px 24px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); }
+        .main { flex: 1; margin-left: 240px; min-height: 100vh; }
+        .content { max-width: 1080px; padding: 32px; margin: 0 auto; }
+        .header { margin-bottom: 18px; }
+        .welcome-row { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 14px; gap: 16px; }
+        .page-title { font-family: var(--font-display); font-size: 32px; font-weight: 600; letter-spacing: -0.021em; line-height: 1.125; }
+        .page-subtitle { font-size: 14px; color: var(--muted); margin-top: 4px; }
+        .role-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 980px; background: rgba(217,119,6,0.15); color: var(--warning); margin-left: 10px; vertical-align: middle; }
+        .disclaimer-banner { background: #fefce8; border: 1px solid #fbbf24; border-radius: 12px; padding: 11px 18px; display: flex; align-items: center; gap: 10px; font-size: 13px; color: #92400e; }
+        .disclaimer-banner svg { width: 18px; height: 18px; color: #d97706; flex-shrink: 0; }
+        :root.dark .disclaimer-banner { background: #3a2e00; border-color: #7a5c00; color: #ffd60a; }
+        .topbar-right { display: flex; align-items: center; gap: 14px; }
+        .theme-toggle { width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; border: 1px solid var(--border); background: var(--surface); }
+        .theme-toggle svg { width: 18px; height: 18px; color: var(--fg); }
+        .user-wrap { position: relative; }
+        .user-cluster { display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 4px 12px 4px 4px; border-radius: 20px; border: 1px solid var(--border); background: var(--surface); }
+        .user-avatar { width: 30px; height: 30px; border-radius: 50%; background: var(--accent); color: #fff; font-weight: 600; font-size: 13px; display: flex; align-items: center; justify-content: center; }
+        .user-name { font-size: 14px; font-weight: 500; }
+        .user-menu { position: absolute; right: 0; top: 46px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 6px; box-shadow: 0 4px 16px rgba(0,0,0,0.12); min-width: 180px; display: none; z-index: 200; }
+        .user-menu.show { display: block; }
+        .user-menu-item { padding: 8px 12px; border-radius: 8px; font-size: 14px; cursor: pointer; }
+        .user-menu-item:hover { background: var(--bg); }
+        .user-menu-divider { height: 1px; background: var(--border); margin: 4px 0; }
+        .user-menu-hint { padding: 8px 12px 4px; font-size: 12px; color: var(--muted); }
+
+        .tabs { display: flex; gap: 4px; background: var(--surface); border-radius: 12px; padding: 4px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); overflow-x: auto; }
+        .tab { padding: 9px 18px; border-radius: 9px; font-size: 14px; font-weight: 500; color: var(--muted); cursor: pointer; white-space: nowrap; border: none; background: none; font-family: inherit; transition: all 0.15s; }
+        .tab:hover { color: var(--fg); }
+        .tab.active { background: var(--accent); color: #fff; font-weight: 600; }
+        .tab-panel { display: none; }
+        .tab-panel.active { display: block; }
+
+        .card { background: var(--surface); border-radius: 18px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); overflow: hidden; margin-bottom: 20px; }
+        .card-header { padding: 20px 24px 0; display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+        .card-title { font-family: var(--font-display); font-size: 19px; font-weight: 600; letter-spacing: -0.021em; }
+        .card-subtitle { font-size: 13px; color: var(--muted); margin-top: 2px; }
+        .card-body { padding: 18px 24px 24px; }
+
+        .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+        .form-group { margin-bottom: 0; }
+        .form-label { display: block; font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 6px; }
+        .form-input, .form-select { width: 100%; height: var(--field-h); padding: 0 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); color: var(--fg); font-family: var(--font-mono); font-size: 13px; outline: none; }
+        .form-input:focus, .form-select:focus { border-color: var(--accent); background: var(--surface); }
+        .form-input[readonly] { opacity: 0.65; }
+        .form-select:disabled { opacity: 0.65; }
+        :root.dark .form-input, :root.dark .form-select { background: #2c2c2e; }
+        .form-span2 { grid-column: span 2; }
+        .auto-note { font-size: 11px; color: var(--accent); font-weight: 400; }
+        .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: var(--field-h); padding: 0 18px; border-radius: 10px; font-size: 13px; font-weight: 600; cursor: pointer; border: none; font-family: inherit; }
+        .btn-primary { background: var(--accent); color: #fff; }
+        .btn-primary:hover { filter: brightness(1.08); }
+        .btn-secondary { background: var(--surface); color: var(--fg); border: 1px solid var(--border); }
+        :root.dark .btn-secondary { background: #2c2c2e; }
+        .form-actions { display: flex; gap: 10px; margin-top: 16px; }
+
+        table.adm-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        .adm-table thead th { text-align: left; padding: 10px 12px; color: var(--muted); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; border-bottom: 1px solid var(--border); }
+        .adm-table tbody td { padding: 11px 12px; border-bottom: 1px solid #f0f0f0; vertical-align: middle; }
+        .adm-table tbody tr:last-child td { border-bottom: none; }
+        :root.dark .adm-table tbody td { border-bottom-color: #2c2c2e; }
+        .mini-avatar { width: 26px; height: 26px; border-radius: 50%; background: var(--accent); color: #fff; font-weight: 600; font-size: 11px; display: inline-flex; align-items: center; justify-content: center; margin-right: 8px; vertical-align: middle; }
+        .role-tag { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 980px; }
+        .role-tag.admin { background: rgba(217,119,6,0.15); color: var(--warning); }
+        .role-tag.user { background: var(--bg); color: var(--muted); }
+        :root.dark .role-tag.user { background: #2c2c2e; }
+        .code-mono { font-family: var(--font-mono); font-size: 12px; color: var(--accent); }
+        .note-input { width: 100%; height: 30px; padding: 0 10px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--fg); font-family: inherit; font-size: 12px; outline: none; }
+        .note-input:hover { border-color: var(--border); background: var(--bg); }
+        .note-input:focus { border-color: var(--accent); background: var(--surface); }
+        :root.dark .note-input:hover, :root.dark .note-input:focus { background: #2c2c2e; }
+        .sched-input { width: 100%; height: 30px; padding: 0 10px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--fg); font-family: var(--font-mono); font-size: 12px; outline: none; }
+        .sched-input:hover { border-color: var(--border); background: var(--bg); }
+        .sched-input:focus { border-color: var(--accent); background: var(--surface); }
+        :root.dark .sched-input:hover, :root.dark .sched-input:focus { background: #2c2c2e; }
+        .toggle { position: relative; width: 40px; height: 24px; border-radius: 12px; background: var(--border); cursor: pointer; flex-shrink: 0; display: inline-block; vertical-align: middle; }
+        .toggle.active { background: var(--success); }
+        .toggle-knob { position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.2); transition: transform 0.15s; }
+        .toggle.active .toggle-knob { transform: translateX(16px); }
+
+        .log-filter { display: flex; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; align-items: center; }
+        .log-filter select { height: 32px; padding: 0 28px 0 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--fg); font-family: inherit; font-size: 12px; outline: none; cursor: pointer; appearance: none; -webkit-appearance: none; }
+        :root.dark .log-filter select { background: #2c2c2e; }
+        .log-count { margin-left: auto; font-size: 12px; color: var(--muted); }
+
+        .health-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+        .src-card { background: var(--bg); border-radius: 14px; padding: 16px; }
+        :root.dark .src-card { background: #2c2c2e; }
+        .src-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+        .src-name { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+        .src-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); }
+        .src-dot.warn { background: var(--warning); }
+        .src-badge { font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 980px; }
+        .src-badge.primary { background: rgba(0,113,227,0.1); color: var(--accent); }
+        .src-badge.backup { background: var(--bg); color: var(--muted); border: 1px solid var(--border); }
+        :root.dark .src-badge.backup { background: #1c1c1e; }
+        .src-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .src-stat-label { font-size: 11px; color: var(--muted); }
+        .src-stat-val { font-size: 14px; font-weight: 600; font-family: var(--font-mono); }
+        .alert-item { display: flex; align-items: flex-start; gap: 10px; padding: 11px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+        .alert-item:last-child { border-bottom: none; }
+        .alert-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--warning); margin-top: 6px; flex-shrink: 0; }
+        .alert-time { color: var(--muted); font-size: 11px; font-family: var(--font-mono); margin-left: auto; flex-shrink: 0; }
+        .status-ok { color: var(--success); font-weight: 600; }
+        .status-fail { color: var(--danger); font-weight: 600; }
+        .date-cell { font-family: var(--font-mono); font-size: 11px; color: var(--muted); white-space: nowrap; }
+
+        @media (max-width: 768px) { .sidebar { display: none; } .main { margin-left: 0; } .form-grid { grid-template-columns: 1fr; } .health-grid { grid-template-columns: 1fr; } }
+    </style>
+</head>
+<body>
+<div class="app">
+    <aside class="sidebar">
+        <div class="sidebar-header"><div class="sidebar-brand">兑奖了吗？</div><div class="sidebar-brand-sub">开奖自动核对与中奖推送</div></div>
+        <nav class="nav">
+            <div class="nav-section"><div class="nav-section-label">核心</div>
+                <a class="nav-item"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>仪表盘</a>
+                <a class="nav-item"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/></svg>我的号码</a>
+            </div>
+            <div class="nav-section"><div class="nav-section-label">数据</div>
+                <a class="nav-item"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>开奖结果</a>
+                <a class="nav-item"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg>中奖记录</a>
+            </div>
+            <div class="nav-section"><div class="nav-section-label">分析</div>
+                <a class="nav-item"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 8v8m-4-5v5m-4-2v2m-2 4h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>我的统计</a>
+                <a class="nav-item"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 17l6-6 4 4 8-8"/><path d="M14 7h7v7"/></svg>开奖走势</a>
+                <a class="nav-item"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>开奖日历</a>
+            </div>
+            <div class="nav-section"><div class="nav-section-label">系统</div>
+                <a class="nav-item"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09a1.65 1.65 0 00-1-1.51 1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09a1.65 1.65 0 001.51-1 1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>设置</a>
+                <a class="nav-item active"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>后台管理</a>
+            </div>
+        </nav>
+        <div class="sidebar-footer">理性购彩 · 量力而行</div>
+    </aside>
+
+    <main class="main">
+        <div class="content">
+            <div class="header">
+                <div class="welcome-row">
+                    <div><h1 class="page-title">后台管理<span class="role-badge"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>管理员</span></h1><div class="page-subtitle">运维视角 · 系统配置、用户、彩种与健康监控</div></div>
+                    <div class="topbar-right">
+                        <div class="theme-toggle" id="themeToggle"><svg id="themeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg></div>
+                        <div class="user-wrap"><div class="user-cluster" id="userCluster"><div class="user-avatar">A</div><div class="user-name">Alfred</div><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></div>
+                            <div class="user-menu" id="userMenu"><div class="user-menu-hint">当前账号 · Alfred（admin）</div><div class="user-menu-divider"></div><div class="user-menu-item">切换账号…</div><div class="user-menu-item">通知设置</div><div class="user-menu-item">导出我的数据</div><div class="user-menu-divider"></div><div class="user-menu-item" style="color:var(--danger)">退出登录</div></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="disclaimer-banner"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v2m0 4h.01m-6.938 4h13.876c1.121 0 2.182-.542 2.817-1.46a3.5 3.5 0 00.496-3.184A9 9 0 0112 3a9 9 0 00-8.241 4.356 3.5 3.5 0 00.496 3.184 3.5 3.5 0 002.817 1.46z"/></svg>本页仅管理员可见。SMTP 凭据、邀请码等敏感配置加密存储，操作均记入审计日志。</div>
+            </div>
+
+            <div class="tabs" id="tabs">
+                <button class="tab active" data-tab="smtp">SMTP 发件</button>
+                <button class="tab" data-tab="users">用户管理</button>
+                <button class="tab" data-tab="lottery">彩种配置</button>
+                <button class="tab" data-tab="health">系统健康</button>
+                <button class="tab" data-tab="logs">推送日志</button>
+            </div>
+
+            <!-- SMTP -->
+            <div class="tab-panel active" id="panel-smtp">
+                <div class="card">
+                    <div class="card-header"><div><div class="card-title">统一发件邮箱</div><div class="card-subtitle">所有用户的邮件推送均由此发出 · 选服务商后服务器/端口/加密自动填充，只需填账号与授权码</div></div><span class="status-ok">● 已配置</span></div>
+                    <div class="card-body">
+                        <div class="form-grid">
+                            <div class="form-group"><label class="form-label" for="smtpProvider">服务商</label>
+                                <select class="form-select" id="smtpProvider" name="smtp_provider" onchange="onProviderChange()"><option value="qq">QQ 邮箱</option><option value="netease">网易 163</option><option value="gmail">Gmail</option><option value="custom">自定义</option></select>
+                            </div>
+                            <div class="form-group"><label class="form-label" for="smtpAccount">账号（发件邮箱）</label><input class="form-input" id="smtpAccount" name="smtp_account" value="lottery-noreply@qq.com"></div>
+                            <div class="form-group form-span2"><label class="form-label" for="smtpPass">授权码 / 密码</label><input class="form-input" id="smtpPass" name="smtp_pass" type="password" value="••••••••••"></div>
+                            <div class="form-group"><label class="form-label" for="smtpHost">服务器 <span class="auto-note" id="hostHint">自动</span></label><input class="form-input" id="smtpHost" name="smtp_host" value="smtp.qq.com" readonly></div>
+                            <div class="form-group"><label class="form-label" for="smtpPort">端口 <span class="auto-note" id="portHint">自动</span></label><input class="form-input" id="smtpPort" name="smtp_port" value="465" readonly></div>
+                            <div class="form-group"><label class="form-label" for="smtpEnc">加密 <span class="auto-note" id="encHint">自动</span></label>
+                                <select class="form-select" id="smtpEnc" name="smtp_enc" disabled><option>SSL/TLS</option><option>STARTTLS</option><option>无</option></select>
+                            </div>
+                            <div class="form-group"><label class="form-label" for="smtpName">发件人名称</label><input class="form-input" id="smtpName" name="smtp_name" value="兑奖了吗"></div>
+                        </div>
+                        <div class="form-actions">
+                            <button class="btn btn-primary" onclick="alert('SMTP 配置已保存（加密存储）')">保存配置</button>
+                            <button class="btn btn-secondary" onclick="alert('测试邮件已发送至 '+document.getElementById('smtpAccount').value)">发送测试邮件</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 用户管理 -->
+            <div class="tab-panel" id="panel-users">
+                <div class="card">
+                    <div class="card-header"><div><div class="card-title">用户</div><div class="card-subtitle">MVP 邀请码注册 · 未来可扩展手机号 / 开放注册（留商业化空间）· 可加备注区分初期用户</div></div><button class="btn btn-secondary" onclick="alert('新邀请码：'+Math.random().toString(36).slice(2,8).toUpperCase())">+ 生成邀请码</button></div>
+                    <div class="card-body" style="padding-top:8px"><table class="adm-table" id="usersTable"></table></div>
+                </div>
+            </div>
+
+            <!-- 彩种配置 -->
+            <div class="tab-panel" id="panel-lottery">
+                <div class="card">
+                    <div class="card-header"><div><div class="card-title">彩种启用</div><div class="card-subtitle">关闭后不拉取开奖、不比对、不推送</div></div></div>
+                    <div class="card-body" style="padding-top:8px"><table class="adm-table" id="lotteryTable"></table></div>
+                </div>
+            </div>
+
+            <!-- 系统健康 -->
+            <div class="tab-panel" id="panel-health">
+                <div class="card">
+                    <div class="card-header"><div><div class="card-title">数据源状态</div><div class="card-subtitle">双源容灾 · 主源失败自动切备 · 号码一致才入库</div></div></div>
+                    <div class="card-body">
+                        <div class="health-grid">
+                            <div class="src-card">
+                                <div class="src-head"><div class="src-name"><span class="src-dot"></span>MXNZP（主）</div><span class="src-badge primary">主源</span></div>
+                                <div class="src-stats"><div><div class="src-stat-label">最近获取</div><div class="src-stat-val">21:00:12</div></div><div><div class="src-stat-label">成功率</div><div class="src-stat-val status-ok">99.2%</div></div><div><div class="src-stat-label">今日获取</div><div class="src-stat-val">14 次</div></div><div><div class="src-stat-label">双源校验通过</div><div class="src-stat-val status-ok">100%</div></div></div>
+                            </div>
+                            <div class="src-card">
+                                <div class="src-head"><div class="src-name"><span class="src-dot warn"></span>聚合数据（备）</div><span class="src-badge backup">备源</span></div>
+                                <div class="src-stats"><div><div class="src-stat-label">最近获取</div><div class="src-stat-val">21:01:03</div></div><div><div class="src-stat-label">成功率</div><div class="src-stat-val" style="color:var(--warning)">98.5%</div></div><div><div class="src-stat-label">今日切换</div><div class="src-stat-val">1 次</div></div><div><div class="src-stat-label">校验不一致</div><div class="src-stat-val">0 次</div></div></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-header"><div><div class="card-title">调度任务</div><div class="card-subtitle">触发条件可配置（直接编辑单元格）· 时区 Asia/Shanghai</div><div><button class="btn btn-primary" onclick="alert('调度配置已保存')">保存调度</button></div></div></div>
+                    <div class="card-body" style="padding-top:8px"><table class="adm-table" id="scheduleTable"></table></div>
+                </div>
+                <div class="card">
+                    <div class="card-header"><div><div class="card-title">最近告警</div></div></div>
+                    <div class="card-body" style="padding-top:8px">
+                        <div class="alert-item"><span class="alert-dot"></span><div>聚合数据（备）请求超时，已自动跳过；主源正常，未影响入库。</div><span class="alert-time">今日 20:58</span></div>
+                        <div class="alert-item"><span class="alert-dot"></span><div>用户 Bob 的飞书 Webhook 返回 403，推送失败 1 次（已重试 3 次仍失败）。</div><span class="alert-time">昨日 07:00</span></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 推送日志 -->
+            <div class="tab-panel" id="panel-logs">
+                <div class="card">
+                    <div class="card-header"><div><div class="card-title">推送日志</div><div class="card-subtitle">含失败原因 · 可按用户 / 渠道 / 状态筛选</div></div></div>
+                    <div class="card-body">
+                        <div class="log-filter">
+                            <select id="logDate"><option value="all">全部日期</option><option value="today">今日</option><option value="7d">近 7 天</option></select>
+                            <select id="logUser"></select>
+                            <select id="logLottery"></select>
+                            <select id="logChannel"><option value="all">全部渠道</option><option value="Bark">Bark</option><option value="飞书">飞书</option><option value="邮箱">邮箱</option></select>
+                            <select id="logType"><option value="all">全部类型</option><option value="大奖即时">大奖即时</option><option value="次日汇总">次日汇总</option></select>
+                            <select id="logStatus"><option value="all">全部状态</option><option value="成功">成功</option><option value="失败">失败</option></select>
+                            <span class="log-count" id="logCount"></span>
+                        </div>
+                        <table class="adm-table" id="logsTable"></table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+</div>
+
+<script>
+(function(){
+    var r=document.documentElement,s=localStorage.getItem("theme");
+    function a(){var h=new Date().getHours();return(h>=18||h<6)?"dark":"light";}
+    function p(t){r.classList.toggle("dark",t==="dark");var i=document.getElementById("themeIcon");if(i)i.innerHTML=t==="dark"?'<circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>':'<path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>';}
+    p(s||a());
+    document.getElementById("themeToggle").addEventListener("click",function(){var n=r.classList.contains("dark")?"light":"dark";localStorage.setItem("theme",n);p(n);});
+    var c=document.getElementById("userCluster"),m=document.getElementById("userMenu");
+    c.addEventListener("click",function(e){e.stopPropagation();m.classList.toggle("show");});
+    document.addEventListener("click",function(){m.classList.remove("show");});
+})();
+
+var PROVIDERS = {qq:{host:"smtp.qq.com",port:"465",enc:"SSL/TLS"}, netease:{host:"smtp.163.com",port:"465",enc:"SSL/TLS"}, gmail:{host:"smtp.gmail.com",port:"587",enc:"STARTTLS"}, custom:null};
+function onProviderChange(){
+    var key=document.getElementById("smtpProvider").value, d=PROVIDERS[key];
+    var host=document.getElementById("smtpHost"), port=document.getElementById("smtpPort"), enc=document.getElementById("smtpEnc");
+    if(d){
+        host.value=d.host; port.value=d.port;
+        [...enc.options].forEach(function(o){o.selected=o.textContent===d.enc;});
+        host.readOnly=port.readOnly=true; enc.disabled=true;
+        document.getElementById("hostHint").textContent="自动"; document.getElementById("portHint").textContent="自动"; document.getElementById("encHint").textContent="自动";
+    } else {
+        host.readOnly=port.readOnly=false; enc.disabled=false;
+        document.getElementById("hostHint").textContent="自定义"; document.getElementById("portHint").textContent="自定义"; document.getElementById("encHint").textContent="自定义";
+    }
+}
+
+var USERS = [
+    {name:"Alfred", role:"admin", code:"—", joined:"2024-12-01", enabled:true, note:"我自己"},
+    {name:"Bob", role:"user", code:"K7X2A9", joined:"2025-01-05", enabled:true, note:"同事"},
+    {name:"Carol", role:"user", code:"P3M8Q4", joined:"2025-01-06", enabled:true, note:"表妹"},
+    {name:"Dave", role:"user", code:"R9N1L6", joined:"2025-01-08", enabled:false, note:"试用·已停"},
+    {name:"Eve", role:"user", code:"T4B6W2", joined:"2025-01-10", enabled:true, note:"邻居"}
+];
+var LOTTERY = [
+    {code:"ssq",name:"双色球",days:"周二/四/日",enabled:true},{code:"dlt",name:"大乐透",days:"周一/三/六",enabled:true},
+    {code:"qlc",name:"七乐彩",days:"周二/四/日",enabled:true},{code:"qxc",name:"七星彩",days:"周一/三/六",enabled:true},
+    {code:"fc3d",name:"福彩3D",days:"每日",enabled:true},{code:"pl3",name:"排列3",days:"每日",enabled:true},
+    {code:"pl5",name:"排列5",days:"每日",enabled:true}
+];
+var SCHEDULE = [
+    {job:"开奖获取", type:"after_draw", value:5, last:"21:00"},
+    {job:"比对", type:"fixed", text:"开奖入库后自动触发", last:"21:00"},
+    {job:"大奖即时推送（路径A）", type:"fixed", text:"命中一二等奖即触发", last:"21:01"},
+    {job:"次日汇总推送（路径B）", type:"daily_time", value:"07:00", last:"07:00"},
+    {job:"兑奖期限检查", type:"daily_time", value:"08:00", last:"08:00"}
+];
+var LOGS = [
+    {date:"2025-01-15",time:"21:01:14",user:"Alfred",lottery:"双色球",channel:"Bark",type:"大奖即时",status:"成功"},
+    {date:"2025-01-15",time:"21:01:14",user:"Alfred",lottery:"双色球",channel:"飞书",type:"大奖即时",status:"成功"},
+    {date:"2025-01-15",time:"21:01:15",user:"Alfred",lottery:"双色球",channel:"邮箱",type:"大奖即时",status:"成功"},
+    {date:"2025-01-15",time:"07:00:03",user:"Bob",lottery:"福彩3D",channel:"Bark",type:"次日汇总",status:"成功"},
+    {date:"2025-01-15",time:"07:00:04",user:"Carol",lottery:"排列3",channel:"飞书",type:"次日汇总",status:"成功"},
+    {date:"2025-01-15",time:"07:00:05",user:"Bob",lottery:"福彩3D",channel:"飞书",type:"次日汇总",status:"失败"},
+    {date:"2025-01-15",time:"07:00:06",user:"Eve",lottery:"双色球",channel:"邮箱",type:"次日汇总",status:"成功"},
+    {date:"2025-01-14",time:"21:00:10",user:"Carol",lottery:"大乐透",channel:"Bark",type:"次日汇总",status:"成功"},
+    {date:"2025-01-14",time:"07:00:02",user:"Bob",lottery:"双色球",channel:"邮箱",type:"次日汇总",status:"成功"},
+    {date:"2025-01-14",time:"07:00:03",user:"Eve",lottery:"福彩3D",channel:"Bark",type:"次日汇总",status:"成功"},
+    {date:"2025-01-13",time:"21:00:08",user:"Alfred",lottery:"双色球",channel:"飞书",type:"次日汇总",status:"成功"},
+    {date:"2025-01-13",time:"07:00:01",user:"Carol",lottery:"排列5",channel:"邮箱",type:"次日汇总",status:"成功"},
+    {date:"2025-01-13",time:"07:00:02",user:"Bob",lottery:"大乐透",channel:"Bark",type:"次日汇总",status:"失败"},
+    {date:"2025-01-12",time:"21:00:11",user:"Eve",lottery:"七星彩",channel:"飞书",type:"次日汇总",status:"成功"},
+    {date:"2025-01-12",time:"07:00:04",user:"Alfred",lottery:"福彩3D",channel:"Bark",type:"次日汇总",status:"成功"},
+    {date:"2025-01-11",time:"07:00:05",user:"Carol",lottery:"双色球",channel:"邮箱",type:"次日汇总",status:"成功"},
+    {date:"2025-01-10",time:"21:00:09",user:"Bob",lottery:"大乐透",channel:"Bark",type:"次日汇总",status:"成功"},
+    {date:"2025-01-10",time:"07:00:03",user:"Eve",lottery:"排列3",channel:"飞书",type:"次日汇总",status:"跳过(未追投)"}
+];
+
+document.getElementById("tabs").addEventListener("click",function(e){
+    var b=e.target.closest(".tab"); if(!b) return;
+    document.querySelectorAll(".tab").forEach(function(t){t.classList.remove("active");});
+    document.querySelectorAll(".tab-panel").forEach(function(p){p.classList.remove("active");});
+    b.classList.add("active");
+    document.getElementById("panel-"+b.getAttribute("data-tab")).classList.add("active");
+});
+
+document.getElementById("usersTable").innerHTML = '<thead><tr><th>用户</th><th>角色</th><th>邀请码</th><th>备注</th><th>注册时间</th><th>启用</th></tr></thead><tbody>'
+    + USERS.map(function(u){ return '<tr><td><span class="mini-avatar">'+u.name.charAt(0)+'</span>'+u.name+'</td><td><span class="role-tag '+u.role+'">'+(u.role==="admin"?"管理员":"用户")+'</span></td><td>'+(u.code==="—"?"<span style='color:var(--muted)'>—</span>":'<span class="code-mono">'+u.code+'</span>')+'</td><td><input class="note-input" name="note_'+u.name+'" value="'+u.note+'"></td><td style="color:var(--muted);font-family:var(--font-mono);font-size:12px">'+u.joined+'</td><td><span class="toggle'+(u.enabled?' active':'')+'" onclick="this.classList.toggle(\'active\')"><span class="toggle-knob"></span></span></td></tr>'; }).join("")
+    + '</tbody>';
+
+document.getElementById("lotteryTable").innerHTML = '<thead><tr><th>彩种</th><th>代码</th><th>开奖日</th><th>数据源</th><th>启用</th></tr></thead><tbody>'
+    + LOTTERY.map(function(l){ return '<tr><td><strong>'+l.name+'</strong></td><td><span class="code-mono">'+l.code+'</span></td><td style="color:var(--muted)">'+l.days+'</td><td style="color:var(--muted)">MXNZP主 + 聚合备</td><td><span class="toggle'+(l.enabled?' active':'')+'" onclick="this.classList.toggle(\'active\')"><span class="toggle-knob"></span></span></td></tr>'; }).join("")
+    + '</tbody>';
+
+document.getElementById("scheduleTable").innerHTML = '<thead><tr><th>任务</th><th>触发条件</th><th>上次运行</th><th>状态</th></tr></thead><tbody>'
+    + SCHEDULE.map(function(s,i){
+        var ctrl;
+        if(s.type==="after_draw") ctrl = '开奖后 <input class="sched-input" style="width:60px;display:inline-block" type="number" name="sched_'+i+'" value="'+s.value+'" min="1" max="60"> 分钟';
+        else if(s.type==="daily_time") ctrl = '每日 <input class="sched-input" style="width:90px;display:inline-block" type="time" name="sched_'+i+'" value="'+s.value+'">';
+        else ctrl = '<span style="color:var(--muted);font-size:12px">'+s.text+'（固定）</span>';
+        return '<tr><td><strong>'+s.job+'</strong></td><td>'+ctrl+'</td><td style="font-family:var(--font-mono)">'+s.last+'</td><td class="status-ok">● 正常</td></tr>';
+    }).join("")
+    + '</tbody>';
+
+document.getElementById("logUser").innerHTML = '<option value="all">全部用户</option>'+USERS.filter(function(u){return u.role==="user"||u.name==="Alfred";}).map(function(u){return '<option value="'+u.name+'">'+u.name+'</option>';}).join("");
+document.getElementById("logLottery").innerHTML = '<option value="all">全部彩种</option>'+LOTTERY.map(function(l){return '<option value="'+l.name+'">'+l.name+'</option>';}).join("");
+var TODAY_LOG="2025-01-15";
+function renderLogs(){
+    var u=document.getElementById("logUser").value, lot=document.getElementById("logLottery").value, ch=document.getElementById("logChannel").value, ty=document.getElementById("logType").value, st=document.getElementById("logStatus").value, dt=document.getElementById("logDate").value;
+    var rows = LOGS.filter(function(l){
+        if(u!=="all"&&l.user!==u) return false;
+        if(lot!=="all"&&l.lottery!==lot) return false;
+        if(ch!=="all"&&l.channel!==ch) return false;
+        if(ty!=="all"&&l.type!==ty) return false;
+        if(st!=="all"&&l.status.indexOf(st)<0) return false;
+        if(dt==="today"&&l.date!==TODAY_LOG) return false;
+        if(dt==="7d"&&l.date<"2025-01-09") return false;
+        return true;
+    });
+    document.getElementById("logCount").textContent = "共 "+rows.length+" 条";
+    document.getElementById("logsTable").innerHTML = '<thead><tr><th>日期</th><th>时间</th><th>用户</th><th>彩种</th><th>渠道</th><th>类型</th><th>状态</th></tr></thead><tbody>'
+        + (rows.length? rows.map(function(l){ return '<tr><td class="date-cell">'+l.date+'</td><td style="font-family:var(--font-mono);font-size:12px">'+l.time+'</td><td>'+l.user+'</td><td>'+l.lottery+'</td><td>'+l.channel+'</td><td style="color:var(--muted)">'+l.type+'</td><td>'+(l.status==="成功"?'<span class="status-ok">成功</span>':(l.status.indexOf("失败")>=0?'<span class="status-fail">'+l.status+'</span>':'<span style="color:var(--muted)">'+l.status+'</span>'))+'</td></tr>'; }).join("") : '<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:30px">无符合条件的记录</td></tr>')
+        + '</tbody>';
+}
+["logUser","logLottery","logChannel","logType","logStatus","logDate"].forEach(function(id){ document.getElementById(id).addEventListener("change",renderLogs); });
+renderLogs();
+</script>
+</body>
+</html>
