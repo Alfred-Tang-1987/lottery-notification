@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>我的统计 — 兑奖了吗？</title>
+    <style>
+        :root {
+            --bg: #f5f5f7; --surface: #ffffff; --fg: #1d1d1f; --muted: #6e6e73;
+            --border: #d2d2d7; --accent: #0071e3; --red-ball: #e11d2a; --blue-ball: #0071e3;
+            --success: #059669; --danger: #dc2626; --warning: #d97706;
+            --c1: #e11d2a; --c2: #0071e3; --c3: #d97706; --c4: #059669; --c5: #8b5cf6; --c6: #14b8a6; --c7: #6e6e73;
+            --font-display: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', system-ui, sans-serif;
+            --font-body: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', system-ui, sans-serif;
+            --font-mono: 'SF Mono', 'JetBrains Mono', ui-monospace, monospace;
+        }
+        :root.dark {
+            --bg: #000000; --surface: #1c1c1e; --fg: #f5f5f7; --muted: #98989d;
+            --border: #38383a; --accent: #0a84ff; --red-ball: #ff453a;
+            --blue-ball: #0a84ff; --success: #30d158; --danger: #ff453a;
+            --c1: #ff453a; --c2: #0a84ff; --c3: #ff9f0a; --c4: #30d158; --c5: #bf5af2; --c6: #40c8e0; --c7: #98989d;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: var(--font-body); background: var(--bg); color: var(--fg); line-height: 1.47059; -webkit-font-smoothing: antialiased; }
+        .app { display: flex; min-height: 100vh; }
+        .sidebar { width: 240px; background: var(--surface); border-right: 1px solid var(--border); position: fixed; top: 0; left: 0; bottom: 0; z-index: 100; display: flex; flex-direction: column; }
+        .sidebar-header { padding: 20px 24px; border-bottom: 1px solid var(--border); }
+        .sidebar-brand { font-family: var(--font-display); font-size: 18px; font-weight: 600; letter-spacing: -0.022em; }
+        .sidebar-brand-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+        .nav { flex: 1; padding: 12px 10px; overflow-y: auto; }
+        .nav-section { margin-bottom: 16px; }
+        .nav-section-label { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; padding: 0 14px; margin-bottom: 6px; }
+        .nav-item { display: flex; align-items: center; gap: 10px; padding: 9px 14px; border-radius: 8px; font-size: 14px; color: var(--fg); cursor: pointer; transition: background 0.15s; text-decoration: none; }
+        .nav-item:hover { background: var(--bg); }
+        .nav-item.active { background: var(--bg); font-weight: 600; }
+        .nav-item.active .nav-icon { color: var(--accent); }
+        .nav-icon { width: 18px; height: 18px; color: var(--muted); flex-shrink: 0; }
+        .sidebar-footer { padding: 12px 24px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); }
+        .main { flex: 1; margin-left: 240px; min-height: 100vh; }
+        .content { max-width: 1080px; padding: 32px; margin: 0 auto; }
+        .header { margin-bottom: 20px; }
+        .welcome-row { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 14px; gap: 16px; }
+        .page-title { font-family: var(--font-display); font-size: 32px; font-weight: 600; letter-spacing: -0.021em; line-height: 1.125; }
+        .page-subtitle { font-size: 14px; color: var(--muted); margin-top: 4px; }
+        .disclaimer-banner { background: #fefce8; border: 1px solid #fbbf24; border-radius: 12px; padding: 11px 18px; display: flex; align-items: center; gap: 10px; font-size: 14px; color: #92400e; }
+        .disclaimer-banner svg { width: 18px; height: 18px; color: #d97706; flex-shrink: 0; }
+        :root.dark .disclaimer-banner { background: #3a2e00; border-color: #7a5c00; color: #ffd60a; }
+        .topbar-right { display: flex; align-items: center; gap: 14px; }
+        .theme-toggle { width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; border: 1px solid var(--border); background: var(--surface); }
+        .theme-toggle svg { width: 18px; height: 18px; color: var(--fg); }
+        .user-wrap { position: relative; }
+        .user-cluster { display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 4px 12px 4px 4px; border-radius: 20px; border: 1px solid var(--border); background: var(--surface); }
+        .user-avatar { width: 30px; height: 30px; border-radius: 50%; background: var(--accent); color: #fff; font-weight: 600; font-size: 13px; display: flex; align-items: center; justify-content: center; }
+        .user-name { font-size: 14px; font-weight: 500; }
+        .user-menu { position: absolute; right: 0; top: 46px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 6px; box-shadow: 0 4px 16px rgba(0,0,0,0.12); min-width: 180px; display: none; z-index: 200; }
+        .user-menu.show { display: block; }
+        .user-menu-item { padding: 8px 12px; border-radius: 8px; font-size: 14px; cursor: pointer; }
+        .user-menu-item:hover { background: var(--bg); }
+        .user-menu-divider { height: 1px; background: var(--border); margin: 4px 0; }
+        .user-menu-hint { padding: 8px 12px 4px; font-size: 12px; color: var(--muted); }
+
+        .filter-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; flex-wrap: wrap; }
+        .filter-group { display: flex; gap: 6px; background: var(--surface); border-radius: 980px; padding: 4px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+        .filter-btn { padding: 6px 16px; border-radius: 980px; border: none; background: none; color: var(--muted); font-size: 13px; cursor: pointer; font-family: inherit; transition: all 0.15s; }
+        .filter-btn:hover { color: var(--fg); }
+        .filter-btn.active { background: var(--accent); color: #fff; font-weight: 600; }
+        .filter-select-wrap { position: relative; }
+        .filter-select { height: 34px; padding: 0 30px 0 14px; border: 1px solid var(--border); border-radius: 980px; background: var(--surface); color: var(--fg); font-family: inherit; font-size: 13px; outline: none; cursor: pointer; appearance: none; -webkit-appearance: none; }
+        :root.dark .filter-select { background: #1c1c1e; }
+        .filter-select-arrow { position: absolute; right: 11px; top: 50%; transform: translateY(-50%); pointer-events: none; color: var(--muted); }
+        .filter-select-arrow svg { width: 14px; height: 14px; }
+        .custom-range { display: none; align-items: center; gap: 8px; }
+        .custom-range.show { display: flex; }
+        .custom-range span { font-size: 12px; color: var(--muted); }
+        .month-input { height: 34px; padding: 0 12px; border: 1px solid var(--border); border-radius: 980px; background: var(--surface); color: var(--fg); font-family: inherit; font-size: 13px; outline: none; }
+        .month-input:focus { border-color: var(--accent); }
+        :root.dark .month-input { background: #1c1c1e; }
+
+        .card { background: var(--surface); border-radius: 18px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); overflow: hidden; margin-bottom: 20px; }
+        .card-header { padding: 20px 24px 0; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+        .card-title { font-family: var(--font-display); font-size: 19px; font-weight: 600; letter-spacing: -0.021em; }
+        .card-subtitle { font-size: 13px; color: var(--muted); margin-top: 2px; }
+        .card-body { padding: 20px 24px 24px; }
+
+        .pnl-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+        .pnl-row.aux { grid-template-columns: 1fr 1.5fr; margin-top: 14px; }
+        .pnl-card { background: var(--bg); border-radius: 14px; padding: 18px 20px; }
+        :root.dark .pnl-card { background: #2c2c2e; }
+        .pnl-label { font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+        .pnl-value { font-family: var(--font-display); font-size: 28px; font-weight: 600; letter-spacing: -0.021em; }
+        .pnl-value.profit { color: var(--success); }
+        .pnl-value.loss { color: var(--danger); }
+        .pnl-sub { font-size: 12px; color: var(--muted); margin-top: 6px; }
+        .welfare-split { display: flex; gap: 18px; margin-top: 4px; }
+        .welfare-item { display: flex; flex-direction: column; }
+        .welfare-tag { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 980px; align-self: flex-start; margin-bottom: 4px; }
+        .welfare-tag.sport { background: rgba(0,113,227,0.1); color: var(--accent); }
+        .welfare-tag.welf { background: rgba(225,29,42,0.1); color: var(--red-ball); }
+        .welfare-amt { font-family: var(--font-display); font-size: 19px; font-weight: 600; }
+
+        /* 双饼图 */
+        .pie-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+        .pie-box { background: var(--bg); border-radius: 14px; padding: 16px; }
+        :root.dark .pie-box { background: #2c2c2e; }
+        .pie-box-title { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; margin-bottom: 12px; text-align: center; }
+        .pie-wrap { display: flex; align-items: center; gap: 14px; }
+        .pie { width: 110px; height: 110px; border-radius: 50%; flex-shrink: 0; position: relative; }
+        .pie-hole { position: absolute; inset: 24px; background: var(--bg); border-radius: 50%; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+        :root.dark .pie-hole { background: #2c2c2e; }
+        .pie-hole-num { font-family: var(--font-display); font-size: 15px; font-weight: 600; }
+        .pie-hole-label { font-size: 9px; color: var(--muted); }
+        .pie-legend { flex: 1; display: flex; flex-direction: column; gap: 5px; font-size: 11px; }
+        .pie-legend-row { display: flex; align-items: center; gap: 6px; }
+        .pie-legend-dot { width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
+        .pie-legend-name { flex: 1; white-space: nowrap; }
+        .pie-legend-val { color: var(--muted); font-family: var(--font-mono); font-size: 10px; }
+
+        /* 折线图 */
+        .line-chart { width: 100%; overflow: visible; }
+        .line-chart .axis { stroke: var(--border); stroke-width: 1; }
+        .line-chart .grid-line { stroke: var(--border); stroke-width: 1; stroke-dasharray: 3 3; opacity: 0.5; }
+        .line-chart .axis-label { fill: var(--muted); font-size: 10px; font-family: var(--font-mono); }
+        .line-chart .x-label { fill: var(--muted); font-size: 10px; font-family: var(--font-mono); }
+        .line-series { fill: none; stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+        .line-dot { cursor: pointer; }
+        .line-dot:hover { r: 5; }
+        .chart-legend { display: flex; gap: 16px; margin-top: 14px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
+        .legend-dot { display: inline-block; width: 14px; height: 3px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+        .note-strip { background: var(--bg); border-radius: 10px; padding: 10px 14px; font-size: 12px; color: var(--muted); margin-top: 14px; display: flex; align-items: center; gap: 8px; }
+        :root.dark .note-strip { background: #2c2c2e; }
+        .note-strip svg { width: 14px; height: 14px; color: var(--accent); flex-shrink: 0; }
+
+        @media (max-width: 860px) { .pnl-row { grid-template-columns: 1fr; } .pnl-row.aux { grid-template-columns: 1fr; } .pie-pair { grid-template-columns: 1fr; } }
+        @media (max-width: 768px) { .sidebar { display: none; } .main { margin-left: 0; } }
+    </style>
+</head>
+<body>
+<div class="app">
+    <aside class="sidebar">
+        <div class="sidebar-header"><div class="sidebar-brand">兑奖了吗？</div><div class="sidebar-brand-sub">开奖自动核对与中奖推送</div></div>
+        <nav class="nav">
+            <div class="nav-section"><div class="nav-section-label">核心</div>
+                <a class="nav-item"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>仪表盘</a>
+                <a class="nav-item"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/></svg>我的号码</a>
+            </div>
+            <div class="nav-section"><div class="nav-section-label">数据</div>
+                <a class="nav-item"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>开奖结果</a>
+                <a class="nav-item"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg>中奖记录</a>
+            </div>
+            <div class="nav-section"><div class="nav-section-label">分析</div>
+                <a class="nav-item active"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 8v8m-4-5v5m-4-2v2m-2 4h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>我的统计</a>
+                <a class="nav-item"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 17l6-6 4 4 8-8"/><path d="M14 7h7v7"/></svg>开奖走势</a>
+                <a class="nav-item"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>开奖日历</a>
+            </div>
+            <div class="nav-section"><div class="nav-section-label">系统</div>
+                <a class="nav-item"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09a1.65 1.65 0 00-1-1.51 1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09a1.65 1.65 0 001.51-1 1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>设置</a>
+                <a class="nav-item"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>后台管理</a>
+            </div>
+        </nav>
+        <div class="sidebar-footer">理性购彩 · 量力而行</div>
+    </aside>
+
+    <main class="main">
+        <div class="content">
+            <div class="header">
+                <div class="welcome-row">
+                    <div><h1 class="page-title">我的统计</h1><div class="page-subtitle">基于你的追投记录回顾盈亏与中奖结构</div></div>
+                    <div class="topbar-right">
+                        <div class="theme-toggle" id="themeToggle"><svg id="themeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg></div>
+                        <div class="user-wrap"><div class="user-cluster" id="userCluster"><div class="user-avatar">A</div><div class="user-name">Alfred</div><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></div>
+                            <div class="user-menu" id="userMenu"><div class="user-menu-hint">当前账号 · Alfred</div><div class="user-menu-divider"></div><div class="user-menu-item">切换账号…</div><div class="user-menu-item">通知设置</div><div class="user-menu-item">导出我的数据</div><div class="user-menu-divider"></div><div class="user-menu-item" style="color:var(--danger)">退出登录</div></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="disclaimer-banner"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v2m0 4h.01m-6.938 4h13.876c1.121 0 2.182-.542 2.817-1.46a3.5 3.5 0 00.496-3.184A9 9 0 0112 3a9 9 0 00-8.241 4.356 3.5 3.5 0 00.496 3.184 3.5 3.5 0 002.817 1.46z"/></svg>以下为历史统计回顾，仅供个人记账参考。彩票每期独立随机，历史结果不代表未来，请理性购彩。</div>
+            </div>
+
+            <div class="filter-bar">
+                <div class="filter-group" id="periodFilter">
+                    <button class="filter-btn active" data-v="month">本月</button>
+                    <button class="filter-btn" data-v="year">本年</button>
+                    <button class="filter-btn" data-v="all">全部</button>
+                    <button class="filter-btn" data-v="custom">自定义</button>
+                </div>
+                <div class="filter-select-wrap">
+                    <select class="filter-select" id="codeFilter"></select>
+                    <span class="filter-select-arrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></span>
+                </div>
+                <div class="custom-range" id="customRange">
+                    <input type="month" class="month-input" id="rangeStart" value="2024-02">
+                    <span>至</span>
+                    <input type="month" class="month-input" id="rangeEnd" value="2025-01">
+                </div>
+            </div>
+
+            <!-- 盈亏总览 -->
+            <div class="card">
+                <div class="card-header"><div><div class="card-title">盈亏总览</div><div class="card-subtitle" id="pnlSubtitle">—</div></div></div>
+                <div class="card-body">
+                    <div class="pnl-row">
+                        <div class="pnl-card"><div class="pnl-label">累计投入</div><div class="pnl-value" id="pnlCost">—</div><div class="pnl-sub" id="pnlCostNote">—</div></div>
+                        <div class="pnl-card"><div class="pnl-label">累计中奖</div><div class="pnl-value profit" id="pnlWin">—</div><div class="pnl-sub" id="pnlWinNote">—</div></div>
+                        <div class="pnl-card"><div class="pnl-label">净盈亏</div><div class="pnl-value" id="pnlNet">—</div><div class="pnl-sub" id="pnlNetNote">—</div></div>
+                    </div>
+                    <div class="pnl-row aux">
+                        <div class="pnl-card"><div class="pnl-label">中奖率</div><div class="pnl-value" id="pnlRate">—</div><div class="pnl-sub" id="pnlRateNote">—</div></div>
+                        <div class="pnl-card">
+                            <div class="pnl-label">公益贡献 <span style="font-size:11px;opacity:.7">（购彩额 36% 公益金基准）</span></div>
+                            <div class="welfare-split">
+                                <div class="welfare-item"><span class="welfare-tag sport">体彩</span><span class="welfare-amt" id="welfareSport">—</span></div>
+                                <div class="welfare-item"><span class="welfare-tag welf">福彩</span><span class="welfare-amt" id="welfareWelf">—</span></div>
+                            </div>
+                            <div class="pnl-sub" id="welfareNote">—</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 中奖等级分布（双饼图） -->
+            <div class="card">
+                <div class="card-header"><div><div class="card-title">中奖等级分布</div><div class="card-subtitle">按所选期间与彩种 · 左为笔数占比，右为金额占比</div></div></div>
+                <div class="card-body">
+                    <div class="pie-pair">
+                        <div class="pie-box">
+                            <div class="pie-box-title">按笔数</div>
+                            <div class="pie-wrap"><div class="pie" id="pieCount"><div class="pie-hole"><div class="pie-hole-num" id="pieCountNum">—</div><div class="pie-hole-label">笔中奖</div></div></div><div class="pie-legend" id="pieCountLegend"></div></div>
+                        </div>
+                        <div class="pie-box">
+                            <div class="pie-box-title">按金额</div>
+                            <div class="pie-wrap"><div class="pie" id="pieAmt"><div class="pie-hole"><div class="pie-hole-num" id="pieAmtNum">—</div><div class="pie-hole-label">中奖总额</div></div></div><div class="pie-legend" id="pieAmtLegend"></div></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 月度趋势（独立，全期，不随筛选） -->
+            <div class="card">
+                <div class="card-header"><div><div class="card-title">月度投入与中奖</div><div class="card-subtitle">近 12 个月全期概览 · 柱顶标注金额（单位：元）</div></div></div>
+                <div class="card-body">
+                    <div id="lineChartWrap"></div>
+                    <div class="chart-legend">
+                        <span><span class="legend-dot" style="background:var(--muted)"></span>投入</span>
+                        <span><span class="legend-dot" style="background:var(--success)"></span>中奖</span>
+                        <span style="margin-left:auto;color:var(--muted)">柱顶为金额 · 悬停查看明细</span>
+                    </div>
+                    <div class="note-strip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg>本图为全期 12 个月概览，不随上方时段/彩种筛选变化，用于观察长期投入产出趋势。</div>
+                </div>
+            </div>
+        </div>
+    </main>
+</div>
+
+<script>
+(function(){
+    var r=document.documentElement,s=localStorage.getItem("theme");
+    function a(){var h=new Date().getHours();return(h>=18||h<6)?"dark":"light";}
+    function p(t){r.classList.toggle("dark",t==="dark");var i=document.getElementById("themeIcon");if(i)i.innerHTML=t==="dark"?'<circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>':'<path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>';}
+    p(s||a());
+    document.getElementById("themeToggle").addEventListener("click",function(){var n=r.classList.contains("dark")?"light":"dark";localStorage.setItem("theme",n);p(n);});
+    var c=document.getElementById("userCluster"),m=document.getElementById("userMenu");
+    c.addEventListener("click",function(e){e.stopPropagation();m.classList.toggle("show");});
+    document.addEventListener("click",function(){m.classList.remove("show");});
+})();
+
+var SPECS = {ssq:"双色球",dlt:"大乐透",qlc:"七乐彩",qxc:"七星彩",fc3d:"福彩3D",pl3:"排列3",pl5:"排列5"};
+var SPORTS = {dlt:1,qxc:1,pl3:1,pl5:1};
+var TIER_COLOR = {"1":"var(--c1)","2":"var(--c2)","3":"var(--c3)","4":"var(--c4)","5":"var(--c5)","6":"var(--c6)","fix":"var(--c7)"};
+var TIER_ORDER = ["一等奖","二等奖","三等奖","四等奖","五等奖","六等奖","直选","单选","组选三","组选六"];
+function tierKey(level){ var m={"一等奖":"1","二等奖":"2","三等奖":"3","四等奖":"4","五等奖":"5","六等奖":"6"}; return m[level]||"fix"; }
+function yuan(c){ return "¥"+(c/100).toLocaleString(); }
+function signedYuan(c){ return (c>=0?"+":"−")+yuan(Math.abs(c)); }
+function fmtPct(x){ return (x>=0?"":"")+x.toFixed(1)+"%"; }
+
+var MONTHLY_COST = [
+    {k:"2024-02",label:"24-02",cost:20000},{k:"2024-03",label:"24-03",cost:24800},
+    {k:"2024-04",label:"24-04",cost:28000},{k:"2024-05",label:"24-05",cost:22000},
+    {k:"2024-06",label:"24-06",cost:26000},{k:"2024-07",label:"24-07",cost:24800},
+    {k:"2024-08",label:"24-08",cost:29000},{k:"2024-09",label:"24-09",cost:21000},
+    {k:"2024-10",label:"24-10",cost:24800},{k:"2024-11",label:"24-11",cost:31000},
+    {k:"2024-12",label:"24-12",cost:24800},{k:"2025-01",label:"25-01",cost:30000}
+];
+var BYCODE_COST = {ssq:124000,dlt:49600,qlc:12400,fc3d:37200,pl3:24800,pl5:24800,qxc:24800};
+var TOTAL_COST = Object.keys(BYCODE_COST).reduce(function(a,c){return a+BYCODE_COST[c];},0);
+var SPORTS_RATIO = Object.keys(BYCODE_COST).filter(function(c){return SPORTS[c];}).reduce(function(a,c){return a+BYCODE_COST[c];},0)/TOTAL_COST;
+var WINS = [
+    {date:"2024-03-14",code:"ssq",level:"六等奖",amount:500},
+    {date:"2024-04-09",code:"fc3d",level:"单选",amount:104000},
+    {date:"2024-06-11",code:"ssq",level:"五等奖",amount:1000},
+    {date:"2024-07-16",code:"ssq",level:"六等奖",amount:500},
+    {date:"2024-08-14",code:"fc3d",level:"组选六",amount:17300},
+    {date:"2024-10-25",code:"qlc",level:"三等奖",amount:300000},
+    {date:"2024-11-17",code:"ssq",level:"二等奖",amount:8534100},
+    {date:"2024-11-20",code:"pl3",level:"直选",amount:104000},
+    {date:"2024-12-10",code:"fc3d",level:"单选",amount:104000},
+    {date:"2024-12-24",code:"ssq",level:"五等奖",amount:1000},
+    {date:"2025-01-11",code:"dlt",level:"三等奖",amount:1000000},
+    {date:"2025-01-12",code:"ssq",level:"四等奖",amount:20000},
+    {date:"2025-01-13",code:"fc3d",level:"单选",amount:104000},
+    {date:"2025-01-13",code:"pl3",level:"组选六",amount:17300},
+    {date:"2025-01-14",code:"ssq",level:"一等奖",amount:500000000},
+    {date:"2025-01-14",code:"ssq",level:"六等奖",amount:500},
+    {date:"2025-01-14",code:"pl5",level:"直选",amount:10000000}
+];
+
+var TODAY = new Date("2025-01-15");
+var fPeriod = "month", fCode = "all";
+
+function monthOf(iso){ return iso.slice(0,7); }
+function codeMatch(code){ return fCode==="all" || code===fCode; }
+function inRange(iso){
+    if(fPeriod==="all") return true;
+    var m = monthOf(iso);
+    if(fPeriod==="month") return m === monthOf(TODAY.toISOString());
+    if(fPeriod==="year") return m.slice(0,4) === String(TODAY.getFullYear());
+    var s = document.getElementById("rangeStart").value, e = document.getElementById("rangeEnd").value;
+    return m >= s && m <= e;
+}
+function activeMonths(){ return MONTHLY_COST.filter(function(x){return inRange(x.k);}); }
+
+function aggregate(){
+    var ms = activeMonths();
+    var months = ms.length || 1;
+    var cost = fCode==="all" ? ms.reduce(function(a,x){return a+x.cost;},0) : Math.round(BYCODE_COST[fCode]*(ms.length/12));
+    var wins = WINS.filter(function(w){return inRange(w.date) && codeMatch(w.code);});
+    var win = wins.reduce(function(a,w){return a+w.amount;},0);
+    var bets = cost/200;
+    var rate = bets>0 ? wins.length/bets*100 : 0;
+    var welfare = cost*0.36;
+    var sportRatio = fCode==="all" ? SPORTS_RATIO : (SPORTS[fCode]?1:0);
+    return {
+        cost:cost, win:win, net:win-cost, months:ms.length, winCount:wins.length, wins:wins,
+        rate:rate, bets:bets,
+        welfareSport: Math.round(welfare*sportRatio), welfareWelf: Math.round(welfare*(1-sportRatio))
+    };
+}
+function periodLabel(){
+    var codeTxt = fCode==="all"?"":(" · "+SPECS[fCode]);
+    if(fPeriod==="all") return "全部时段（近 12 个月）"+codeTxt;
+    if(fPeriod==="year") return "本年（"+TODAY.getFullYear()+"）"+codeTxt;
+    if(fPeriod==="month") return "本月（"+TODAY.getFullYear()+"年"+(TODAY.getMonth()+1)+"月）"+codeTxt;
+    return "自定义（"+document.getElementById("rangeStart").value+" 至 "+document.getElementById("rangeEnd").value+"）"+codeTxt;
+}
+
+function renderPnl(){
+    var d = aggregate();
+    document.getElementById("pnlSubtitle").textContent = periodLabel();
+    document.getElementById("pnlCost").textContent = yuan(d.cost);
+    document.getElementById("pnlWin").textContent = yuan(d.win);
+    var netEl=document.getElementById("pnlNet");
+    netEl.textContent = signedYuan(d.net); netEl.className = "pnl-value "+(d.net>=0?"profit":"loss");
+    var roi = d.cost>0?Math.round(d.net/d.cost*100):0;
+    document.getElementById("pnlCostNote").textContent = d.months+" 个月 · 月均 "+yuan(d.months?Math.round(d.cost/d.months):0);
+    document.getElementById("pnlWinNote").textContent = d.winCount+" 笔中奖";
+    document.getElementById("pnlNetNote").textContent = "收益率 "+(roi>=0?"+":"")+roi+"%";
+    document.getElementById("pnlRate").textContent = fmtPct(d.rate);
+    document.getElementById("pnlRateNote").textContent = d.winCount+" 笔 ÷ "+d.bets+" 注";
+    document.getElementById("welfareSport").textContent = yuan(d.welfareSport);
+    document.getElementById("welfareWelf").textContent = yuan(d.welfareWelf);
+    document.getElementById("welfareNote").textContent = "累计公益 "+yuan(d.welfareSport+d.welfareWelf)+" · 体彩助体育民生，福彩助扶老助残";
+}
+
+function buildPie(elId, legendId, numId, numLabel, mode){
+    var d = aggregate();
+    var bag = {};
+    d.wins.forEach(function(w){ if(!bag[w.level]) bag[w.level]={c:0,a:0}; bag[w.level].c++; bag[w.level].a+=w.amount; });
+    var rows = Object.keys(bag).sort(function(a,b){ var ia=TIER_ORDER.indexOf(a),ib=TIER_ORDER.indexOf(b); return (ia<0?99:ia)-(ib<0?99:ib); });
+    var total = mode==="count" ? d.winCount : d.win;
+    var pieEl=document.getElementById(elId), legendEl=document.getElementById(legendId), numEl=document.getElementById(numId);
+    if(total===0){ pieEl.style.background="var(--bg)"; numEl.textContent="0"; legendEl.innerHTML='<div style="color:var(--muted);font-size:11px">所选范围无中奖</div>'; return; }
+    var acc=0, stops=[];
+    rows.forEach(function(lv){
+        var v = mode==="count"?bag[lv].c:bag[lv].a;
+        var start=acc/total*360, end=(acc+v)/total*360;
+        stops.push(TIER_COLOR[tierKey(lv)]+" "+start.toFixed(2)+"deg "+end.toFixed(2)+"deg");
+        acc+=v;
+    });
+    pieEl.style.background = "conic-gradient(from 0deg, "+stops.join(", ")+")";
+    numEl.textContent = mode==="count" ? total : yuan(total);
+    legendEl.innerHTML = rows.map(function(lv){
+        var v = mode==="count"?bag[lv].c:bag[lv].a;
+        var pct=(v/total*100).toFixed(1);
+        var tail = mode==="count" ? (yuan(bag[lv].a)) : (bag[lv].c+"笔");
+        return '<div class="pie-legend-row"><span class="pie-legend-dot" style="background:'+TIER_COLOR[tierKey(lv)]+'"></span><span class="pie-legend-name">'+lv+'</span><span class="pie-legend-val">'+(mode==="count"?v+"笔 · ":yuan(v)+" · ")+pct+'%</span></div>';
+    }).join("");
+}
+function renderPies(){
+    buildPie("pieCount","pieCountLegend","pieCountNum","","count");
+    buildPie("pieAmt","pieAmtLegend","pieAmtNum","","amt");
+}
+
+function renderMonthBars(){
+    var data = MONTHLY_COST.map(function(m){
+        var mw = WINS.filter(function(w){return monthOf(w.date)===m.k;}).reduce(function(a,w){return a+w.amount;},0);
+        return {label:m.label, cost:m.cost, win:mw};
+    });
+    function shortAmt(c){ var y=c/100; if(y>=100000000) return (y/100000000).toFixed(1)+"亿"; if(y>=10000) return (y/10000).toFixed(y>=100000?0:1)+"万"; return Math.round(y).toLocaleString(); }
+    var W=760,H=250,padL=10,padR=10,padT=18,padB=26, plotW=W-padL-padR, plotH=H-padT-padB;
+    var maxWin = Math.max.apply(null, data.map(function(d){return d.win;}).concat([1]));
+    var costs = data.map(function(d){return d.cost;}), minCost=Math.min.apply(null,costs), maxCost=Math.max.apply(null,costs);
+    var colW = plotW/data.length, barW = Math.max(6,(colW-8)/2);
+    function winBarH(v){ return Math.max(2, v/maxWin*plotH); }
+    function costBarH(c){ var r=maxCost>minCost?(c-minCost)/(maxCost-minCost):0.5; return 5+r*12; } // 投入柱按自身波动映射到 5-17px，避免被大奖压扁
+    var baseY = padT+plotH, bars="";
+    data.forEach(function(d,i){
+        var cx = padL + i*colW + colW/2;
+        var costX = cx - barW - 1, winX = cx + 1;
+        var costH=costBarH(d.cost), costY=baseY-costH;
+        bars += '<rect x="'+costX.toFixed(1)+'" y="'+costY.toFixed(1)+'" width="'+barW.toFixed(1)+'" height="'+costH.toFixed(1)+'" rx="2" fill="var(--muted)" fill-opacity="0.55"><title>'+d.label+' 投入 '+yuan(d.cost)+'</title></rect>';
+        bars += '<text x="'+(costX+barW/2).toFixed(1)+'" y="'+(costY-4).toFixed(1)+'" text-anchor="middle" fill="var(--muted)" font-size="9" font-family="var(--font-mono)">'+shortAmt(d.cost)+'</text>';
+        if(d.win){
+            var wH=winBarH(d.win), winY=baseY-wH;
+            bars += '<rect x="'+winX.toFixed(1)+'" y="'+winY.toFixed(1)+'" width="'+barW.toFixed(1)+'" height="'+wH.toFixed(1)+'" rx="2" fill="var(--success)"><title>'+d.label+' 中奖 '+yuan(d.win)+'</title></rect>';
+            bars += '<text x="'+(winX+barW/2).toFixed(1)+'" y="'+(winY-4).toFixed(1)+'" text-anchor="middle" fill="var(--success)" font-size="9" font-family="var(--font-mono)">'+shortAmt(d.win)+'</text>';
+        }
+        bars += '<text x="'+cx.toFixed(1)+'" y="'+(H-8)+'" text-anchor="middle" fill="var(--muted)" font-size="10" font-family="var(--font-mono)">'+d.label+'</text>';
+    });
+    document.getElementById("lineChartWrap").innerHTML = '<svg class="line-chart" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="xMidYMid meet"><line class="axis" x1="'+padL+'" y1="'+baseY+'" x2="'+(W-padR)+'" y2="'+baseY+'"/>'+bars+'</svg>';
+}
+
+function renderAll(){ renderPnl(); renderPies(); }
+
+document.getElementById("periodFilter").addEventListener("click",function(e){
+    var b=e.target.closest(".filter-btn"); if(!b) return;
+    this.querySelectorAll(".filter-btn").forEach(function(x){x.classList.remove("active");});
+    b.classList.add("active"); fPeriod=b.getAttribute("data-v");
+    document.getElementById("customRange").classList.toggle("show", fPeriod==="custom");
+    renderAll();
+});
+document.getElementById("codeFilter").innerHTML = '<option value="all">全部彩种</option>'+Object.keys(SPECS).map(function(c){return '<option value="'+c+'">'+SPECS[c]+'</option>';}).join("");
+document.getElementById("codeFilter").addEventListener("change",function(){ fCode=this.value; renderAll(); });
+document.getElementById("rangeStart").addEventListener("change",renderAll);
+document.getElementById("rangeEnd").addEventListener("change",renderAll);
+
+renderAll();
+renderMonthBars();
+</script>
+</body>
+</html>

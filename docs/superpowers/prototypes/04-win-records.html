@@ -79,6 +79,12 @@
         .filter-select-arrow { position: absolute; right: 11px; top: 50%; transform: translateY(-50%); pointer-events: none; color: var(--muted); }
         .filter-select-arrow svg { width: 14px; height: 14px; }
         .filter-count { font-size: 13px; color: var(--muted); margin-left: auto; }
+        .custom-range { display: none; align-items: center; gap: 8px; }
+        .custom-range.show { display: flex; }
+        .custom-range span { font-size: 12px; color: var(--muted); }
+        .month-input { height: 34px; padding: 0 12px; border: 1px solid var(--border); border-radius: 980px; background: var(--surface); color: var(--fg); font-family: inherit; font-size: 13px; outline: none; }
+        .month-input:focus { border-color: var(--accent); }
+        :root.dark .month-input { background: #1c1c1e; }
 
         .card { background: var(--surface); border-radius: 18px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); overflow: hidden; margin-bottom: 22px; }
         .card-header { padding: 20px 24px 0; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
@@ -188,9 +194,15 @@
             <!-- 全局筛选条（作用于下方统计与列表） -->
             <div class="filter-bar">
                 <div class="filter-group" id="periodFilter">
-                    <button class="filter-btn active" data-v="all">全部</button>
-                    <button class="filter-btn" data-v="year">本年</button>
                     <button class="filter-btn" data-v="month">本月</button>
+                    <button class="filter-btn" data-v="year">本年</button>
+                    <button class="filter-btn active" data-v="all">全部</button>
+                    <button class="filter-btn" data-v="custom">自定义</button>
+                </div>
+                <div class="custom-range" id="customRange">
+                    <input type="month" class="month-input" id="rangeStart" value="2024-10">
+                    <span>至</span>
+                    <input type="month" class="month-input" id="rangeEnd" value="2025-01">
                 </div>
                 <div class="filter-select-wrap">
                     <select class="filter-select" id="codeFilter"><option value="all">全部彩种</option></select>
@@ -268,9 +280,11 @@ var fPeriod="all", fCode="all", fStatus="all";
 
 function inPeriod(date,period){
     if(period==="all") return true;
-    var d=new Date(date);
-    if(period==="month") return d.getFullYear()===TODAY.getFullYear() && d.getMonth()===TODAY.getMonth();
-    return d.getFullYear()===TODAY.getFullYear();
+    var m=date.slice(0,7);
+    if(period==="month") return m===TODAY.toISOString().slice(0,7);
+    if(period==="year") return m.slice(0,4)===String(TODAY.getFullYear());
+    var s=document.getElementById("rangeStart").value,e=document.getElementById("rangeEnd").value;
+    return m>=s && m<=e;
 }
 function filtered(){
     return RECORDS.filter(function(r){
@@ -360,7 +374,9 @@ function bindGroup(id, setter){
         b.classList.add("active"); setter(b.getAttribute("data-v")); renderStats(); renderList();
     });
 }
-bindGroup("periodFilter", function(v){ fPeriod=v; });
+bindGroup("periodFilter", function(v){ fPeriod=v; document.getElementById("customRange").classList.toggle("show",v==="custom"); });
+document.getElementById("rangeStart").addEventListener("change",function(){renderStats();renderList();});
+document.getElementById("rangeEnd").addEventListener("change",function(){renderStats();renderList();});
 bindGroup("statusFilter", function(v){ fStatus=v; });
 document.getElementById("codeFilter").addEventListener("change",function(){ fCode=this.value; renderStats(); renderList(); });
 
