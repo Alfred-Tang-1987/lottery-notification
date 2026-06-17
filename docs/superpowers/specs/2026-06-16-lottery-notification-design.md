@@ -200,7 +200,7 @@ PrizeTier(lottery="ssq", tier=5, condition="front_hit==4 and back_hit==0",
 | `draw_results` | id, lottery_code, draw_no(期号), draw_date, numbers_json, source, fetched_at, verified | 唯一约束 (lottery_code+draw_no) 保证幂等 |
 | `comparisons` | id, **user_id**, draw_result_id, ticket_id, hits_json, prize_tier, prize_amount, is_win | 比对结果（冗余 user_id 便于隔离查询） |
 | `prize_claims` | id, comparison_id, status(pending/claimed/expired), deadline, claimed_at | 兑奖台账 |
-| `notification_channels` | id, **user_id**, type(bark/feishu/dingtalk/wecom), config_json, enabled | 每用户渠道配置 |
+| `notification_channels` | id, **user_id**, type(bark/feishu/email), config_json, enabled | 每用户渠道配置（Bark/飞书存 webhook/key；邮箱只存收件地址，发件 SMTP 系统统一配置） |
 | `notification_rules` | id, **user_id**, lottery_code, strategy(every/win_only), timing | 每用户×每彩种推送策略 |
 | `notification_logs` | id, **user_id**, type, payload, status, sent_at, error | 推送日志 |
 | `api_source_health` | source, last_success_at, status, error | 数据源健康面板数据源 |
@@ -263,10 +263,10 @@ PrizeTier(lottery="ssq", tier=5, condition="front_hit==4 and back_hit==0",
 |---|---|
 | **Bark** | iOS 原生推送，配置最简（key + URL），契合 iOS 优先 |
 | 飞书 | 群机器人 webhook（复用用户现有飞书基础设施） |
-| 钉钉 / 企微 | 群机器人 webhook |
+| **邮箱** | 系统统一发件：用户只填**收件地址**，发件 SMTP 由运维方在后台配置（家庭 NAS 小圈子场景，受邀用户免折腾 SMTP）；邮件从统一发件地址发出 |
 | 未来 iOS App | APNs app 内推送（后续项目） |
 
-每用户在 `notification_channels` 配置自己的渠道；可配多个，无主备关系。
+每用户在 `notification_channels` 配置自己的渠道（Bark/飞书存 webhook/key，邮箱只存收件地址）；可配多个，无主备关系。渠道配置（webhook/key/收件地址）**加密存储**，不明文落库或入日志。
 
 ### 8.2 策略与时机
 - **推送范围**：只推送该用户追投（号码池里有启用注）的彩种，未追投的彩种不推送。
@@ -276,8 +276,13 @@ PrizeTier(lottery="ssq", tier=5, condition="front_hit==4 and back_hit==0",
   - 路径 B：次日 07:00（可配）→ 按策略推详情汇总（仅追投彩种）。
 - **周/月报**：定期盈亏汇总推送（仅追投彩种）。
 
-### 8.3 推送内容
-期号、彩种、开奖号码（红/蓝色彩点缀）、我的号码、命中情况（红/蓝球数）、奖级、固定档奖金（浮动标"待官方派奖"）、数据来源 + 获取时间、"以官方开奖为准"声明、"理性购彩"提示。
+### 8.3 推送内容与模板
+两路径各有模板（在设置页「推送模板预览」确认）：
+
+- **路径 A 大奖即时简讯**：标题 `🎉 恭喜中奖！{彩种} {奖级}`，正文「第 {期号} 期开奖，你追投的号码命中 {奖级}，奖金 {金额}。请在 60 天内兑奖；单注 ≥1 万元将代扣 20% 偶然所得税。」
+- **路径 B 次日汇总**：标题 `兑奖了吗 · {日期} 核对汇总`，正文「本期共核对 {N} 个追投彩种，中奖 {M} 笔：{逐笔 彩种 奖级 金额}；其余 {X} 个未中奖。点击查看明细。」
+
+通用要素：期号、彩种、开奖号码（红/蓝色彩点缀）、我的号码、命中情况（红/蓝球数）、奖级、固定档奖金（浮动标"待官方派奖"）、数据来源 + 获取时间、"以官方开奖为准"声明、"理性购彩"提示。
 
 ---
 
@@ -347,7 +352,7 @@ PrizeTier(lottery="ssq", tier=5, condition="front_hit==4 and back_hit==0",
 | 6 | 我的统计 | 全局筛选（时段本月/本年/全部/自定义·彩种，默认本月）、盈亏总览（投入/中奖/净盈亏/中奖率/公益贡献体彩福彩·随筛选联动）、中奖等级双饼图（笔数+金额占比）、月度投入与中奖双柱图（柱顶标注金额·投入按自身波动·独立全期不随筛选）、公益金按购彩额36%、金额用分存储 |
 | 7 | 开奖走势 | 历史号码连线 + 近 N 期频次（合规版，公开版默认关） |
 | 8 | 开奖日程 | 各彩种开奖时间表、开奖信息提醒设置 |
-| 9 | 设置 | 推送渠道配置、每彩种推送策略、推送时机 |
+| 9 | 设置 | 推送渠道（Bark/飞书/邮箱·邮箱统一发件用户只填收件·渠道加密存储）、每彩种推送策略（每期/仅中奖）、推送时机（总开关+大奖即时简讯+次日汇总时间+免打扰）、推送模板预览（大奖即时/次日汇总文案可确认）、偏好（外观浅/自动/深联动·新号码默认启用） |
 | 10 | 后台管理 | 用户管理、彩种配置、系统健康面板、推送日志 |
 
 ### 12.3 移动端 / iOS 优先
