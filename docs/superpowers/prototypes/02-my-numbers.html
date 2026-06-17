@@ -198,7 +198,7 @@
                 <!-- 右：添加号码（点击选号）+ 批量导入 -->
                 <div class="side">
                     <div class="card">
-                        <div class="card-header"><div><div class="card-title">添加号码</div><div class="card-subtitle">点击号码选号，按玩法约束</div></div></div>
+                        <div class="card-header"><div><div class="card-title">添加号码</div><div class="card-subtitle">点击号码选号，按玩法约束</div></div><button class="btn btn-secondary" onclick="quickPickFill()" style="height:32px;padding:0 14px;font-size:12px">🎲 机选</button></div>
                         <div class="card-body">
                             <div class="form-row">
                                 <div class="form-group"><label class="form-label">彩种</label><select class="form-select" id="lotteryType" onchange="onLotteryChange()"></select></div>
@@ -272,6 +272,22 @@ function fillLottery(s){ s.innerHTML=Object.keys(SPECS).map(function(c){return '
 function fillPlays(s,code){ s.innerHTML=SPECS[code].plays.map(function(p){return '<option value="'+p+'">'+PLAY_NAMES[p]+'</option>';}).join(""); }
 
 function resetSel(){ sel={front:[],back:[],dan:[],tuo:[],digits:[]}; pickMode="normal"; }
+function pickRandom(min,max,need){ var pool=[];for(var n=min;n<=max;n++)pool.push(n);var r=[];for(var k=0;k<need;k++)r.push(pool.splice(Math.floor(Math.random()*pool.length),1)[0]);return r.sort(function(a,b){return a-b;}); }
+function quickPickFill(){
+    resetSel();
+    var code=document.getElementById("lotteryType").value, s=SPECS[code], play=document.getElementById("playType").value;
+    if(s.positional){
+        if(play==="zuxuan3"||play==="zuxuan6"){ sel.front=pickRandom(0,9,3); }
+        else { for(var i=0;i<s.front[2];i++) sel.digits[i]=[Math.floor(Math.random()*10)]; }
+    } else if(play==="dantuo"){
+        sel.dan=pickRandom(s.front[0],s.front[1],1); sel.tuo=pickRandom(s.front[0],s.front[1],s.front[2]);
+        if(s.back) sel.back=pickRandom(s.back[0],s.back[1],s.back[2]);
+    } else {
+        sel.front=pickRandom(s.front[0],s.front[1],s.front[2]);
+        if(s.back) sel.back=pickRandom(s.back[0],s.back[1],s.back[2]);
+    }
+    renderPick();
+}
 
 function onLotteryChange(){
     var code=document.getElementById("lotteryType").value, s=SPECS[code];
