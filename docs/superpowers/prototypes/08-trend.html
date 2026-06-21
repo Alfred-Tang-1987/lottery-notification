@@ -275,9 +275,9 @@ var SPECS = {
     dlt:{name:"大乐透",front:[1,35],back:[1,12],positional:false,fLabel:"前区",bLabel:"后区",frontPick:5,backPick:2,plays:["single","fushi","dantuo"],dantuoFrontMax:4},
     qlc:{name:"七乐彩",front:[1,30],back:[1,30],positional:false,fLabel:"基本号码",bLabel:"特别号码",frontPick:7,backPick:1,plays:["single","fushi","dantuo"],dantuoFrontMax:6},
     qxc:{name:"七星彩",front:[0,9],back:[0,14],positional:"mix",fLabel:"前区（6 位 0-9）",bLabel:"后区（0-14）",frontPick:6,backPick:1,plays:["single","fushi"]},
-    fc3d:{name:"福彩3D",front:[0,9],back:null,positional:true,fLabel:"号码",bLabel:null,frontPick:3,plays:["danxuan","zuxuan3","zuxuan6"]},
+    fc3d:{name:"福彩3D",front:[0,9],back:null,positional:true,fLabel:"号码",bLabel:null,frontPick:3,plays:["danxuan","zuxuan3","zuxuan6"]}, // ⚠️ 官方共12种玩法，prototype取主要3种，实现补全
     pl3:{name:"排列3",front:[0,9],back:null,positional:true,fLabel:"号码",bLabel:null,frontPick:3,plays:["zhixuan","zuxuan3","zuxuan6"]},
-    pl5:{name:"排列5",front:[0,9],back:null,positional:true,fLabel:"号码",bLabel:null,frontPick:5,plays:["zhixuan"]}
+    pl5:{name:"排列5",front:[0,9],back:null,positional:true,fLabel:"号码",bLabel:null,frontPick:5,plays:["zhixuan"]} // ⚠️ 直选含定位/组合复式，prototype简化为单一，实现补全
 };
 var PLAY_NAMES = {single:"单式",fushi:"复式",dantuo:"胆拖",danxuan:"单选",zhixuan:"直选",zuxuan3:"组选三",zuxuan6:"组选六"};
 function rnd(seed){ var x=Math.sin(seed*127.3+0.5)*43758.5453; return x-Math.floor(x); }
