@@ -840,14 +840,13 @@
                     </div>
                 </div>
 
-                <!-- 开奖日历（按启用彩种过滤 + 开奖前预告 + iCal） -->
+                <!-- 开奖日历（按启用彩种过滤 + 开奖前预告） -->
                 <div class="card">
                     <div class="card-header">
                         <div>
                             <div class="card-title">开奖日历</div>
                             <div class="card-subtitle">仅显示你追投的彩种 · 开奖前预告提醒</div>
                         </div>
-                        <button class="claim-delete" style="background:var(--surface);color:var(--accent);border-color:var(--border)" onclick="exportICal()">📅 订阅日程</button>
                     </div>
                     <div class="card-body">
                         <div id="remindStrip" style="background:linear-gradient(135deg,rgba(0,113,227,0.1),rgba(225,29,42,0.06));border:1px solid rgba(0,113,227,0.2);border-radius:12px;padding:12px 16px;margin-bottom:14px;font-size:13px;display:none"></div>
@@ -1091,7 +1090,7 @@
         if(todayCodes.length){ remind.style.display="block"; remind.innerHTML='🔔 <strong>今晚开奖</strong>：'+todayCodes.map(function(c){return LOTTERY_NAMES[c];}).join("、")+'（中性信息提醒，不构成购彩建议）'; }
         else { remind.style.display="none"; }
     }
-    function exportICal(){ alert("iCal 订阅：将生成 .ics（含你追投彩种的开奖日程），导入日历 App 即可提醒。\nprototype 演示，实现阶段生成真实 ics。"); }
+    function exportICal(){ /* iCal 订阅已取消 */ }
     function findNearby(){
         var codes=getEnabledCodes(), types={}; codes.forEach(function(c){ types[LOTTERY_TYPE[c]]=1; });
         var wantW=!!types.welfare, wantS=!!types.sport; if(!wantW&&!wantS){wantW=wantS=true;}
