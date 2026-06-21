@@ -931,7 +931,56 @@ app.include_router(admin.router)
 app.include_router(tickets.router)
 ```
 
-> 注：`settings.cors_origins` 需在 config.py 加（list[str]，env `CORS_ORIGINS` 逗号分隔，默认 `["http://localhost:5173"]`）。`tickets.router` 是号码 CRUD API（基于 Plan 03 TicketRepo，IDOR-safe），本 plan 不展开代码（复用 TicketRepo + current_user）。
+> 注：`settings.cors_origins` 已在 Plan 01 config.py 定义（跨 plan 修订补）。`tickets.router`（号码 CRUD）与 `claims.router`（兑奖领取，**跨 plan 功能缺口修复**）骨架如下——复用 Plan 03 TicketRepo（IDOR-safe）+ current_user：
+
+```python
+# app/api/tickets.py（号码 CRUD，IDOR via TicketRepo）
+from fastapi import APIRouter, Depends
+from app.api.deps import current_user, get_session_dep
+from app.infrastructure.repositories import TicketRepo
+from app.models import User
+router = APIRouter(prefix="/tickets", tags=["tickets"])
+
+@router.post("", status_code=201)
+def create_ticket(body: dict, user: User = Depends(current_user),
+                  session=Depends(get_session_dep)):
+    t = TicketRepo(session, user_id=user.id).create(**body)
+    return {"id": t.id}
+
+@router.get("")
+def list_tickets(user: User = Depends(current_user), session=Depends(get_session_dep)):
+    return [{"id": t.id, "lottery_code": t.lottery_code, "play_type": t.play_type}
+            for t in TicketRepo(session, user.id).list_all()]
+
+@router.delete("/{tid}")
+def delete_ticket(tid: int, user: User = Depends(current_user), session=Depends(get_session_dep)):
+    return {"deleted": TicketRepo(session, user.id).delete(tid)}
+```
+
+```python
+# app/api/claims.py（兑奖领取：pending → claimed，IDOR 经 comparison→user）
+from datetime import datetime
+from fastapi import APIRouter, Depends, HTTPException
+from sqlmodel import Session
+from app.api.deps import current_user, get_session_dep
+from app.models import User, PrizeClaim, Comparison
+router = APIRouter(prefix="/claims", tags=["claims"])
+
+@router.post("/{claim_id}/claim")
+def mark_claimed(claim_id: int, user: User = Depends(current_user),
+                 session: Session = Depends(get_session_dep)):
+    claim = session.get(PrizeClaim, claim_id)
+    if claim is None:
+        raise HTTPException(404, "兑奖记录不存在")
+    cmp = session.get(Comparison, claim.comparison_id)
+    if cmp is None or cmp.user_id != user.id:
+        raise HTTPException(403, "无权操作")  # IDOR 防护
+    claim.status = "claimed"; claim.claimed_at = datetime.utcnow()
+    session.commit()
+    return {"id": claim_id, "status": "claimed"}
+```
+
+main.py 注册补 `from app.api import auth, channels, admin, tickets, claims` + `app.include_router(claims.router)`。
 
 - [ ] **Step 2: config.py 加 cors_origins**
 

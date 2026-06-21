@@ -270,6 +270,7 @@ class Settings(BaseSettings):
 
     database_url: str = "sqlite:///./data/lottery.db"
     tz: str = "Asia/Shanghai"
+    cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])  # Plan 05 CORS 用
 
     @property
     def crypto_keys(self) -> dict[int, str]:
