@@ -250,9 +250,9 @@ var SPECS = {
     dlt:{name:"大乐透", front:[1,35,5], back:[1,12,2], frontBall:"red", frontLabel:"前区", backLabel:"后区", plays:["single","fushi","dantuo"], append:true, dantuoFrontMax:4},
     qlc:{name:"七乐彩", front:[1,30,7], back:[1,30,1], frontBall:"red", frontLabel:"基本号码", backLabel:"特别号码", plays:["single","fushi","dantuo"], append:false, dantuoFrontMax:6},
     qxc:{name:"七星彩", front:[0,9,6], back:[0,14,1], frontBall:"num", frontLabel:"前区（6 位 0-9）", backLabel:"后区（0-14）", plays:["single","fushi"], append:false},
-    fc3d:{name:"福彩3D", front:[0,9,3], back:null, frontBall:"num", frontLabel:"号码（3 位）", backLabel:null, plays:["danxuan","zuxuan3","zuxuan6"], append:false, positional:true},
+    fc3d:{name:"福彩3D", front:[0,9,3], back:null, frontBall:"num", frontLabel:"号码（3 位）", backLabel:null, plays:["danxuan","zuxuan3","zuxuan6"], append:false, positional:true}, // ⚠️ 官方共12种玩法，prototype取主要3种，其余(1D/2D/通选/和数/包选/猜大小/猜三同/拖拉机/猜奇偶)实现补全
     pl3:{name:"排列3", front:[0,9,3], back:null, frontBall:"num", frontLabel:"号码（3 位）", backLabel:null, plays:["zhixuan","zuxuan3","zuxuan6"], append:false, positional:true},
-    pl5:{name:"排列5", front:[0,9,5], back:null, frontBall:"num", frontLabel:"号码（5 位）", backLabel:null, plays:["zhixuan"], append:false, positional:true}
+    pl5:{name:"排列5", front:[0,9,5], back:null, frontBall:"num", frontLabel:"号码（5 位）", backLabel:null, plays:["zhixuan"], append:false, positional:true} // ⚠️ 直选含定位复式/组合复式，prototype简化为单一，实现补全
 };
 var PLAY_NAMES = {single:"单式", fushi:"复式", dantuo:"胆拖", danxuan:"单选", zhixuan:"直选", zuxuan3:"组选三", zuxuan6:"组选六"};
 function escapeHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
