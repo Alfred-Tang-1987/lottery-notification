@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目状态
 
-**设计/规划阶段**：spec、6 个分阶段 plan、8/10 页 prototype 已完成（见 `docs/`；剩登录、开奖日程）；**业务代码尚未实现**。开始编码前先读 spec 和对应 plan。
+**设计/规划阶段**：spec + **9 页 prototype 全部完成**（见 `docs/`）；**业务代码尚未实现**。开始编码前先读 spec。原 6 个分阶段 plan 已删除（内容过时，实现时基于最新 spec 重新 writing-plans）。
 
 ## 项目是什么
 
@@ -94,8 +94,7 @@ docker compose up -d --build
 
 - `docs/superpowers/specs/2026-06-16-lottery-notification-design.md` — **设计 spec（15 节，需求/架构/数据/合规的单一事实源）**
 - `docs/reference/lottery-rules.md` — **7 大彩种规则权威参考**（号码/玩法/称呼/奖级/倍投/追加 + 来源）
-- `docs/superpowers/plans/2026-06-16-phase{1-6}-*.md` — **6 个分阶段实施 plan**：1 领域层 → 2 核心闭环 → 3 用户+API → 4 前端 → 5 扩展 → 6 部署。开发按 1→6，TDD（先写测试）。**⚠️ plan 暂未同步最新复核修正**（七星彩/玩法/倍投/追加），全部 prototype 完成后统一更新 plan。
-- `docs/superpowers/prototypes/` — 页面 prototype（视觉基准）
+- `docs/superpowers/prototypes/` — 页面 prototype（视觉基准，9 页）
 
 ## NAS 部署约束
 
