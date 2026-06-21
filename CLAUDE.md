@@ -83,9 +83,9 @@ docker compose up -d --build
 
 ## Prototype 协作模式（前端页面）
 
-10 页 prototype，已完成 8 页（仪表盘、我的号码、开奖查询、中奖记录、我的统计、设置、后台管理、开奖走势；剩登录、开奖日程）。经验：
+9 页 prototype，**全部完成（收官）**：01-dashboard（含开奖日历+附近代销点）、02-my-numbers、03-draw-query、04-win-records、05-my-stats、06-settings、07-admin、08-trend、09-login（开奖日程已融入 dashboard，无独立页）。经验：
 - **全部手写 HTML**（OD/Open Design 易截断/跑偏/换视觉体系/触发彩票安全审查污染），手写最稳、视觉统一。
-- 所有页面**复用仪表盘的视觉系统**（CSS 变量 `--bg/--surface/--fg/--accent/--red-ball/--blue-ball`、`:root.dark` 深色、9 项导航、右上角用户区、红蓝球）。
+- 所有页面**复用仪表盘的视觉系统**（CSS 变量 `--bg/--surface/--fg/--accent/--red-ball/--blue-ball`、`:root.dark` 深色、**8 项导航**、右上角用户区、红蓝球）。
 - **走势页**（08-trend）：综合分布图仿福彩官网（期从远到近 · 号码按列 · 开出标圆 · 遗漏次数）；⚠️ 遗漏算法须**红/蓝区独立计数**（双色球红蓝 01–16 数值重叠，共享 miss 会互相干扰）；选号面板支持玩法切换、机选自定义（复式/胆拖红蓝数）、多注队列、倍投、批量推送号码池。
 - **跨页联动**（prototype 用 localStorage 模拟共享态）：走势选号→`lottery_tickets`→我的号码池；中奖记录「已领取」↔ 仪表盘待兑奖经 `lottery_claimed` 共享。
 - **验证**：chrome-devtools MCP `navigate file://` + `evaluate` 检查渲染/交互/数据；视觉截图直接 `Read`（模型具备视觉识图能力，不必走 analyze_image MCP 中转）。
