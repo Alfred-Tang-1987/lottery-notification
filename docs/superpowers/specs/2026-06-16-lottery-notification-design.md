@@ -424,7 +424,43 @@ PrizeTier(lottery="dlt", tier=1, condition="front_hit==5 and back_hit==2",
 ### 12.3 移动端 / iOS 优先
 - 当前 Web 响应式（iOS Safari 友好）；未来 iOS 原生 App 复用 REST API。
 - Bark 推送天然契合 iOS。
+- **响应式断点**：320 / 375 / 768 / 1024 / 1440。≤768 为移动布局。
+- **移动端导航（≤768px）**：底部 tab bar（4 高频：仪表盘 / 我的号码 / 开奖查询 / 我的）+ 其余页（统计/走势/设置/后台）入"更多"抽屉。桌面 ≥1024px 保留 240px sidebar。
 - Prototype 阶段可用 `mobile-app` Skill 出 iOS 外框原型。
+
+### 12.4 设计规范（A11y / 状态 / 优先级 / 确认门）
+
+> 完整 token 见 [`docs/designs/DESIGN.md`](../designs/DESIGN.md)（色板/字号/间距/圆角/动效单一源，从 9 页 prototype 反向提取）。
+
+**交互状态系统（统一 `<State type=loading|empty|error>` 组件）**：
+
+| 页面 | LOADING | EMPTY | ERROR | PARTIAL |
+|---|---|---|---|---|
+| dashboard | 骨架屏 | 日历空"添加追投彩种" | 拉取失败+重试 | 单源标黄/待派奖 |
+| my-numbers | spinner | "号码池为空，去选一注"+CTA | 保存失败+重试 | — |
+| draw-query | 骨架 | "该彩种未追投" | 拉取失败+重试 | 单源/校验中 |
+| win-records | 骨架 | "本期暂无中奖，理性购彩" | — | — |
+| my-stats | 骨架 | "先添加追投" | — | 浮奖待派奖(非0) |
+| settings | inline | — | SMTP 测试失败 | — |
+| admin | inline | 空列表 | 拉取失败+重试 | — |
+| trend | 骨架 | "该彩种暂无历史" | 拉取失败+重试 | — |
+| login | 按钮态 | — | 邀请码/密码错误 | — |
+
+空状态要素：温暖文案 + 主操作 CTA + 上下文（**禁止** "No data"/"暂无数据"裸文案）。
+
+**A11y 基线（D9 强制纳入 MVP）**：
+- ARIA landmark：每页 `<header><nav><main><aside>`（读屏可跳转）
+- 交互元素一律 `<button>`/`<a>`，**禁 `div onclick`**（键盘/读屏可达）
+- 图标按钮 `aria-label`；表格/列表用语义标签
+- 系统焦点环（`:focus-visible`，不禁用）；Tab 顺序合理
+- 触控靶 ≥44×44px；对比度 AA（正文 ≥4.5:1）
+- 理性/随机性声明不依赖纯颜色区分（加图标/文字）
+
+**走势确认门视觉（D8/D4）**：走势页选号默认折叠；用户点"我要选号"→**右侧抽屉（drawer）**滑出，顶部确认句"我知道历史走势不影响中奖概率，仅基于个人意愿自选"，确认后展开选号面板；抽屉契合移动 thumb reach 且保留走势上下文。
+
+**dashboard 首屏优先级（D5）**：待兑奖 > 我的命中 > 盈亏速览 > 开奖概览 > 开奖日历/附近代销点（次屏）。用户来 dashboard 最关心"我中奖了吗/欠兑奖"，置顶。
+
+**新增组件**须对齐 [`docs/designs/DESIGN.md`](../designs/DESIGN.md) 的 token 与组件词汇，不引入新色/新字号/新圆角。
 
 ---
 
@@ -501,8 +537,8 @@ PrizeTier(lottery="dlt", tier=1, condition="front_hit==5 and back_hit==2",
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 1 | clean | HOLD SCOPE; 11 sections; 23 tasks; all decisions resolved |
 | Codex Review | `/codex review` | Independent 2nd opinion | 0 | skipped | Codex CLI not installed; Claude subagent used (CEO + ENG) |
 | Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | clean | FULL_REVIEW; 4 sections; 21 tasks; outside voice 25 findings folded; 0 critical gaps after fixes |
-| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | recommended (UI scope present) |
+| Design Review | `/plan-design-review` | UI/UX gaps | 1 | clean | 7 passes; 6→9/10; DESIGN.md + 状态系统 + A11y 基线 + 确认门 + 移动导航; 8 tasks |
 | DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | not run |
 
-- **VERDICT**: CEO + ENG CLEARED — ready to implement.
+- **VERDICT**: CEO + ENG + DESIGN CLEARED — ready to implement.
 - **Unresolved decisions status**: `NO UNRESOLVED DECISIONS`
