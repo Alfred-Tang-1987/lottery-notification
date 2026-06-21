@@ -221,7 +221,7 @@
             <!-- 用户管理 -->
             <div class="tab-panel" id="panel-users">
                 <div class="card">
-                    <div class="card-header"><div><div class="card-title">用户</div><div class="card-subtitle">MVP 邀请码注册 · 未来可扩展手机号 / 开放注册（留商业化空间）· 可加备注区分初期用户</div></div><button class="btn btn-secondary" onclick="alert('新邀请码：'+Math.random().toString(36).slice(2,8).toUpperCase())">+ 生成邀请码</button></div>
+                    <div class="card-header"><div><div class="card-title">用户</div><div class="card-subtitle">MVP 邀请码注册 · 未来可扩展手机号 / 开放注册（留商业化空间）· 可加备注区分初期用户</div></div><button class="btn btn-secondary" onclick="alert('新邀请码：'+Array.from(crypto.getRandomValues(new Uint8Array(4)),function(b){return b.toString(36)}).join('').toUpperCase().slice(0,6))">+ 生成邀请码</button></div>
                     <div class="card-body" style="padding-top:8px"><table class="adm-table" id="usersTable"></table></div>
                 </div>
             </div>
