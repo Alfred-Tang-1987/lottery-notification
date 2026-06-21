@@ -642,15 +642,6 @@
                         </svg>
                         开奖走势
                     </div>
-                    <div class="nav-item">
-                        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
-                            <line x1="16" y1="2" x2="16" y2="6"/>
-                            <line x1="8" y1="2" x2="8" y2="6"/>
-                            <line x1="3" y1="10" x2="21" y2="10"/>
-                        </svg>
-                        开奖日历
-                    </div>
                 </div>
                 <div class="nav-section">
                     <div class="nav-section-label">系统</div>
@@ -849,75 +840,30 @@
                     </div>
                 </div>
 
-                <!-- 开奖日历（提升栏次） -->
+                <!-- 开奖日历（按启用彩种过滤 + 开奖前预告 + iCal） -->
                 <div class="card">
                     <div class="card-header">
-                        <div class="card-title">开奖日历</div>
+                        <div>
+                            <div class="card-title">开奖日历</div>
+                            <div class="card-subtitle">仅显示你追投的彩种 · 开奖前预告提醒</div>
+                        </div>
+                        <button class="claim-delete" style="background:var(--surface);color:var(--accent);border-color:var(--border)" onclick="exportICal()">📅 订阅日程</button>
                     </div>
                     <div class="card-body">
-                        <div class="calendar-strip">
-                            <div class="calendar-day today">
-                                <div class="calendar-day-header">今天 1.15 周三</div>
-                                <div class="calendar-lottery-list">
-                                    <div class="calendar-lottery-item">双色球</div>
-                                    <div class="calendar-lottery-item">七乐彩</div>
-                                    <div class="calendar-lottery-item">福彩3D</div>
-                                    <div class="calendar-lottery-item">排列3</div>
-                                    <div class="calendar-lottery-item">排列5</div>
-                                </div>
-                            </div>
-                            <div class="calendar-day">
-                                <div class="calendar-day-header">明天 1.16 周四</div>
-                                <div class="calendar-lottery-list">
-                                    <div class="calendar-lottery-item">大乐透</div>
-                                    <div class="calendar-lottery-item">七星彩</div>
-                                </div>
-                            </div>
-                            <div class="calendar-day">
-                                <div class="calendar-day-header">周五 1.17</div>
-                                <div class="calendar-lottery-list">
-                                    <div class="calendar-lottery-item">双色球</div>
-                                    <div class="calendar-lottery-item">七乐彩</div>
-                                    <div class="calendar-lottery-item">福彩3D</div>
-                                    <div class="calendar-lottery-item">排列3</div>
-                                    <div class="calendar-lottery-item">排列5</div>
-                                </div>
-                            </div>
-                            <div class="calendar-day">
-                                <div class="calendar-day-header">周六 1.18</div>
-                                <div class="calendar-lottery-list">
-                                    <div class="calendar-lottery-item">大乐透</div>
-                                    <div class="calendar-lottery-item">七星彩</div>
-                                </div>
-                            </div>
-                            <div class="calendar-day">
-                                <div class="calendar-day-header">周日 1.19</div>
-                                <div class="calendar-lottery-list">
-                                    <div class="calendar-lottery-item">双色球</div>
-                                    <div class="calendar-lottery-item">七乐彩</div>
-                                    <div class="calendar-lottery-item">福彩3D</div>
-                                    <div class="calendar-lottery-item">排列3</div>
-                                    <div class="calendar-lottery-item">排列5</div>
-                                </div>
-                            </div>
-                            <div class="calendar-day">
-                                <div class="calendar-day-header">周一 1.20</div>
-                                <div class="calendar-lottery-list">
-                                    <div class="calendar-lottery-item">大乐透</div>
-                                    <div class="calendar-lottery-item">七星彩</div>
-                                </div>
-                            </div>
-                            <div class="calendar-day">
-                                <div class="calendar-day-header">周二 1.21</div>
-                                <div class="calendar-lottery-list">
-                                    <div class="calendar-lottery-item">双色球</div>
-                                    <div class="calendar-lottery-item">七乐彩</div>
-                                    <div class="calendar-lottery-item">福彩3D</div>
-                                    <div class="calendar-lottery-item">排列3</div>
-                                    <div class="calendar-lottery-item">排列5</div>
-                                </div>
-                            </div>
-                        </div>
+                        <div id="remindStrip" style="background:linear-gradient(135deg,rgba(0,113,227,0.1),rgba(225,29,42,0.06));border:1px solid rgba(0,113,227,0.2);border-radius:12px;padding:12px 16px;margin-bottom:14px;font-size:13px;display:none"></div>
+                        <div class="calendar-strip" id="calendarStrip"></div>
+                        <div id="calendarEmpty" style="display:none;text-align:center;color:var(--muted);padding:30px;font-size:13px">号码池为空，添加追投彩种后此处显示开奖日程</div>
+                    </div>
+                </div>
+
+                <!-- 附近官方代销点（福彩/体彩） -->
+                <div class="card">
+                    <div class="card-header">
+                        <div><div class="card-title">附近代销点</div><div class="card-subtitle">便民查询 · 按你追投的福彩/体彩类型过滤 · 点击打开地图导航 · 数据仅供参考</div></div>
+                        <button class="claim-delete" onclick="findNearby()">📍 定位找店</button>
+                    </div>
+                    <div class="card-body" id="nearbyBody">
+                        <div style="text-align:center;color:var(--muted);padding:22px;font-size:13px;line-height:1.7">点击「定位找店」，基于当前位置查询附近福利彩票 / 体育彩票代销点<br><span style="font-size:11px;opacity:.7">（prototype 用模拟数据；实现阶段接入地图 POI）</span></div>
                     </div>
                 </div>
 
@@ -1119,6 +1065,53 @@
             });
         });
     })();
+    // 开奖日历（按启用彩种过滤）+ 附近代销点（区分福彩/体彩）
+    var LOTTERY_SCHEDULE = {ssq:[0,2,4],dlt:[1,3,6],qlc:[1,3,5],qxc:[0,2,5],fc3d:[0,1,2,3,4,5,6],pl3:[0,1,2,3,4,5,6],pl5:[0,1,2,3,4,5,6]}; // JS getDay 编码（周日=0…周六=6）；实现阶段 Python weekday()（一=0）需转换
+    var LOTTERY_NAMES = {ssq:"双色球",dlt:"大乐透",qlc:"七乐彩",qxc:"七星彩",fc3d:"福彩3D",pl3:"排列3",pl5:"排列5"};
+    var LOTTERY_TYPE = {ssq:"welfare",dlt:"sport",qlc:"welfare",qxc:"sport",fc3d:"welfare",pl3:"sport",pl5:"sport"};
+    function getEnabledCodes(){
+        try{ var t=JSON.parse(localStorage.getItem("lottery_tickets")||"[]"); var s={}; t.forEach(function(x){s[x.code||x]=1;}); var c=Object.keys(s); return c.length?c:["ssq","dlt","fc3d"]; }catch(e){ return ["ssq","dlt","fc3d"]; }
+    }
+    function renderCalendar(){
+        var codes=getEnabledCodes(), strip=document.getElementById("calendarStrip"), empty=document.getElementById("calendarEmpty"), remind=document.getElementById("remindStrip");
+        if(codes.length===0){ strip.innerHTML=""; empty.style.display="block"; remind.style.display="none"; return; }
+        empty.style.display="none";
+        var WD=["周日","周一","周二","周三","周四","周五","周六"];
+        var today=new Date("2025-01-15"), html="", todayCodes=[];
+        for(var d=0;d<7;d++){
+            var date=new Date(today); date.setDate(today.getDate()+d);
+            var wd=date.getDay();
+            var prefix = d===0?"今天 ":(d===1?"明天 ":"");
+            var label = prefix+(date.getMonth()+1)+"."+date.getDate()+" "+WD[wd];
+            var dc = codes.filter(function(c){ return (LOTTERY_SCHEDULE[c]||[]).indexOf(wd)>=0; });
+            if(d===0) todayCodes=dc;
+            html+='<div class="calendar-day'+(d===0?" today":"")+'"><div class="calendar-day-header">'+label+'</div><div class="calendar-lottery-list">'+(dc.length?dc.map(function(c){return '<div class="calendar-lottery-item">'+LOTTERY_NAMES[c]+'</div>';}).join(""):'<div class="calendar-lottery-item" style="opacity:.4">无</div>')+'</div></div>';
+        }
+        strip.innerHTML=html;
+        if(todayCodes.length){ remind.style.display="block"; remind.innerHTML='🔔 <strong>今晚开奖</strong>：'+todayCodes.map(function(c){return LOTTERY_NAMES[c];}).join("、")+'（中性信息提醒，不构成购彩建议）'; }
+        else { remind.style.display="none"; }
+    }
+    function exportICal(){ alert("iCal 订阅：将生成 .ics（含你追投彩种的开奖日程），导入日历 App 即可提醒。\nprototype 演示，实现阶段生成真实 ics。"); }
+    function findNearby(){
+        var codes=getEnabledCodes(), types={}; codes.forEach(function(c){ types[LOTTERY_TYPE[c]]=1; });
+        var wantW=!!types.welfare, wantS=!!types.sport; if(!wantW&&!wantS){wantW=wantS=true;}
+        var body=document.getElementById("nearbyBody");
+        body.innerHTML='<div style="text-align:center;padding:16px;color:var(--muted);font-size:13px">📍 定位中…</div>';
+        setTimeout(function(){
+            var list=[
+                {name:"中国福利彩票代销点（示范路店）",type:"welfare",addr:"示范路 88 号",dist:320},
+                {name:"中国体育彩票代销点（建设店）",type:"sport",addr:"建设大道 12 号",dist:480},
+                {name:"中国福利彩票代销点（和平街店）",type:"welfare",addr:"和平街 5 号",dist:750},
+                {name:"中国体育彩票代销点（人民路店）",type:"sport",addr:"人民路 200 号",dist:980}
+            ].filter(function(s){ return (s.type==="welfare"&&wantW)||(s.type==="sport"&&wantS); });
+            var html='<div style="font-size:11px;color:var(--muted);margin-bottom:8px">基于当前位置（模拟）· 共 '+list.length+' 个官方代销点 · 按距离排序 · <span style="color:var(--red-ball)">●</span>福彩 <span style="color:var(--blue-ball)">●</span>体彩</div>';
+            html+=list.map(function(s){ return '<div style="display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--border);cursor:pointer" onclick="openMap(\''+s.name.replace(/'/g,"")+'\')"><div style="width:8px;height:8px;border-radius:50%;background:'+(s.type==="welfare"?"var(--red-ball)":"var(--blue-ball)")+';flex-shrink:0"></div><div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600">'+s.name+'</div><div style="font-size:11px;color:var(--muted);margin-top:2px">'+s.addr+'</div></div><div style="font-size:12px;color:var(--muted);font-family:var(--font-mono);flex-shrink:0">'+(s.dist<1000?s.dist+" m":(s.dist/1000).toFixed(1)+" km")+'</div><div style="font-size:16px;flex-shrink:0">🧭</div></div>'; }).join("");
+            html+='<div style="font-size:11px;color:var(--muted);margin-top:10px;line-height:1.6">代销点信息仅供参考，请以官方为准。本功能为便民查询，不构成购彩建议。理性购彩，量力而行。</div>';
+            body.innerHTML=html;
+        }, 500);
+    }
+    function openMap(name){ alert("将打开地图 App（高德 / 苹果地图）导航至："+name+"\n手机端点击生效；prototype 演示。"); }
+    renderCalendar();
     </script>
 </body>
 </html></span
