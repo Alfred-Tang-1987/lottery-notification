@@ -255,6 +255,7 @@ var SPECS = {
     pl5:{name:"排列5", front:[0,9,5], back:null, frontBall:"num", frontLabel:"号码（5 位）", backLabel:null, plays:["zhixuan"], append:false, positional:true}
 };
 var PLAY_NAMES = {single:"单式", fushi:"复式", dantuo:"胆拖", danxuan:"单选", zhixuan:"直选", zuxuan3:"组选三", zuxuan6:"组选六"};
+function escapeHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 
 var pool = [
     {id:1, code:"ssq", play:"single", front:[3,8,15,22,27,31], back:[12], note:"幸运号", enabled:true, multi:1, append:false},
@@ -508,7 +509,7 @@ function render(){
         items.forEach(function(x){
             var plain = (x.play==="single"||x.play==="danxuan"||x.play==="zhixuan");
             html+='<div class="number-item'+(x.enabled?'':' disabled')+'"><div class="number-main">';
-            html+='<div class="number-meta"><span class="tag tag-play '+(plain?'plain':'')+'">'+PLAY_NAMES[x.play]+'</span>'+(x.append?'<span class="tag tag-append">追加</span>':'')+(x.note?'<span class="number-note">'+x.note+'</span>':'')+'</div>';
+            html+='<div class="number-meta"><span class="tag tag-play '+(plain?'plain':'')+'">'+PLAY_NAMES[x.play]+'</span>'+(x.append?'<span class="tag tag-append">追加</span>':'')+(x.note?'<span class="number-note">'+escapeHtml(x.note)+'</span>':'')+'</div>';
             html+=ballsHTML(x);
             html+='</div><div class="number-actions">';
             html+='<span class="multi-label">倍</span><div class="multi-ctrl"><button class="multi-btn" onclick="setMulti('+x.id+','+(x.multi-1)+')">−</button><input class="multi-input" value="'+x.multi+'" onchange="setMulti('+x.id+',parseInt(this.value))"><button class="multi-btn" onclick="setMulti('+x.id+','+(x.multi+1)+')">+</button></div>';
