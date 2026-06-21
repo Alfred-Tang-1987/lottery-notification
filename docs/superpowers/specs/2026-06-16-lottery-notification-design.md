@@ -116,9 +116,12 @@
 - **单容器**：FastAPI（Web + API）+ APScheduler（进程内定时）同进程；SQLite 持久化卷挂载到 NAS。
 - **端口 8280**（已核实空闲，避开 NAS 已占用端口）。
 - **`restart: always`**（FnOS 关机会 `docker stop` 所有容器，`unless-stopped` 不会自启——见 NAS 维护记录）。
-- **SQLite 配置**：启用 WAL 模式；APScheduler 使用 `SQLAlchemyJobStore` 持久化任务；每日 `sqlite3 .backup` 到独立备份目录，保留 30 天。
-- **Schema 迁移**：使用 Alembic 管理数据库迁移，初始迁移包含所有表。
-- **启动校验**：启动时检查 `JWT_SECRET`/`CRYPTO_KEY`、系统时区 Asia/Shanghai、必要 SMTP 配置（若启用 email）。
+- **SQLite 配置**：`journal_mode=WAL` + `synchronous=NORMAL` + `busy_timeout=5000`；**单写连接**（写 pool_size=1）防 `database is locked`。APScheduler 的 `SQLAlchemyJobStore` **必须共享同一 engine**（让 WAL/busy_timeout 生效），且调度器线程用**独立连接实例**，不进 FastAPI 的 pool_size=1 池（否则请求持有连接时调度器死锁）。
+- **APScheduler 配置**：`coalesce=True` + `max_instances=1`（防 misfire 重复执行）；**全局时区 `Asia/Shanghai`**（所有 job 创建时 tz-aware，避免 tz-naive 静默偏移 8 小时）；`misfire_grace_time=600s`；启动 backfill 同时补 outbox 与遗漏抓取。
+- **Schema 迁移**：使用 Alembic 管理迁移；**初始迁移包含 APScheduler 的 `apscheduler_jobs` 表**（不让 jobstore 首次运行 auto-create，避免与 Alembic 鸡生蛋导致 schema drift）。
+- **备份**：每日用 SQLite backup API 进程内备份（或宿主 `sqlite3 .backup` CLI + WAL checkpoint）到独立目录，保留 30 天；`admin_audit_logs`/`notification_logs`（90 天）有归档/清理任务。
+- **认证/CORS**：httpOnly cookie + SameSite + CSRF token（SPA 经 `/auth/csrf` GET 拿 token，因读不到 httpOnly cookie）；CORS `allow_credentials=True` + 显式 origins（生产同源托管 SPA；开发期 Vite 5173→FastAPI 8000 需显式白名单，禁用通配符）。
+- **启动校验**：启动时检查 `JWT_SECRET`/`CRYPTO_KEY`、系统时区 Asia/Shanghai、必要 SMTP 配置（若启用 email）；若启用 email 则强制 admin Bark fallback 已配。
 - **Docker healthcheck**：提供 `/health` 端点。
 - **预留拆分**（未来，非 MVP）：worker 容器独立、SQLite→PostgreSQL、推送走消息队列——均不需改领域层。
 
@@ -130,17 +133,25 @@
 
 ### 5.1 彩种规格 `LotterySpec`（配置驱动）
 ```python
+# 分区型：集合语义，号码去重、无序（红球 6 个不同号）
+NumberRange(min=1, max=33, count=6)            # 用于 partition 彩种
+
+# 按位型：有序、每位独立、允许跨位重复（如七星彩前区 1,1,2,3,4,5）
+PositionalDigits(min=0, max=9, length=6)       # 用于 positional/hybrid 彩种
+
 LotterySpec(
   code="ssq", name="双色球", category="welfare",
-  front=NumberRange(min=1, max=33, count=6),   # 红球
+  front=NumberRange(min=1, max=33, count=6),   # 红球（分区，去重）
   back =NumberRange(min=1, max=16, count=1),   # 蓝球
   draw_days=[周二, 周四, 周日],
   play_types=[single, fushi, dantuo],
-  number_style="partition",                     # partition(分区) | positional(按位数字) | hybrid(七星彩)
+  number_style="partition",                     # partition(分区) | positional(按位) | hybrid(七星彩)
   welfare_rate=36,                              # 公益金比例（占购彩额 %）
   price_per_bet=200                             # 单注金额（分），便于投入/公益统计
 )
 ```
+
+> **类型表达不变式**：`NumberRange`（集合、去重、无序）用于分区型彩种；`PositionalDigits`（有序、每位独立、**允许跨位重复**）用于按位型/混合型。两种语义不能共用一个类型——否则七星彩前区 `1,1,2,3,4,5`（合法）会被分区校验误拒。校验逻辑落在类型层，不靠运行时 if 区分。
 
 **7 大彩种规则表**：
 
@@ -158,8 +169,8 @@ LotterySpec(
 
 ### 5.2 号码/玩法模型 `Entry`
 - `play_type` 按彩种配套：分区型（双色球/大乐透/七乐彩/七星彩）= `single`(单式)/`fushi`(复式)/`dantuo`(胆拖)；按位型（福彩3D/排列3/排列5）= `danxuan`(单选,3D)/`zhixuan`(直选,排列)/`zuxuan3`(组选三)/`zuxuan6`(组选六)。注：**福彩3D 官方共 12 种玩法**（另有 1D/2D/通选/和数/包选/猜大小/猜三同/拖拉机/猜奇偶），MVP 取主要 3 种、其余 Phase 2 补；**排列5 仅 `zhixuan`**（含定位复式/组合复式，无组选）。
-- 复式/胆拖存储原始选择，**比对前由领域层展开成多个单式组合**再逐一比对。
-- **展开上限**：单注展开后的单式组合数不得超过 `MAX_COMBINATIONS`（默认 10,000）。超限视为非法注单，写入/导入时拒绝。
+- 复式/胆拖存储原始选择。**展开逻辑 `expand(entry) -> list[SingleCombo]` 单点在领域层**：创建/导入注单时**立即调用一次**算出真实 `cost`（= 单注价 × 组合数 × 倍投 × 追加系数）并校验 `MAX_COMBINATIONS` 上限；比对时复用该展开结果（带按 entry 内容 hash 的内存缓存，注单变更则失效）。
+- **展开上限**：单注展开后的单式组合数不得超过 `MAX_COMBINATIONS`（默认 10,000）。超限在 create/导入时拒绝。
 - MVP 仅实现 `single`（+ 按位型的 `zhixuan`）；其余玩法 Phase 2。
 
 ### 5.3 奖级规则 `PrizeTier`（命中条件 → 奖级 → 奖金类型）
@@ -215,14 +226,14 @@ PrizeTier(lottery="dlt", tier=1, condition="front_hit==5 and back_hit==2",
 
 | 表 | 关键字段 | 说明 |
 |---|---|---|
-| `users` | id, username, password_hash, role(user/admin), invite_code, created_at | 邀请制 |
+| `users` | id, username, password_hash, role(user/admin), invite_code, created_at | 邀请制；邀请码**单次使用 + 有效期 + 失败尝试锁定**，仅 admin 生成，无默认 bootstrap 码 |
 | `lottery_types` | code, name, category, spec_json, draw_schedule_json, enabled | 彩种配置（种子内置 7 大彩种） |
 | `tickets` | id, **user_id**, lottery_code, play_type, numbers_json, tuo_json(胆拖拖码), label, multiplier(倍投1-99), append(追加), cost(分), enabled, created_at | 号码池（`cost` = 该注真实投入，含倍投/追加/复式影响） |
 | `draw_results` | id, lottery_code, draw_no(期号), draw_date, numbers_json, source, fetched_at, verified, version(默认1, 修正后递增) | 唯一约束 (lottery_code+draw_no) 保证幂等；`version` 支持官方更正 |
 | `draw_corrections` | id, draw_result_id, old_numbers_json, new_numbers_json, corrected_at, reason | 开奖结果官方更正记录 |
-| `comparisons` | id, **user_id**, draw_result_id, ticket_id, hits_json, prize_tier, prize_amount, is_win, created_at | 比对结果（冗余 user_id 便于隔离查询） |
+| `comparisons` | id, **user_id**, draw_result_id, ticket_id, hits_json, prize_tier, prize_amount, is_win, created_at, corrected_at(可空) | 比对结果；**唯一约束 (draw_result_id, ticket_id)** 保证同注同期只一行（更正时**原地更新** hits/tier/amount + 写 `corrected_at`，避免 stats 双算/中奖记录重复；历史走 `draw_corrections` 追溯） |
 | `prize_claims` | id, **comparison_id**, status(pending/claimed/expired), deadline, claimed_at | 兑奖台账 |
-| `pending_comparisons` | id, draw_result_id, created_at, processed_at | 比对触发 outbox（保证"比对一次" + 崩溃可补） |
+| `pending_comparisons` | id, draw_result_id, created_at, processed_at | 比对触发 outbox；worker 用 `UPDATE ... SET processed_at=now WHERE id=? AND processed_at IS NULL RETURNING id` 原子认领（影响行数=1 才比对），保证"比对一次" + 崩溃可补 |
 | `notification_channels` | id, **user_id**, type(bark/feishu/email), config_json, enabled, key_version | 每用户渠道配置（加密存储；`key_version` 支持 Fernet 轮换） |
 | `notification_rules` | id, **user_id**, lottery_code, strategy(every/win_only), timing | 每用户×每彩种推送策略 |
 | `notification_logs` | id, **user_id**, type, payload, status, sent_at, error | 推送日志（保留 90 天） |
@@ -257,12 +268,13 @@ PrizeTier(lottery="dlt", tier=1, condition="front_hit==5 and back_hit==2",
             └──── 路径 B「次日 07:00」: 读 comparisons → 按用户×彩种策略 → 推【详情汇总】
 ```
 
-- **比对触发时机**：`draw_results` 首次 `verified=true` 入库后，写 `pending_comparisons` 一行；APScheduler 短周期轮询该 outbox，取到未处理行后执行比对。比对完成标记 `processed_at`，保证"比对一次"且崩溃可补。
-- **路径 A**：比对完立即检查 `comparisons`，命中一二等奖 → 推即时简讯（"恭喜，双色球第 X 期命中二等奖，详情见次日汇总"）。
+- **比对触发时机**：`draw_results` 首次 `verified=true` 入库后，写 `pending_comparisons` 一行；APScheduler 短周期轮询该 outbox，用 claim SQL（`UPDATE ... SET processed_at=now WHERE id=? AND processed_at IS NULL RETURNING id`）原子认领，影响行数=1 才比对。崩溃可补、并发不重比。
+- **路径 A（异步）**：比对事务**提交后**，把"命中一二等奖需推即时简讯"的任务交给独立推送 worker / 异步任务，**绝不阻塞比对事务或持有 DB 连接**（否则慢 SMTP 会卡死单写连接，连带 Path B/抓取 stall）。文案"恭喜，双色球第 X 期命中二等奖，详情见次日汇总"。
 - **路径 B**：次日 07:00 **不再比对**，直接读已有 `comparisons`，按策略推详情汇总（含未中奖的"本期核对完毕"）。
 - **`comparisons` 为单一数据源**，两条推送路径只是"同一份数据、不同时机、不同文案"。
-- **官方开奖结果更正**：若官方事后更正号码，向 `draw_corrections` 写入更正记录，`draw_results.version` 递增，重新生成 `pending_comparisons` 行，触发该期的**重新比对**；原 `comparisons` 数据保留作为历史快照，新增一条修正后的 `comparisons` 记录（或原地更新并记录 `corrected_at`）。推送服务根据修正结果决定是否补推/撤销文案。
-- **浮动奖回填**：一二等奖 `amount_type="float"` 在首次比对时 `prize_amount=null`，状态为"待官方派奖"。APScheduler 在次日及后续每日检查官方数据源是否公布具体奖金额，回填到 `comparisons.prize_amount`，并可选择向用户发送"实际奖金已更新"通知（可选，默认不发，用户可在详情页看到）。
+- **官方开奖结果更正**：官方事后更正号码 → 写 `draw_corrections` + `draw_results.version` 递增 + 重新生成 `pending_comparisons` 行 → 重新比对时**原地更新**对应 `comparisons`（hits/tier/amount）并写 `corrected_at`（**不新增行**，唯一约束 (draw_result_id, ticket_id) 兜底），避免 stats 盈亏双算与中奖记录重复。更正后若用户已收到旧结果，推送一条更正简讯。
+- **浮动奖回填**：一二等奖首次比对 `prize_amount=null`（"待官方派奖"）。APScheduler 次日起每日轮询官方数据源回填 `comparisons.prize_amount`；**回填有上限**（默认追踪 7 天，超期标 `unresolved` 不再查）；**回填成功后补推**一条"实际奖金已更新：{金额}"给该用户（大奖金额是用户最关心的，默认不推是产品缺陷）。
+- **`verified=false` 恢复**：双源不一致拒入库后，21:30→01:00 窗口会反复重抓重不匹配；设**单期重抓上限**（默认 6 次），超限停止该期自动重抓，admin 在后台可 **force-verify**（人工核对后标记 verified + 写 `admin_audit_logs`）或忽略该期。
 
 ### 7.2 开奖获取（双源容灾）
 ```
@@ -275,6 +287,8 @@ PrizeTier(lottery="dlt", tier=1, condition="front_hit==5 and back_hit==2",
 
 - **"空结果" 的语义**：若返回为空但 HTTP 成功，视为"该期尚未开奖"，标记 `not_drawn`，停止本轮，等下次轮询；不是错误。
 - **部分源**：一源已有号码、另一源暂无（时间差）时，给 5 分钟 grace window，超时仍只有一源则按单源入库，避免整夜 stall。单源结果在 UI 用黄色"单源校验"标签提示。
+- **期号语义映射**：MXNZP 与聚合数据的 `draw_no` 命名可能不同（如 `2026062` vs `062`）或一方滞后一期；适配层先做**归一化期号映射**再交叉校验号码，否则"号码一致"无意义。
+- **抓取退避/抖动**：每轮失败（timeout/429）用指数退避 + 随机抖动重试，单期最多 ~6 次；避免 15min 固定节奏把限流源一夜锤 ~100 次（7 彩种）触发封禁。
 
 ### 7.3 调度
 - 开奖时间表存 `lottery_types.draw_schedule_json`，APScheduler 动态注册任务。
@@ -282,7 +296,9 @@ PrizeTier(lottery="dlt", tier=1, condition="front_hit==5 and back_hit==2",
 - **路径 B 汇总**：次日 07:00 一次性汇总（时间可配置）。
 - **浮动奖回填轮询**：次日 08:00 起每日一次，检查官方是否公布一二等奖具体金额。
 - **兑奖过期扫描**：每日 07:30 扫描 `prize_claims`，把超过 60 天未领取的标记为 `expired`。
-- **APScheduler 配置**：使用 `SQLAlchemyJobStore` 把 job 持久化到同一 SQLite，容器重启不丢任务；`misfire_grace_time=300s`，启动时执行补漏（检查未比对的 `pending_comparisons`）。
+- **APScheduler 配置**：详见 §4.3（`SQLAlchemyJobStore` 共享 engine、全局 Asia/Shanghai、`coalesce=True`/`max_instances=1`、`misfire_grace_time=600s`）。
+- **DND 顺延触发**：路径 B/周月报在免打扰时段被抑制时，**登记延后任务**（在 DND 结束时刻调度一次），而非依赖下次常规 tick 撞上——避免与常规 07:00 job 碰撞重复推送。
+- **宕机补抓**：启动 backfill 不仅补未处理的 `pending_comparisons`，也检查宕机窗口内**应开奖但未抓取**的彩种补抓（抓取与比对两路都补）。
 - 全程 Asia/Shanghai 时区。
 
 ### 7.4 推送决策（按用户、仅追投彩种）
@@ -304,6 +320,8 @@ PrizeTier(lottery="dlt", tier=1, condition="front_hit==5 and back_hit==2",
 | 未来 iOS App | APNs app 内推送（后续项目） |
 
 每用户在 `notification_channels` 配置自己的渠道（Bark/飞书存 webhook/key，邮箱只存收件地址）；可配多个，无主备关系。渠道配置（webhook/key/收件地址）**加密存储**（Fernet，key 来自 `CRYPTO_KEY`），不明文落库或入日志。`key_version` 字段支持密钥轮换时逐条 re-encrypt。
+
+**多版本密钥（轮换）**：env 形如 `CRYPTO_KEY_V1=...`（解密旧数据）+ `CRYPTO_KEY_V2=...`（新写入用），轮换时后台任务逐条 `V1→V2` re-encrypt。`admin_audit_logs` 的 old_values/new_values 若含渠道配置字段须**脱敏**（不存明文密钥/webhook）。
 
 **管理员告警兜底**：当邮件渠道不可用时，admin 告警须走 Bark 推送到管理员手机，避免"告警本身依赖坏掉的邮件"这一循环依赖。系统在启动时校验：若启用 email 渠道，则必须同时配置 admin 的 Bark fallback。
 
@@ -398,7 +416,7 @@ PrizeTier(lottery="dlt", tier=1, condition="front_hit==5 and back_hit==2",
 | 3 | 我的号码 | 号码盘点击选号（按玩法：单式/复式/胆拖/单选/直选/组选）、机选一注（随机）、批量导入、每注倍投（2-99）、大乐透追加、左右布局（号码池为主） |
 | 4 | 开奖查询 | 彩种切换（7 种 pill）+ 期号选择（下拉/前后翻页/「双源校验通过」徽章）、开奖号码按规则渲染（分区红蓝球｜按位数字方块带位标签｜七星彩混合型前区6位0-9+后区1位0-14）、奖池与销售额 meta、我的比对详情（仅比对追投彩种·命中标绿·奖级奖金·未追投空状态）、各奖级中奖情况（注数+单注奖金·浮动奖标注） |
 | 5 | 中奖记录 | 全局筛选条（时段本月/本年/全部/自定义·彩种·兑奖状态）+ 4 卡统计概览（累计/待兑/已领/过期·金额与笔数·随筛选联动）、中奖记录卡片（奖级·金额·我的号码·兑奖状态徽章·有效期倒计时·已领取操作）、临近过期标红（≤15天）、大额税务提示（≥1万元含实得金额）、兑奖状态与仪表盘待兑奖联动（同一 prize_claims）、底部精简兑奖须知、金额用分存储 |
-| 6 | 我的统计 | 全局筛选（时段本月/本年/全部/自定义·彩种，默认本月）、盈亏总览（投入/中奖/净盈亏/中奖率/公益贡献·随筛选联动；投入按 `tickets.cost` 计算，公益按各彩种 `welfare_rate` 计算）、中奖等级双饼图（笔数+金额占比）、月度投入与中奖双柱图（柱顶标注金额·投入按自身波动·独立全期不随筛选）、金额用分存储 |
+| 6 | 我的统计 | 全局筛选（时段本月/本年/全部/自定义·彩种，默认本月）、盈亏总览（投入/中奖/净盈亏/中奖率/公益贡献·随筛选联动；投入按 `tickets.cost` 计算，公益按各彩种 `welfare_rate` 计算；**浮动奖未回填时显示"待官方派奖"，不把 null 计成 0**——否则用户看到巨额虚假亏损）、中奖等级双饼图（笔数+金额占比）、月度投入与中奖双柱图（柱顶标注金额·投入按自身波动·独立全期不随筛选）、金额用分存储 |
 | 7 | 开奖走势 | 综合分布图（期从远到近·号码按列·开出标圆·遗漏次数同区独立·表头sticky·cell自适应·彩种筛选默认双色球·期数30/50/100+自定义）+ **选号面板默认折叠**（用户点击"我要选号"并在弹窗/抽屉确认"我知道历史走势不影响中奖概率，仅基于个人意愿自选"后展开；玩法选择·号码盘按玩法·机选一注/机选自定义复式胆拖红蓝数·多注队列·队列内倍投·批量推送号码池）+ 出现频次（升序·非频次排序）+ 随机性强声明（历史回顾·不影响概率·不构成选号建议） |
 | 8 | 设置 | 推送渠道（Bark/飞书/邮箱·邮箱统一发件用户只填收件·渠道加密存储）、每彩种推送策略（每期/仅中奖）、推送时机（总开关+大奖即时简讯+次日汇总时间+免打扰时段；大奖即时可破例免打扰）、推送模板预览（大奖即时/次日汇总文案可确认）、偏好（外观浅/自动/深联动·新号码默认启用） |
 | 9 | 后台管理 | SMTP 发件（服务商下拉 QQ/网易/Gmail/自定义·选中自动填服务器/端口/加密·只填账号+授权码·提供"发送测试邮件"）、用户管理（邀请码注册 MVP + 商业化预留手机号/开放注册·备注列·角色/启用）、彩种配置（启用/开奖日/双源）、系统健康（数据源双源容灾状态 + 比对/推送健康 + 调度任务**结构化可配**：开奖后 N 分钟 / 每日 HH:MM / 固定触发 + 告警）、推送日志（日期列 + 6 维筛选：日期/用户/彩种/渠道/类型/状态，按列序；保留 90 天）、**管理员操作审计** |
@@ -411,6 +429,24 @@ PrizeTier(lottery="dlt", tier=1, condition="front_hit==5 and back_hit==2",
 ---
 
 ## 13. 分阶段交付计划
+
+### Phase 1.0 — 基础设施 bootstrap（严格依赖顺序）
+
+> 实现必须按此顺序，避免 Alembic/jobstore 鸡生蛋、crypto 后于 channels 写入等坑：
+
+1. **Alembic 初始化**（迁移基建先行）
+2. **Schema 迁移 #1**（所有表含 `apscheduler_jobs`，**不让 jobstore 运行时 auto-create**，否则与 Alembic stamp 冲突致 schema drift）
+3. **Crypto 服务**（多版本 key env + `key_version`）
+4. **种子 `lottery_types`**（7 彩种 `spec_json`，hydration 时 pydantic 校验）
+5. **领域层**（LotterySpec / NumberRange / PositionalDigits / Entry / PrizeTier / CompareStrategy / `expand()` — 零依赖，可并行单测）
+6. **Repository**（构造函数注入 user_id，IDOR-safe）
+7. **比对引擎 + outbox claim**（claim SQL + comparisons 唯一约束）
+8. **调度器**（`SQLAlchemyJobStore` 共享 engine、全局 Asia/Shanghai、`coalesce`/`max_instances`、启动双路 backfill）
+9. **抓取**（双源 + 退避抖动 + 期号映射 + verified 恢复）
+10. **推送**（路径 A **异步**、渠道插件、Bark admin fallback、DND defer）
+11. **认证**（httpOnly cookie + `/auth/csrf` + CORS）
+12. **Web UI**（按 prototype + A11y + 响应式断点 + 空/错误状态）
+13. **冒烟**：`python -m app.cli ssq` 端到端跑通
 
 ### Phase 1 — MVP（核心闭环 + 单式）
 - 用户体系（邀请制、认证、隔离、邀请码防爆破）
@@ -462,11 +498,11 @@ PrizeTier(lottery="dlt", tier=1, condition="front_hit==5 and back_hit==2",
 
 | Review | Trigger | Why | Runs | Status | Findings |
 |--------|---------|-----|------|--------|----------|
-| CEO Review | `/plan-ceo-review` | Scope & strategy | 1 | clean | HOLD SCOPE; 11 sections reviewed; 23 implementation tasks; all decisions resolved |
-| Codex Review | `/codex review` | Independent 2nd opinion | 0 | skipped | Codex CLI not installed; Claude subagent used instead |
-| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 0 | — | **eng review required** before implementation |
-| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | recommended after spec updates |
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 1 | clean | HOLD SCOPE; 11 sections; 23 tasks; all decisions resolved |
+| Codex Review | `/codex review` | Independent 2nd opinion | 0 | skipped | Codex CLI not installed; Claude subagent used (CEO + ENG) |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | clean | FULL_REVIEW; 4 sections; 21 tasks; outside voice 25 findings folded; 0 critical gaps after fixes |
+| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | recommended (UI scope present) |
 | DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | not run |
 
-- **VERDICT**: CEO REVIEW CLEARED — spec contradictions and execution gaps fixed; **eng review required** before implementation.
+- **VERDICT**: CEO + ENG CLEARED — ready to implement.
 - **Unresolved decisions status**: `NO UNRESOLVED DECISIONS`
