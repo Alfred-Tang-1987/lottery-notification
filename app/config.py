@@ -5,8 +5,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    jwt_secret: str = Field(min_length=16)
-    crypto_key_v1: str = Field(alias="CRYPTO_KEY_V1", min_length=16)
+    jwt_secret: str = Field(default="change-me-to-a-long-random-string", min_length=16)
+    crypto_key_v1: str = Field(default="change-me-to-a-long-random-string", alias="CRYPTO_KEY_V1", min_length=16)
     crypto_key_v2: str | None = Field(default=None, alias="CRYPTO_KEY_V2")
 
     mxnzp_api_key: str = ""
