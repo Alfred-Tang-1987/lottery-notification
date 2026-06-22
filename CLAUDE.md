@@ -54,12 +54,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # 后端
-pip install -e ".[dev]"                                    # 安装（含 dev 依赖）
-pytest -v                                                  # 全量测试（领域层覆盖率门禁 95%+）
-pytest tests/domain/test_partition_compare.py -v           # 单文件
-pytest tests/domain/test_partition_compare.py::test_x -v   # 单测试
-python -m app.cli ssq                                      # 手动触发一期闭环（获取→比对→推送）
-uvicorn app.main:app --reload                              # 启动 API（开发）
+uv sync --extra dev                                          # 安装（含 dev 依赖）
+uv run pytest -v                                             # 全量测试（领域层覆盖率门禁 95%+）
+uv run pytest tests/domain/test_partition_compare.py -v    # 单文件
+uv run pytest tests/domain/test_partition_compare.py::test_x -v  # 单测试
+uv run python -m app.cli ssq                                 # 手动触发一期闭环（获取→比对→推送）
+uv run uvicorn app.main:app --reload                         # 启动 API（开发）
 
 # 前端（web/）
 cd web && npm install
