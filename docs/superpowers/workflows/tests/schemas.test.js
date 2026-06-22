@@ -16,7 +16,7 @@ test('evidence-bearing roles require evidence field', () => {
 test('review schemas require status enum', () => {
   for (const r of ['specReview', 'qualityReviewer', 'hunter']) {
     const s = SCHEMAS[r].properties.status
-    assert.deepEqual(s.enum.sort(), ['failed', 'ok'])
+    assert.deepEqual(s.enum.sort(), ['failed', 'model_unavailable', 'ok'])
   }
 })
 test('implementor evidence requires tests_exit_code + files_changed', () => {

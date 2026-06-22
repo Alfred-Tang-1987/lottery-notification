@@ -66,6 +66,17 @@ export function issuesFromReviews(...reviews) {
   return out
 }
 
+// 判断错误是否 model 限额耗尽（§2.4 双重检测的捕获路径）
+export function isQuotaError(e) {
+  const s = String(e?.message || e || '').toLowerCase()
+  return /quota|rate.?limit|429|overloaded|insufficient.*balance|credit|capacity/i.test(s)
+}
+
+// 安全提取错误字符串
+export function errStr(e) {
+  return String(e?.message || e || '').slice(0, 200)
+}
+
 export const SCHEMAS = {
   bootstrap: {
     type: 'object', required: ['status', 'evidence'], additionalProperties: true,
@@ -79,7 +90,7 @@ export const SCHEMAS = {
   implementor: {
     type: 'object', required: ['status', 'evidence'], additionalProperties: true,
     properties: {
-      status: { type: 'string', enum: ['ok', 'failed', 'blocked', 'needs_context'] },
+      status: { type: 'string', enum: ['ok', 'failed', 'blocked', 'needs_context', 'model_unavailable'] },
       evidence: { type: 'object', required: ['tests_exit_code', 'files_changed', 'pytest_summary'],
         properties: { tests_exit_code: { type: 'integer' }, files_changed: { type: 'array' }, pytest_summary: { type: 'string' } } },
       diagnostics: { type: 'object', properties: { blocked_category: { type: 'string' }, last_error: { type: 'string' }, suggested_fix: { type: 'string' } } },
@@ -89,21 +100,21 @@ export const SCHEMAS = {
   specReview: reviewSchema(),
   qualityReviewer: reviewSchema(),
   hunter: { type: 'object', required: ['status'], additionalProperties: true,
-    properties: { status: { type: 'string', enum: ['ok', 'failed'] },
+    properties: { status: { type: 'string', enum: ['ok', 'failed', 'model_unavailable'] },
       diagnostics: { type: 'object', properties: { files_touched: { type: 'array' }, silent_failures: { type: 'array' } } },
       summary: { type: 'string' } } },
   simplify: { type: 'object', required: ['evidence'], additionalProperties: true,
     properties: { evidence: { type: 'object', required: ['changed', 'files_changed'],
       properties: { changed: { type: 'boolean' }, files_changed: { type: 'array' } } }, summary: { type: 'string' } } },
   commit: { type: 'object', required: ['status', 'evidence'], additionalProperties: true,
-    properties: { status: { type: 'string', enum: ['ok', 'failed'] },
+    properties: { status: { type: 'string', enum: ['ok', 'failed', 'model_unavailable'] },
       evidence: { type: 'object', required: ['commit_sha', 'committed_files'],
         properties: { commit_sha: { type: 'string' }, committed_files: { type: 'array' }, tests_at_commit: { type: 'integer' } } },
       diagnostics: { type: 'object' }, summary: { type: 'string' } } },
   contextFetcher: { type: 'object', required: ['diagnostics'], additionalProperties: true,
     properties: { diagnostics: { type: 'object', required: ['context'], properties: { context: { type: 'string' } } }, summary: { type: 'string' } } },
   gate: { type: 'object', required: ['status', 'evidence'], additionalProperties: true,
-    properties: { status: { type: 'string', enum: ['ok', 'failed'] },
+    properties: { status: { type: 'string', enum: ['ok', 'failed', 'model_unavailable'] },
       evidence: { type: 'object', required: ['tests_exit_code', 'pytest_summary'],
         properties: { tests_exit_code: { type: 'integer' }, pytest_summary: { type: 'string' } } }, summary: { type: 'string' } } },
   finalReport: { type: 'object', required: ['summary'], additionalProperties: true,
@@ -113,7 +124,7 @@ export const SCHEMAS = {
 function reviewSchema() {
   return { type: 'object', required: ['status'], additionalProperties: true,
     properties: {
-      status: { type: 'string', enum: ['ok', 'failed'] },
+      status: { type: 'string', enum: ['ok', 'failed', 'model_unavailable'] },
       diagnostics: { type: 'object', properties: { files_touched: { type: 'array' }, issues: { type: 'array' } } },
       summary: { type: 'string' },
     } }
@@ -151,7 +162,7 @@ Steps:
 
 Return {status, evidence:{tests_exit_code, files_changed:[...], pytest_summary}, diagnostics:{blocked_category, last_error, suggested_fix} (only if blocked), summary}.
 - status=ok: done, tests_exit_code=0. - status=blocked: 障碍 (interface|file|spec|dependency|external) → fill diagnostics.
-RED FLAG: tests_exit_code 必须真实，绝不编造 0。绝不跳过测试。遇障碍宁可 blocked 也不要伪造通过。`,
+RED FLAG: tests_exit_code 必须真实，绝不编造 0。绝不跳过测试。遇障碍宁可 blocked 也不要伪造通过。若遇到 model 限额耗尽（quota/rate-limit/429 错误），返回 status:'model_unavailable'（非 failed/blocked），让 orchestrator halt 并保存进度。`,
 
   specReview: `You are the SPEC-REVIEWER (model opus). Compare implementor's code against spec line-by-line. Verdict on CURRENT working tree (HEAD or staged).
 
@@ -164,7 +175,7 @@ Steps:
 4. Record files_touched (files in the diff).
 
 Return {status (ok|failed), diagnostics:{files_touched:[...], issues:[<spec requirement>: <code gap>]}, summary}.
-RED FLAG: ok 仅当逐条 spec 全符合。绝不模糊通过。issues 要具体（哪条 spec + 代码哪里不符）。`,
+RED FLAG: ok 仅当逐条 spec 全符合。绝不模糊通过。issues 要具体（哪条 spec + 代码哪里不符）。若遇到 model 限额耗尽（quota/rate-limit/429 错误），返回 status:'model_unavailable'（非 failed），让 orchestrator halt 并保存进度。`,
 
   qualityReviewer: `You are the QUALITY-REVIEWER (model opus). Review code quality: architecture, boundaries, types, immutability, error handling, naming. Verdict on CURRENT tree.
 
@@ -177,7 +188,7 @@ Steps:
 4. Record files_touched.
 
 Return {status (ok|failed), diagnostics:{files_touched:[...], issues:[...]}, summary}.
-RED FLAG: ok 仅当无 HIGH 级问题。架构/安全/正确性问题必须 failed。`,
+RED FLAG: ok 仅当无 HIGH 级问题。架构/安全/正确性问题必须 failed。若遇到 model 限额耗尽（quota/rate-limit/429 错误），返回 status:'model_unavailable'（非 failed），让 orchestrator halt 并保存进度。`,
 
   hunter: `You are the SILENT-FAILURE-HUNTER. Hunt swallowed errors, bad fallbacks, missing error propagation, swallowed exceptions, except:pass, broad except hiding bugs, default values masking failures. Verdict on CURRENT tree.
 
@@ -189,7 +200,7 @@ Steps:
 3. Record files_touched.
 
 Return {status (ok|failed), diagnostics:{files_touched:[...], silent_failures:[...]}, summary}.
-RED FLAG: 只报真正的静默失败（会导致 bug 被隐藏），不报刻意的优雅降级（有日志+合理 fallback）。`,
+RED FLAG: 只报真正的静默失败（会导致 bug 被隐藏），不报刻意的优雅降级（有日志+合理 fallback）。若遇到 model 限额耗尽（quota/rate-limit/429 错误），返回 status:'model_unavailable'（非 failed），让 orchestrator halt 并保存进度。`,
 
   simplify: `You are SIMPLIFY. Reduce code: dedupe, remove dead code, tighten naming, lower complexity. Behavior MUST be preserved (tests still pass). Be honest about whether you changed anything.
 
@@ -216,7 +227,7 @@ Steps:
 5. git rev-parse HEAD → commit_sha.
 
 Return {status (ok|failed), evidence:{commit_sha, committed_files:[...], tests_at_commit}, summary}.
-RED FLAG: tests exit != 0 时绝不 commit（status=failed）。commit_sha 必须真实。`,
+RED FLAG: tests exit != 0 时绝不 commit（status=failed）。commit_sha 必须真实。若遇到 model 限额耗尽（quota/rate-limit/429 错误），返回 status:'model_unavailable'（非 failed），让 orchestrator halt 并保存进度。`,
 
   contextFetcher: `You are CONTEXT-FETCHER. The implementor requested context (NEEDS_CONTEXT). Find and return it. Read-only.
 
@@ -243,7 +254,7 @@ Steps:
 4. If step 3 fails, git checkout <previous-branch> explicitly.
 
 Return {status (ok|failed), evidence:{tests_exit_code, pytest_summary}, summary}.
-RED FLAG: tests_exit_code 必须真实（你在 committed SHA 上亲跑）。必须 checkout 回原 HEAD。exit != 0 → status=failed。`,
+RED FLAG: tests_exit_code 必须真实（你在 committed SHA 上亲跑）。必须 checkout 回原 HEAD。exit != 0 → status=failed。若遇到 model 限额耗尽（quota/rate-limit/429 错误），返回 status:'model_unavailable'（非 failed），让 orchestrator halt 并保存进度。`,
 
   finalReport: `You are FINAL-REPORT (mode={{mode}} done|halted). Write the run manifest (the ONLY on-disk write in this workflow) and emit a digest.
 
