@@ -1,3 +1,14 @@
+---
+models:
+  T1: opus
+  T2: sonnet
+  T3: sonnet
+  T4: sonnet
+  T5: sonnet
+  T6: sonnet
+  T7: opus
+---
+
 # 04 调度 + 推送 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans. Steps use checkbox (`- [ ]`) syntax.

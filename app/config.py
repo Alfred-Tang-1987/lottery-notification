@@ -5,8 +5,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    jwt_secret: str = Field(default="change-me-to-a-long-random-string", min_length=16)
-    crypto_key_v1: str = Field(default="change-me-to-a-long-random-string", alias="CRYPTO_KEY_V1", min_length=16)
+    jwt_secret: str = Field(min_length=16)
+    crypto_key_v1: str = Field(alias="CRYPTO_KEY_V1", min_length=16)
     crypto_key_v2: str | None = Field(default=None, alias="CRYPTO_KEY_V2")
 
     mxnzp_api_key: str = ""
@@ -22,7 +22,7 @@ class Settings(BaseSettings):
 
     database_url: str = "sqlite:///./data/lottery.db"
     tz: str = "Asia/Shanghai"
-    cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])  # Plan 05 CORS 用
+    cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
 
     @property
     def crypto_keys(self) -> dict[int, str]:
@@ -37,7 +37,7 @@ class Settings(BaseSettings):
 
     @property
     def email_enabled(self) -> bool:
-        return bool(self.smtp_host)
+        return bool(self.smtp_host and self.smtp_user and self.smtp_pass)
 
     def validate_email_bark_fallback(self) -> None:
         if self.email_enabled and not self.admin_bark_key:
@@ -47,6 +47,7 @@ class Settings(BaseSettings):
 
 
 settings = None  # type: ignore
+
 
 def get_settings() -> Settings:
     global settings

@@ -1,3 +1,17 @@
+---
+models:
+  T1: sonnet
+  T2: sonnet
+  T3: opus
+  T4: sonnet
+  T5: sonnet
+  T6: sonnet
+  T7: sonnet
+  T8: sonnet
+  T9: sonnet
+  T10: sonnet
+---
+
 # 06 Web UI + 部署 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans. Steps use checkbox (`- [ ]`) syntax.

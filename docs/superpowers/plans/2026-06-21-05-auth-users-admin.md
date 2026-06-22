@@ -1,3 +1,14 @@
+---
+models:
+  T1: opus
+  T2: sonnet
+  T3: sonnet
+  T4: opus
+  T5: opus
+  T6: sonnet
+  T7: opus
+---
+
 # 05 认证 + 用户 + admin Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans. Steps use checkbox (`- [ ]`) syntax.
