@@ -348,9 +348,9 @@ async function runTask(plan, task) {
     state.perTask[task.id].review_rounds = round
     const fc = filesChanged.join(',')
     const [spec, qual, hunt] = await parallel([
-      async () => { try { return await agent(buildPrompt('specReview', { taskId: task.id, specPath: cfg.spec_path, planFilePath: plan.file, filesChanged: fc }), { schema: SCHEMAS.specReview, model: 'opus', phase: `Plan ${plan.id}`, label: `spec:${task.id}:r${round}` }) } catch (e) { if (isQuotaError(e)) return { status: 'model_unavailable', diagnostics: { error: errStr(e) } }; log(`reviewer crashed: ${errStr(e)}`); return { status: 'failed', diagnostics: { issues: [`reviewer crashed: ${errStr(e)}`], files_touched: [] } } } },
-      async () => { try { return await agent(buildPrompt('qualityReviewer', { taskId: task.id, filesChanged: fc }), { schema: SCHEMAS.qualityReviewer, model: 'opus', label: `qual:${task.id}:r${round}` }) } catch (e) { if (isQuotaError(e)) return { status: 'model_unavailable', diagnostics: { error: errStr(e) } }; log(`reviewer crashed: ${errStr(e)}`); return { status: 'failed', diagnostics: { issues: [`reviewer crashed: ${errStr(e)}`], files_touched: [] } } } },
-      async () => { try { return await agent(buildPrompt('hunter', { taskId: task.id, filesChanged: fc }), { schema: SCHEMAS.hunter, label: `hunt:${task.id}:r${round}` }) } catch (e) { if (isQuotaError(e)) return { status: 'model_unavailable', diagnostics: { error: errStr(e) } }; log(`reviewer crashed: ${errStr(e)}`); return { status: 'failed', diagnostics: { issues: [`reviewer crashed: ${errStr(e)}`], files_touched: [] } } } },
+      async () => { try { return await agent(buildPrompt('specReview', { taskId: task.id, specPath: cfg.spec_path, planFilePath: plan.file, filesChanged: fc }), { schema: SCHEMAS.specReview, model: 'opus', phase: `Plan ${plan.id}`, label: `spec:${task.id}:r${round}` }) } catch (e) { return { status: 'model_unavailable', diagnostics: { error: errStr(e) } } } },
+      async () => { try { return await agent(buildPrompt('qualityReviewer', { taskId: task.id, filesChanged: fc }), { schema: SCHEMAS.qualityReviewer, model: 'opus', label: `qual:${task.id}:r${round}` }) } catch (e) { return { status: 'model_unavailable', diagnostics: { error: errStr(e) } } } },
+      async () => { try { return await agent(buildPrompt('hunter', { taskId: task.id, filesChanged: fc }), { schema: SCHEMAS.hunter, label: `hunt:${task.id}:r${round}` }) } catch (e) { return { status: 'model_unavailable', diagnostics: { error: errStr(e) } } } },
     ])
     if (spec?.status === 'model_unavailable' || qual?.status === 'model_unavailable' || hunt?.status === 'model_unavailable') {
       return { halted: true, reason: 'model_unavailable', diag: { spec: spec?.diagnostics, qual: qual?.diagnostics, hunt: hunt?.diagnostics } }
@@ -382,9 +382,9 @@ async function runTask(plan, task) {
   if (simp.evidence.changed) {
     const fc = (simp.evidence.files_changed || []).join(',')
     const [spec2, qual2, hunt2] = await parallel([
-      async () => { try { return await agent(buildPrompt('specReview', { taskId: task.id, specPath: cfg.spec_path, planFilePath: plan.file, filesChanged: fc }), { schema: SCHEMAS.specReview, model: 'opus', label: `spec:${task.id}:simp` }) } catch (e) { if (isQuotaError(e)) return { status: 'model_unavailable', diagnostics: { error: errStr(e) } }; log(`reviewer crashed: ${errStr(e)}`); return { status: 'failed', diagnostics: { issues: [`reviewer crashed: ${errStr(e)}`], files_touched: [] } } } },
-      async () => { try { return await agent(buildPrompt('qualityReviewer', { taskId: task.id, filesChanged: fc }), { schema: SCHEMAS.qualityReviewer, model: 'opus', label: `qual:${task.id}:simp` }) } catch (e) { if (isQuotaError(e)) return { status: 'model_unavailable', diagnostics: { error: errStr(e) } }; log(`reviewer crashed: ${errStr(e)}`); return { status: 'failed', diagnostics: { issues: [`reviewer crashed: ${errStr(e)}`], files_touched: [] } } } },
-      async () => { try { return await agent(buildPrompt('hunter', { taskId: task.id, filesChanged: fc }), { schema: SCHEMAS.hunter, label: `hunt:${task.id}:simp` }) } catch (e) { if (isQuotaError(e)) return { status: 'model_unavailable', diagnostics: { error: errStr(e) } }; log(`reviewer crashed: ${errStr(e)}`); return { status: 'failed', diagnostics: { issues: [`reviewer crashed: ${errStr(e)}`], files_touched: [] } } } },
+      async () => { try { return await agent(buildPrompt('specReview', { taskId: task.id, specPath: cfg.spec_path, planFilePath: plan.file, filesChanged: fc }), { schema: SCHEMAS.specReview, model: 'opus', label: `spec:${task.id}:simp` }) } catch (e) { return { status: 'model_unavailable', diagnostics: { error: errStr(e) } } } },
+      async () => { try { return await agent(buildPrompt('qualityReviewer', { taskId: task.id, filesChanged: fc }), { schema: SCHEMAS.qualityReviewer, model: 'opus', label: `qual:${task.id}:simp` }) } catch (e) { return { status: 'model_unavailable', diagnostics: { error: errStr(e) } } } },
+      async () => { try { return await agent(buildPrompt('hunter', { taskId: task.id, filesChanged: fc }), { schema: SCHEMAS.hunter, label: `hunt:${task.id}:simp` }) } catch (e) { return { status: 'model_unavailable', diagnostics: { error: errStr(e) } } } },
     ])
     if (spec2?.status === 'model_unavailable' || qual2?.status === 'model_unavailable' || hunt2?.status === 'model_unavailable') {
       return { halted: true, reason: 'model_unavailable', diag: { spec2: spec2?.diagnostics, qual2: qual2?.diagnostics, hunt2: hunt2?.diagnostics } }
@@ -440,7 +440,9 @@ for (const plan of boot.evidence.plans) {
     try {
       r = await runTask(plan, task)
     } catch (e) {
-      r = { halted: true, reason: isQuotaError(e) ? 'model_unavailable' : 'uncaught error', diag: { error: errStr(e) } }
+      // §2.4：uncaught error 视同 model_unavailable——本环境 agent 抛错（含 429 落 router stderr、不在 Error.message）≈ model 不可用。
+      // halt + 保存进度（finalReportWithFallback 依次试 opus/sonnet/haiku），等用户指令 resume，不降级继续开发。
+      r = { halted: true, reason: 'model_unavailable', diag: { error: errStr(e) } }
     }
     if (r.halted) { await halt(plan, { id: task.id }, r); return { result: 'halted', reason: r.reason } }
   }
