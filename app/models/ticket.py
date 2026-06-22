@@ -11,7 +11,11 @@ class Ticket(TimestampMixin, table=True):
     numbers_json: str  # 原始选择
     tuo_json: str | None = None  # 胆拖拖码
     label: str | None = Field(default=None, max_length=32)
-    multiplier: int = Field(default=1, ge=1, le=99)
-    append: bool = Field(default=False)  # 仅大乐透
-    cost: int = Field(default=0, ge=0)  # 分
-    enabled: bool = Field(default=True)
+    multiplier: int = Field(
+        default=1, ge=1, le=99, sa_column_kwargs={"server_default": "1"},
+    )
+    append: bool = Field(
+        default=False, sa_column_kwargs={"server_default": "0"},
+    )  # 仅大乐透
+    cost: int = Field(default=0, ge=0, sa_column_kwargs={"server_default": "0"})  # 分
+    enabled: bool = Field(default=True, sa_column_kwargs={"server_default": "1"})
