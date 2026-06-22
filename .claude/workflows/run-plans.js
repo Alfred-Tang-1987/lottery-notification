@@ -38,15 +38,9 @@ function issuesFromReviews(...reviews) {
 }
 
 // 判断错误是否 model 限额耗尽（§2.4 双重检测的捕获路径）—— inline 自 lib.js
-// 本环境实测：API 429 详情常落在 router stderr 而非 Error.message（故首轮 kimi 限额未被识别→'uncaught error'）。
-// 多源拼接（message+cause+stack+name/code/status）+ 扩充关键词，提升识别率。
 function isQuotaError(e) {
-  const parts = [
-    e?.message, e?.cause?.message, e?.cause, e?.stack,
-    (typeof e === 'object' && e !== null ? JSON.stringify({ name: e.name, code: e.code, status: e.status, type: e.type }) : String(e)),
-  ]
-  const s = parts.filter(Boolean).join(' || ').toLowerCase()
-  return /quota|rate.?limit|429|overloaded|insufficient.*balance|credit|capacity|usage.?limit|refreshed.*next.*period|request rejected|余额|额度|限流/i.test(s)
+  const s = String(e?.message || e || '').toLowerCase()
+  return /quota|rate.?limit|429|overloaded|insufficient.*balance|credit|capacity/i.test(s)
 }
 function errStr(e) {
   return String(e?.message || e || '').slice(0, 200)
@@ -120,7 +114,7 @@ Steps:
 5. git status --porcelain → dirty_tree.
 6. For each leaf task return its model (sonnet|opus|undefined→sonnet) and title (the description text from the Task header).
 
-Return {status, evidence:{config, plans:[{id, file, seq, tasks:[{id,title}]}], completed:[...], dirty_tree}, summary}.
+Return {status, evidence:{config, plans:[{id, file, seq, tasks:[{id, model, title}]}], completed:[...], dirty_tree}, summary}.
 RED FLAG: evidence 必须是真实读取结果，绝不编造。`,
 
   implementor: `You are the IMPLEMENTOR for {{taskId}} (plan {{planId}}). TDD strict (RED→GREEN→REFACTOR). {{retryNote}}
@@ -249,22 +243,20 @@ RED FLAG: manifest 必须真实写入磁盘（你 ls 确认）。stateJson 是 o
 // ===== state（§4.4）=====
 const state = {
   runTs: null, config: null, completed: [], currentPlan: null, currentTask: null,
-  perTask: {},  // {taskId: {planId, status,review_rounds, files_touched_per_round, commit_sha, blocked_info}}
+  perTask: {},  // {taskId: {planId, status, model, review_rounds, files_touched_per_round, commit_sha, blocked_info}}
 }
 
 // ===== halt（§13a：累积 blocked_info → finalReport halted 模式写盘 + surface）=====
 async function finalReportWithFallback(ctx) {
-  // 本环境命名 model（opus/sonnet/haiku）路由不稳（sonnet→kimi 易限额）；
-  // 统一用 session 默认 model（omit model option → 继承 glm-5.2[1M]，有额度）写 manifest。
-  // 两次重试；全失败则返回合规 stub（不裸 crash——committed task 已在 git，resume 靠 git log）。
-  for (const attempt of [1, 2]) {
+  for (const m of ['opus', 'sonnet', 'haiku']) {
     try {
       return await agent(buildPrompt('finalReport', ctx),
-        { schema: SCHEMAS.finalReport, label: `final-report:${attempt}` })
-    } catch (e) { log(`finalReport attempt ${attempt} 失败: ${errStr(e)}`) }
+        { schema: SCHEMAS.finalReport, model: m, label: `final-report:${m}` })
+    } catch (e) { log(`finalReport ${m} 不可用: ${errStr(e)}, 试下一个`) }
   }
-  log('finalReport 两次均失败——manifest 未写入（已 commit 的 task 由 git log 保护，可 resume）')
-  return { evidence: { manifest_path: '(未写入)' }, summary: 'finalReport failed; no manifest written (committed tasks safe via git log)' }
+  log('fallback 链全失败，用环境默认 model 保存')
+  return await agent(buildPrompt('finalReport', ctx),
+    { schema: SCHEMAS.finalReport, label: 'final-report:default' })
 }
 
 async function halt(plan, task, r) {
@@ -296,7 +288,7 @@ async function runTask(plan, task) {
   const implCtx = (fix, note) => ({ planId: plan.id, taskId: task.id, planFilePath: plan.file, specPath: cfg.spec_path, testCommand: cfg.test_command, fixIssues: fix, retryNote: note })
   let impl
   try {
-    impl = await agent(buildPrompt('implementor', implCtx('', '')), { schema: SCHEMAS.implementor,label: `impl:${task.id}` })
+    impl = await agent(buildPrompt('implementor', implCtx('', '')), { schema: SCHEMAS.implementor, model, label: `impl:${task.id}` })
   } catch (e) {
     if (isQuotaError(e)) return { halted: true, reason: 'model_unavailable', diag: { model, error: errStr(e) } }
     throw e
@@ -306,7 +298,7 @@ async function runTask(plan, task) {
     if (model === 'opus') return { halted: true, reason: 'opus BLOCKED', diag: impl.diagnostics }
     model = 'opus'
     try {
-      impl = await agent(buildPrompt('implementor', implCtx('', '上一轮 sonnet BLOCKED，升级 opus 重试。')), { schema: SCHEMAS.implementor,label: `impl:${task.id}:opus` })
+      impl = await agent(buildPrompt('implementor', implCtx('', '上一轮 sonnet BLOCKED，升级 opus 重试。')), { schema: SCHEMAS.implementor, model: 'opus', label: `impl:${task.id}:opus` })
     } catch (e) {
       if (isQuotaError(e)) return { halted: true, reason: 'model_unavailable', diag: { model: 'opus', error: errStr(e) } }
       throw e
@@ -329,7 +321,7 @@ async function runTask(plan, task) {
     }
     try {
       impl = await agent(buildPrompt('implementor', implCtx(ctxr.diagnostics?.context || '', `补充上下文后重试。context: ${ctxr.diagnostics?.context || ''}`)),
-                         { schema: SCHEMAS.implementor,label: `impl:${task.id}:ctx` })
+                         { schema: SCHEMAS.implementor, model, label: `impl:${task.id}:ctx` })
     } catch (e) {
       if (isQuotaError(e)) return { halted: true, reason: 'model_unavailable', diag: { model, error: errStr(e) } }
       throw e
@@ -341,7 +333,7 @@ async function runTask(plan, task) {
   if (impl.status === 'failed') {
     try {
       impl = await agent(buildPrompt('implementor', implCtx('', '上次 failed，重试一次。')),
-                         { schema: SCHEMAS.implementor,label: `impl:${task.id}:retry` })
+                         { schema: SCHEMAS.implementor, model, label: `impl:${task.id}:retry` })
     } catch (e) {
       if (isQuotaError(e)) return { halted: true, reason: 'model_unavailable', diag: { model, error: errStr(e) } }
       throw e
@@ -356,8 +348,8 @@ async function runTask(plan, task) {
     state.perTask[task.id].review_rounds = round
     const fc = filesChanged.join(',')
     const [spec, qual, hunt] = await parallel([
-      async () => { try { return await agent(buildPrompt('specReview', { taskId: task.id, specPath: cfg.spec_path, planFilePath: plan.file, filesChanged: fc }), { schema: SCHEMAS.specReview,phase: `Plan ${plan.id}`, label: `spec:${task.id}:r${round}` }) } catch (e) { if (isQuotaError(e)) return { status: 'model_unavailable', diagnostics: { error: errStr(e) } }; log(`reviewer crashed: ${errStr(e)}`); return { status: 'failed', diagnostics: { issues: [`reviewer crashed: ${errStr(e)}`], files_touched: [] } } } },
-      async () => { try { return await agent(buildPrompt('qualityReviewer', { taskId: task.id, filesChanged: fc }), { schema: SCHEMAS.qualityReviewer,label: `qual:${task.id}:r${round}` }) } catch (e) { if (isQuotaError(e)) return { status: 'model_unavailable', diagnostics: { error: errStr(e) } }; log(`reviewer crashed: ${errStr(e)}`); return { status: 'failed', diagnostics: { issues: [`reviewer crashed: ${errStr(e)}`], files_touched: [] } } } },
+      async () => { try { return await agent(buildPrompt('specReview', { taskId: task.id, specPath: cfg.spec_path, planFilePath: plan.file, filesChanged: fc }), { schema: SCHEMAS.specReview, model: 'opus', phase: `Plan ${plan.id}`, label: `spec:${task.id}:r${round}` }) } catch (e) { if (isQuotaError(e)) return { status: 'model_unavailable', diagnostics: { error: errStr(e) } }; log(`reviewer crashed: ${errStr(e)}`); return { status: 'failed', diagnostics: { issues: [`reviewer crashed: ${errStr(e)}`], files_touched: [] } } } },
+      async () => { try { return await agent(buildPrompt('qualityReviewer', { taskId: task.id, filesChanged: fc }), { schema: SCHEMAS.qualityReviewer, model: 'opus', label: `qual:${task.id}:r${round}` }) } catch (e) { if (isQuotaError(e)) return { status: 'model_unavailable', diagnostics: { error: errStr(e) } }; log(`reviewer crashed: ${errStr(e)}`); return { status: 'failed', diagnostics: { issues: [`reviewer crashed: ${errStr(e)}`], files_touched: [] } } } },
       async () => { try { return await agent(buildPrompt('hunter', { taskId: task.id, filesChanged: fc }), { schema: SCHEMAS.hunter, label: `hunt:${task.id}:r${round}` }) } catch (e) { if (isQuotaError(e)) return { status: 'model_unavailable', diagnostics: { error: errStr(e) } }; log(`reviewer crashed: ${errStr(e)}`); return { status: 'failed', diagnostics: { issues: [`reviewer crashed: ${errStr(e)}`], files_touched: [] } } } },
     ])
     if (spec?.status === 'model_unavailable' || qual?.status === 'model_unavailable' || hunt?.status === 'model_unavailable') {
@@ -369,7 +361,7 @@ async function runTask(plan, task) {
     if (allGreen(spec, qual, hunt)) break
     if (round === 3) return { halted: true, reason: 'review max rounds', diag: { spec: spec.diagnostics, qual: qual.diagnostics, hunt: hunt.diagnostics } }
     try {
-      impl = await agent(buildPrompt('implementor', implCtx(issuesFromReviews(spec, qual, hunt).join('; '), `修复 review round ${round} 问题。`)), { schema: SCHEMAS.implementor,label: `impl:${task.id}:fix${round}` })
+      impl = await agent(buildPrompt('implementor', implCtx(issuesFromReviews(spec, qual, hunt).join('; '), `修复 review round ${round} 问题。`)), { schema: SCHEMAS.implementor, model, label: `impl:${task.id}:fix${round}` })
     } catch (e) {
       if (isQuotaError(e)) return { halted: true, reason: 'model_unavailable', diag: { model, error: errStr(e) } }
       throw e
@@ -390,8 +382,8 @@ async function runTask(plan, task) {
   if (simp.evidence.changed) {
     const fc = (simp.evidence.files_changed || []).join(',')
     const [spec2, qual2, hunt2] = await parallel([
-      async () => { try { return await agent(buildPrompt('specReview', { taskId: task.id, specPath: cfg.spec_path, planFilePath: plan.file, filesChanged: fc }), { schema: SCHEMAS.specReview,label: `spec:${task.id}:simp` }) } catch (e) { if (isQuotaError(e)) return { status: 'model_unavailable', diagnostics: { error: errStr(e) } }; log(`reviewer crashed: ${errStr(e)}`); return { status: 'failed', diagnostics: { issues: [`reviewer crashed: ${errStr(e)}`], files_touched: [] } } } },
-      async () => { try { return await agent(buildPrompt('qualityReviewer', { taskId: task.id, filesChanged: fc }), { schema: SCHEMAS.qualityReviewer,label: `qual:${task.id}:simp` }) } catch (e) { if (isQuotaError(e)) return { status: 'model_unavailable', diagnostics: { error: errStr(e) } }; log(`reviewer crashed: ${errStr(e)}`); return { status: 'failed', diagnostics: { issues: [`reviewer crashed: ${errStr(e)}`], files_touched: [] } } } },
+      async () => { try { return await agent(buildPrompt('specReview', { taskId: task.id, specPath: cfg.spec_path, planFilePath: plan.file, filesChanged: fc }), { schema: SCHEMAS.specReview, model: 'opus', label: `spec:${task.id}:simp` }) } catch (e) { if (isQuotaError(e)) return { status: 'model_unavailable', diagnostics: { error: errStr(e) } }; log(`reviewer crashed: ${errStr(e)}`); return { status: 'failed', diagnostics: { issues: [`reviewer crashed: ${errStr(e)}`], files_touched: [] } } } },
+      async () => { try { return await agent(buildPrompt('qualityReviewer', { taskId: task.id, filesChanged: fc }), { schema: SCHEMAS.qualityReviewer, model: 'opus', label: `qual:${task.id}:simp` }) } catch (e) { if (isQuotaError(e)) return { status: 'model_unavailable', diagnostics: { error: errStr(e) } }; log(`reviewer crashed: ${errStr(e)}`); return { status: 'failed', diagnostics: { issues: [`reviewer crashed: ${errStr(e)}`], files_touched: [] } } } },
       async () => { try { return await agent(buildPrompt('hunter', { taskId: task.id, filesChanged: fc }), { schema: SCHEMAS.hunter, label: `hunt:${task.id}:simp` }) } catch (e) { if (isQuotaError(e)) return { status: 'model_unavailable', diagnostics: { error: errStr(e) } }; log(`reviewer crashed: ${errStr(e)}`); return { status: 'failed', diagnostics: { issues: [`reviewer crashed: ${errStr(e)}`], files_touched: [] } } } },
     ])
     if (spec2?.status === 'model_unavailable' || qual2?.status === 'model_unavailable' || hunt2?.status === 'model_unavailable') {
