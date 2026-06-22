@@ -1,11 +1,20 @@
-// lottery-workflow-lib —— workflow orchestrator 纯函数真源
-// 此文件被 node --test 测试；run-plans.js inline 复制其中的函数。
+// workflow orchestrator —— 多 plan 自动执行（workflow-design.md §4/§5/§13）
+// 纯函数/SCHEMAS/PROMPTS inline 自 docs/superpowers/workflows/lib.js —— 改 lib 必须同步改这里。
+// 顶层 await = Workflow 入口；agent/parallel/phase/log/args/budget 为 Workflow runtime 注入的全局。
 
-// 从 plan markdown 提取叶子 task ID（§13e 叶子优先规则）。
-// 规则：## Task N 下若有 ### Task NX 子 task → 只取子 task；否则取 Task N 本身。
-export function leafTasks(markdown) {
-  const tops = []          // {id, children:[]}
-  let current = null
+export const meta = {
+  name: 'run-plans',
+  description: '自动执行 implementation plans：每 task implementor→review chain→commit，plan 级独立 gate',
+  phases: [
+    { title: 'Bootstrap', detail: '读 config/plan/git log + 生成 frontmatter' },
+    { title: 'Plan', detail: '串行 task + review rounds + simplify + commit + plan gate' },
+    { title: 'Finalize', detail: '写 manifest + digest' },
+  ],
+}
+
+// ===== 纯函数（inline 自 lib.js Task 2-4，逐字复制）=====
+function leafTasks(markdown) {
+  const tops = []; let current = null
   for (const line of markdown.split('\n')) {
     const m1 = line.match(/^##\s+Task\s+(\d+)\b/)
     if (m1) { current = { id: 'T' + m1[1], children: [] }; tops.push(current); continue }
@@ -14,59 +23,41 @@ export function leafTasks(markdown) {
   }
   return tops.flatMap(t => t.children.length ? t.children : [t.id])
 }
-
-// 振荡检测（§13g）。纯数组操作，无 fs。
-export function detectOscillation(filesTouchedPerRound) {
+function detectOscillation(filesTouchedPerRound) {
   if (filesTouchedPerRound.length < 3) return { oscillating: false }
-
-  // 规则 1：同文件出现在 >=3 个 round → 振荡
-  const fileRoundCount = {}
-  for (const [i, files] of filesTouchedPerRound.entries()) {
-    for (const f of files) {
-      (fileRoundCount[f] ||= []).push(i)
-    }
-  }
-  for (const [file, rounds] of Object.entries(fileRoundCount)) {
-    if (rounds.length >= 3) {
-      return { oscillating: true, reason: `${file} touched in ${rounds.length} rounds`, file, rounds }
-    }
-  }
-
-  // 规则 2：连续 2 round 的 files 高度重叠（>=2 且完全重叠）→ 振荡
+  const cnt = {}
+  for (const [i, files] of filesTouchedPerRound.entries()) for (const f of files) (cnt[f] ||= []).push(i)
+  for (const [file, rounds] of Object.entries(cnt)) if (rounds.length >= 3) return { oscillating: true, reason: `${file} touched in ${rounds.length} rounds`, file, rounds }
   for (let i = 1; i < filesTouchedPerRound.length; i++) {
-    const prev = new Set(filesTouchedPerRound[i - 1])
-    const curr = filesTouchedPerRound[i]
+    const prev = new Set(filesTouchedPerRound[i - 1]); const curr = filesTouchedPerRound[i]
     const overlap = curr.filter(f => prev.has(f))
-    if (overlap.length >= 2 && overlap.length === curr.length) {
-      return { oscillating: true, reason: `consecutive rounds fix same files: ${overlap.join(',')}`, files: overlap }
-    }
+    if (overlap.length >= 2 && overlap.length === curr.length) return { oscillating: true, reason: `consecutive rounds fix same files: ${overlap.join(',')}`, files: overlap }
   }
   return { oscillating: false }
 }
-
-export function buildPrompt(role, ctx = {}) {
-  const tpl = PROMPTS[role]
-  if (!tpl) throw new Error(`unknown role: ${role}`)
+function buildPrompt(role, ctx = {}) {
+  const tpl = PROMPTS[role]; if (!tpl) throw new Error(`unknown role: ${role}`)
   return tpl.replace(/\{\{(\w+)\}\}/g, (_, k) => (k in ctx ? String(ctx[k]) : `{{${k}}}`))
 }
-
-export function allGreen(...reviews) {
-  return reviews.every(r => r && r.status === 'ok')
+function allGreen(...reviews) { return reviews.every(r => r && r.status === 'ok') }
+function unionFiles(...reviews) {
+  const set = new Set(); for (const r of reviews) for (const f of (r?.diagnostics?.files_touched || [])) set.add(f); return [...set]
+}
+function issuesFromReviews(...reviews) {
+  const out = []; for (const r of reviews) if (r && r.status === 'failed') out.push(...(r.diagnostics?.issues || [])); return out
 }
 
-export function unionFiles(...reviews) {
-  const set = new Set()
-  for (const r of reviews) for (const f of (r?.diagnostics?.files_touched || [])) set.add(f)
-  return [...set]
+// ===== SCHEMAS（inline 自 lib.js Task 5，去 export）=====
+function reviewSchema() {
+  return { type: 'object', required: ['status'], additionalProperties: true,
+    properties: {
+      status: { type: 'string', enum: ['ok', 'failed'] },
+      diagnostics: { type: 'object', properties: { files_touched: { type: 'array' }, issues: { type: 'array' } } },
+      summary: { type: 'string' },
+    } }
 }
 
-export function issuesFromReviews(...reviews) {
-  const out = []
-  for (const r of reviews) if (r && r.status === 'failed') out.push(...(r.diagnostics?.issues || []))
-  return out
-}
-
-export const SCHEMAS = {
+const SCHEMAS = {
   bootstrap: {
     type: 'object', required: ['status', 'evidence'], additionalProperties: true,
     properties: {
@@ -110,17 +101,8 @@ export const SCHEMAS = {
     properties: { evidence: { type: 'object', properties: { manifest_path: { type: 'string' } } }, summary: { type: 'string' } } },
 }
 
-function reviewSchema() {
-  return { type: 'object', required: ['status'], additionalProperties: true,
-    properties: {
-      status: { type: 'string', enum: ['ok', 'failed'] },
-      diagnostics: { type: 'object', properties: { files_touched: { type: 'array' }, issues: { type: 'array' } } },
-      summary: { type: 'string' },
-    } }
-}
-
-// 10 类 agent prompt 模板（§13b）。{{key}} 由 buildPrompt(role, ctx) 填充。
-export const PROMPTS = {
+// ===== PROMPTS（inline 自 lib.js Task 6，增强版 bootstrap，去 export）=====
+const PROMPTS = {
   bootstrap: `You are the BOOTSTRAP agent for the lottery-notification workflow orchestrator. Read project state and return structured data. You MAY write YAML frontmatter to plan files that lack it (idempotent). Modify no other files.
 
 Inputs: configPath={{configPath}} plansDir={{plansDir}} runTs={{runTs}}
@@ -258,3 +240,112 @@ Steps:
 Return {evidence:{manifest_path}, summary: <digest>}.
 RED FLAG: manifest 必须真实写入磁盘（你 ls 确认）。stateJson 是 orchestrator 传入的完整状态，照实记录。`,
 }
+
+// ===== state（§4.4）=====
+const state = {
+  runTs: null, config: null, completed: [], currentPlan: null, currentTask: null,
+  perTask: {},  // {taskId: {planId, status, model, review_rounds, files_touched_per_round, commit_sha, blocked_info}}
+}
+
+// ===== halt（§13a：累积 blocked_info → finalReport halted 模式写盘 + surface）=====
+async function halt(plan, task, r) {
+  const tid = task?.id || 'unknown'
+  state.perTask[tid] = { ...(state.perTask[tid] || {}), status: 'blocked',
+    blocked_info: { plan: plan?.id, task: tid, reason: r.reason, diag: r.diag || {} } }
+  phase('Finalize')
+  await agent(buildPrompt('finalReport', { mode: 'halted', stateJson: JSON.stringify(state), runsDir: 'runs', runTs: state.runTs }),
+    { schema: SCHEMAS.finalReport, label: 'final-report:halted' })
+  log(`✗ HALT: ${r.reason} (plan ${plan?.id}, task ${tid})`)
+}
+
+// ===== runTask（§13a：implementor + 升级链 + review rounds + simplify + commit）=====
+async function runTask(plan, task) {
+  state.currentTask = task.id
+  const cfg = state.config
+  const planIdShort = `plan-${plan.seq}`
+  state.perTask[task.id] = { planId: plan.id, status: 'in_progress', model: task.model || 'sonnet', review_rounds: 0, files_touched_per_round: [], commit_sha: null, blocked_info: null }
+
+  // —— implementor + BLOCKED 升级链（§2.3）——
+  let model = task.model || 'sonnet'
+  const implCtx = (fix, note) => ({ planId: plan.id, taskId: task.id, planFilePath: plan.file, specPath: cfg.spec_path, testCommand: cfg.test_command, fixIssues: fix, retryNote: note })
+  let impl = await agent(buildPrompt('implementor', implCtx('', '')), { schema: SCHEMAS.implementor, model, label: `impl:${task.id}` })
+  if (impl.status === 'blocked') {
+    if (model === 'opus') return { halted: true, reason: 'opus BLOCKED', diag: impl.diagnostics }
+    model = 'opus'
+    impl = await agent(buildPrompt('implementor', implCtx('', '上一轮 sonnet BLOCKED，升级 opus 重试。')), { schema: SCHEMAS.implementor, model: 'opus', label: `impl:${task.id}:opus` })
+    if (impl.status === 'blocked') return { halted: true, reason: 'opus BLOCKED', diag: impl.diagnostics }
+  }
+  let filesChanged = impl.evidence.files_changed || []
+
+  // —— review rounds（max 3，§5）——
+  for (let round = 1; round <= 3; round++) {
+    state.perTask[task.id].review_rounds = round
+    const fc = filesChanged.join(',')
+    const [spec, qual, hunt] = await parallel([
+      () => agent(buildPrompt('specReview', { taskId: task.id, specPath: cfg.spec_path, planFilePath: plan.file, filesChanged: fc }), { schema: SCHEMAS.specReview, model: 'opus', phase: `Plan ${plan.id}`, label: `spec:${task.id}:r${round}` }),
+      () => agent(buildPrompt('qualityReviewer', { taskId: task.id, filesChanged: fc }), { schema: SCHEMAS.qualityReviewer, model: 'opus', label: `qual:${task.id}:r${round}` }),
+      () => agent(buildPrompt('hunter', { taskId: task.id, filesChanged: fc }), { schema: SCHEMAS.hunter, label: `hunt:${task.id}:r${round}` }),
+    ])
+    state.perTask[task.id].files_touched_per_round.push(unionFiles(spec, qual, hunt))
+    const osc = detectOscillation(state.perTask[task.id].files_touched_per_round)
+    if (osc.oscillating) return { halted: true, reason: 'OSCILLATING', diag: osc }
+    if (allGreen(spec, qual, hunt)) break
+    if (round === 3) return { halted: true, reason: 'review max rounds', diag: { spec: spec.diagnostics, qual: qual.diagnostics, hunt: hunt.diagnostics } }
+    impl = await agent(buildPrompt('implementor', implCtx(issuesFromReviews(spec, qual, hunt).join('; '), `修复 review round ${round} 问题。`)), { schema: SCHEMAS.implementor, model, label: `impl:${task.id}:fix${round}` })
+    filesChanged = impl.evidence.files_changed || filesChanged
+  }
+
+  // —— simplify（max 1，§5.2：无条件重跑 review；失败则回退）——
+  let simplifyFailed = false, simplifyFiles = []
+  const simp = await agent(buildPrompt('simplify', { taskId: task.id, filesChanged: filesChanged.join(','), simplifyFailed: 'false' }), { schema: SCHEMAS.simplify, label: `simp:${task.id}` })
+  if (simp.evidence.changed) {
+    const fc = (simp.evidence.files_changed || []).join(',')
+    const [spec2, qual2, hunt2] = await parallel([
+      () => agent(buildPrompt('specReview', { taskId: task.id, specPath: cfg.spec_path, planFilePath: plan.file, filesChanged: fc }), { schema: SCHEMAS.specReview, model: 'opus', label: `spec:${task.id}:simp` }),
+      () => agent(buildPrompt('qualityReviewer', { taskId: task.id, filesChanged: fc }), { schema: SCHEMAS.qualityReviewer, model: 'opus', label: `qual:${task.id}:simp` }),
+      () => agent(buildPrompt('hunter', { taskId: task.id, filesChanged: fc }), { schema: SCHEMAS.hunter, label: `hunt:${task.id}:simp` }),
+    ])
+    if (!allGreen(spec2, qual2, hunt2)) { simplifyFailed = true; simplifyFiles = simp.evidence.files_changed || [] }
+  }
+
+  // —— commit（§5：状态原子转换；simplify 回退委托此 agent）——
+  const commit = await agent(buildPrompt('commit', { taskId: task.id, planId: plan.id, planIdShort, taskTitle: task.title || task.id, testCommand: cfg.test_command, simplifyFailed: String(simplifyFailed), simplifyFiles: simplifyFiles.join(',') }), { schema: SCHEMAS.commit, label: `commit:${task.id}` })
+  if (commit.status !== 'ok') return { halted: true, reason: 'commit failed', diag: commit.diagnostics }
+  state.perTask[task.id].status = 'committed'
+  state.perTask[task.id].commit_sha = commit.evidence.commit_sha
+  log(`✓ ${task.id} committed @ ${commit.evidence.commit_sha}`)
+  return { halted: false }
+}
+
+// ===== 顶层编排（Workflow 入口）=====
+phase('Bootstrap')
+const tsAgent = await agent('Run `date -u +%Y%m%dT%H%M%SZ` and return ONLY the timestamp string, nothing else.', { label: 'get-ts' })
+state.runTs = typeof tsAgent === 'string' ? tsAgent.trim() : String(tsAgent)
+const boot = await agent(buildPrompt('bootstrap', { configPath: args.configPath, plansDir: args.plansDir, runTs: state.runTs }), { schema: SCHEMAS.bootstrap, label: 'bootstrap' })
+state.config = boot.evidence.config
+state.completed = boot.evidence.completed
+
+for (const plan of boot.evidence.plans) {
+  if (args.plan && plan.id !== args.plan) continue
+  state.currentPlan = plan.id
+  phase(`Plan ${plan.id}`)
+  const want = (args.tasks && args.tasks.length) ? new Set(args.tasks) : null
+  const tasks = plan.tasks.filter(t => !want || want.has(t.id))
+  for (const task of tasks) {
+    if (state.completed.includes(task.id)) { log(`skip ${task.id} (already committed)`); continue }
+    const r = await runTask(plan, task)
+    if (r.halted) { await halt(plan, { id: task.id }, r); return { result: 'halted', reason: r.reason } }
+  }
+  // plan 级独立 gate（§3）：本 plan 最后 commit SHA 上重跑 full_test_command
+  const lastSha = Object.values(state.perTask).filter(p => p.planId === plan.id && p.commit_sha).at(-1)?.commit_sha
+  if (lastSha) {
+    const gate = await agent(buildPrompt('gate', { sha: lastSha, fullTestCommand: state.config.full_test_command }), { schema: SCHEMAS.gate, label: `gate:${plan.id}`, phase: `Plan ${plan.id}` })
+    if (gate.evidence.tests_exit_code !== 0) { await halt(plan, null, { reason: 'plan gate failed', diag: { sha: lastSha, summary: gate.evidence.pytest_summary } }); return { result: 'halted', reason: 'plan gate failed' } }
+    log(`✓ plan ${plan.id} gate green @ ${lastSha}`)
+  }
+}
+
+phase('Finalize')
+await agent(buildPrompt('finalReport', { mode: 'done', stateJson: JSON.stringify(state), runsDir: 'runs', runTs: state.runTs }), { schema: SCHEMAS.finalReport, label: 'final-report' })
+log('✓ workflow done')
+return { result: 'done', perTask: state.perTask }
