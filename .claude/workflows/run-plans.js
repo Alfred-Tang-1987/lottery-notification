@@ -13,16 +13,6 @@ export const meta = {
 }
 
 // ===== 纯函数（inline 自 lib.js Task 2-4，逐字复制）=====
-function leafTasks(markdown) {
-  const tops = []; let current = null
-  for (const line of markdown.split('\n')) {
-    const m1 = line.match(/^##\s+Task\s+(\d+)\b/)
-    if (m1) { current = { id: 'T' + m1[1], children: [] }; tops.push(current); continue }
-    const m2 = line.match(/^###\s+Task\s+(\d+)([a-z])\b/)
-    if (m2 && current) { current.children.push('T' + m2[1] + m2[2]) }
-  }
-  return tops.flatMap(t => t.children.length ? t.children : [t.id])
-}
 function detectOscillation(filesTouchedPerRound) {
   if (filesTouchedPerRound.length < 3) return { oscillating: false }
   const cnt = {}
@@ -251,7 +241,13 @@ const state = {
 async function halt(plan, task, r) {
   const tid = task?.id || 'unknown'
   state.perTask[tid] = { ...(state.perTask[tid] || {}), status: 'blocked',
-    blocked_info: { plan: plan?.id, task: tid, reason: r.reason, diag: r.diag || {} } }
+    blocked_info: {
+      plan: plan?.id, task: tid, reason: r.reason,
+      category: r.diag?.blocked_category || r.diag?.file || r.diag?.reason || null,
+      last_error: r.diag?.last_error || r.diag?.summary || r.reason,
+      suggested_fix: r.diag?.suggested_fix || null,
+      raw: r.diag || {},
+    } }
   phase('Finalize')
   await agent(buildPrompt('finalReport', { mode: 'halted', stateJson: JSON.stringify(state), runsDir: 'runs', runTs: state.runTs }),
     { schema: SCHEMAS.finalReport, label: 'final-report:halted' })
@@ -274,6 +270,23 @@ async function runTask(plan, task) {
     model = 'opus'
     impl = await agent(buildPrompt('implementor', implCtx('', '上一轮 sonnet BLOCKED，升级 opus 重试。')), { schema: SCHEMAS.implementor, model: 'opus', label: `impl:${task.id}:opus` })
     if (impl.status === 'blocked') return { halted: true, reason: 'opus BLOCKED', diag: impl.diagnostics }
+  }
+  // —— needs_context: dispatch contextFetcher, retry implementor with context (§8.1) ——
+  if (impl.status === 'needs_context') {
+    const ctxr = await agent(buildPrompt('contextFetcher', {
+      needType: impl.diagnostics?.blocked_category || 'file',
+      query: impl.diagnostics?.last_error || impl.diagnostics?.suggested_fix || '',
+      specPath: cfg.spec_path, workdir: '.',
+    }), { schema: SCHEMAS.contextFetcher, label: `ctx:${task.id}` })
+    impl = await agent(buildPrompt('implementor', implCtx(ctxr.diagnostics?.context || '', `补充上下文后重试。context: ${ctxr.diagnostics?.context || ''}`)),
+                       { schema: SCHEMAS.implementor, model, label: `impl:${task.id}:ctx` })
+    if (impl.status !== 'ok') return { halted: true, reason: `implementor ${impl.status} after context-fetch`, diag: impl.diagnostics }
+  }
+  // —— failed: retry once → halt (§4.4) ——
+  if (impl.status === 'failed') {
+    impl = await agent(buildPrompt('implementor', implCtx('', '上次 failed，重试一次。')),
+                       { schema: SCHEMAS.implementor, model, label: `impl:${task.id}:retry` })
+    if (impl.status !== 'ok') return { halted: true, reason: `implementor ${impl.status} after retry`, diag: impl.diagnostics }
   }
   let filesChanged = impl.evidence.files_changed || []
 
@@ -342,6 +355,8 @@ for (const plan of boot.evidence.plans) {
     const gate = await agent(buildPrompt('gate', { sha: lastSha, fullTestCommand: state.config.full_test_command }), { schema: SCHEMAS.gate, label: `gate:${plan.id}`, phase: `Plan ${plan.id}` })
     if (gate.evidence.tests_exit_code !== 0) { await halt(plan, null, { reason: 'plan gate failed', diag: { sha: lastSha, summary: gate.evidence.pytest_summary } }); return { result: 'halted', reason: 'plan gate failed' } }
     log(`✓ plan ${plan.id} gate green @ ${lastSha}`)
+  } else {
+    log(`plan ${plan.id}: no new commits, gate skipped`)
   }
 }
 
