@@ -1,5 +1,13 @@
 from fastapi.testclient import TestClient
 from app.main import app
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def mock_env(monkeypatch):
+    """所有 health 测试强制注入环境变量，避免 lifespan 初始化 Settings 时缺少 JWT/CRYPTO。"""
+    monkeypatch.setenv("JWT_SECRET", "x" * 32)
+    monkeypatch.setenv("CRYPTO_KEY_V1", "k" * 32)
 
 
 def test_health_ok():

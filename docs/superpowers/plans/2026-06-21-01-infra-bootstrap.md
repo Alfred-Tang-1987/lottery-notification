@@ -1,3 +1,20 @@
+---
+models:
+  T1: sonnet
+  T2: sonnet
+  T3: sonnet
+  T4a: sonnet
+  T4b: opus
+  T4c: sonnet
+  T4d: sonnet
+  T5: sonnet
+  T6: opus
+  T7: sonnet
+  T8: sonnet
+  T9: sonnet
+  T10: sonnet
+---
+
 # 01 基础设施骨架 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
