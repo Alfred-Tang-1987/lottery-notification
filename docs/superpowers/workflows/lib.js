@@ -44,20 +44,26 @@ export function detectOscillation(filesTouchedPerRound) {
   return { oscillating: false }
 }
 
-export function buildPrompt(role, ctx) {
-  throw new Error('not implemented') // Task 4
+export function buildPrompt(role, ctx = {}) {
+  const tpl = PROMPTS[role]
+  if (!tpl) throw new Error(`unknown role: ${role}`)
+  return tpl.replace(/\{\{(\w+)\}\}/g, (_, k) => (k in ctx ? String(ctx[k]) : `{{${k}}}`))
 }
 
 export function allGreen(...reviews) {
-  throw new Error('not implemented') // Task 4
+  return reviews.every(r => r && r.status === 'ok')
 }
 
 export function unionFiles(...reviews) {
-  throw new Error('not implemented') // Task 4
+  const set = new Set()
+  for (const r of reviews) for (const f of (r?.diagnostics?.files_touched || [])) set.add(f)
+  return [...set]
 }
 
 export function issuesFromReviews(...reviews) {
-  throw new Error('not implemented') // Task 4
+  const out = []
+  for (const r of reviews) if (r && r.status === 'failed') out.push(...(r.diagnostics?.issues || []))
+  return out
 }
 
 export const SCHEMAS = {} // Task 5
