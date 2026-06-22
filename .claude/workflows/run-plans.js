@@ -340,7 +340,7 @@ state.config = boot.evidence.config
 state.completed = boot.evidence.completed
 
 for (const plan of boot.evidence.plans) {
-  if (args.plan && plan.id !== args.plan) continue
+  if (args.plan && plan.id !== args.plan && plan.seq !== args.plan) continue
   state.currentPlan = plan.id
   phase(`Plan ${plan.id}`)
   const want = (args.tasks && args.tasks.length) ? new Set(args.tasks) : null
