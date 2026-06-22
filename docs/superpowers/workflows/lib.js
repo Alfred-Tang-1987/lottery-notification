@@ -15,8 +15,33 @@ export function leafTasks(markdown) {
   return tops.flatMap(t => t.children.length ? t.children : [t.id])
 }
 
+// 振荡检测（§13g）。纯数组操作，无 fs。
 export function detectOscillation(filesTouchedPerRound) {
-  throw new Error('not implemented') // Task 3
+  if (filesTouchedPerRound.length < 3) return { oscillating: false }
+
+  // 规则 1：同文件出现在 >=3 个 round → 振荡
+  const fileRoundCount = {}
+  for (const [i, files] of filesTouchedPerRound.entries()) {
+    for (const f of files) {
+      (fileRoundCount[f] ||= []).push(i)
+    }
+  }
+  for (const [file, rounds] of Object.entries(fileRoundCount)) {
+    if (rounds.length >= 3) {
+      return { oscillating: true, reason: `${file} touched in ${rounds.length} rounds`, file, rounds }
+    }
+  }
+
+  // 规则 2：连续 2 round 的 files 高度重叠（>=2 且完全重叠）→ 振荡
+  for (let i = 1; i < filesTouchedPerRound.length; i++) {
+    const prev = new Set(filesTouchedPerRound[i - 1])
+    const curr = filesTouchedPerRound[i]
+    const overlap = curr.filter(f => prev.has(f))
+    if (overlap.length >= 2 && overlap.length === curr.length) {
+      return { oscillating: true, reason: `consecutive rounds fix same files: ${overlap.join(',')}`, files: overlap }
+    }
+  }
+  return { oscillating: false }
 }
 
 export function buildPrompt(role, ctx) {
