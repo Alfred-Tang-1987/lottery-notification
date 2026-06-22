@@ -281,6 +281,7 @@ async function runTask(plan, task) {
   const cfg = state.config
   const planIdShort = `plan-${plan.seq}`
   state.perTask[task.id] = { planId: plan.id, status: 'in_progress', model: task.model || 'sonnet', review_rounds: 0, files_touched_per_round: [], commit_sha: null, blocked_info: null }
+  log(`▶ ${task.id} (${task.model || 'sonnet'}): 派发 implementor — TDD 可能含长命令(uv sync/build/全量测试)，正常耗时请等待；/workflows 可看实时工具调用`)
 
   // —— implementor + BLOCKED 升级链（§2.3）——
   let model = task.model || 'sonnet'
@@ -365,7 +366,13 @@ async function runTask(plan, task) {
 
   // —— simplify（max 1，§5.2：无条件重跑 review；失败则回退）——
   let simplifyFailed = false, simplifyFiles = []
-  const simp = await agent(buildPrompt('simplify', { taskId: task.id, filesChanged: filesChanged.join(','), simplifyFailed: 'false' }), { schema: SCHEMAS.simplify, label: `simp:${task.id}` })
+  let simp
+  try {
+    simp = await agent(buildPrompt('simplify', { taskId: task.id, filesChanged: filesChanged.join(','), simplifyFailed: 'false' }), { schema: SCHEMAS.simplify, label: `simp:${task.id}` })
+  } catch (e) {
+    if (isQuotaError(e)) return { halted: true, reason: 'model_unavailable', diag: { model, error: errStr(e) } }
+    throw e
+  }
   if (simp.evidence.changed) {
     const fc = (simp.evidence.files_changed || []).join(',')
     const [spec2, qual2, hunt2] = await parallel([
@@ -412,7 +419,12 @@ for (const plan of boot.evidence.plans) {
   const tasks = plan.tasks.filter(t => !want || want.has(t.id))
   for (const task of tasks) {
     if (state.completed.includes(task.id)) { log(`skip ${task.id} (already committed)`); continue }
-    const r = await runTask(plan, task)
+    let r
+    try {
+      r = await runTask(plan, task)
+    } catch (e) {
+      r = { halted: true, reason: isQuotaError(e) ? 'model_unavailable' : 'uncaught error', diag: { error: errStr(e) } }
+    }
     if (r.halted) { await halt(plan, { id: task.id }, r); return { result: 'halted', reason: r.reason } }
   }
   // plan 级独立 gate（§3）：本 plan 最后 commit SHA 上重跑 full_test_command
