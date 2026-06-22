@@ -37,9 +37,21 @@
 model = task.model || 'sonnet'   // 未标注默认 sonnet
 ```
 
-- plan 作者（writing-plans 阶段）对高风险 task（安全/算法/集成/多文件）标注 `model: opus`
 - modelHint 是**唯一确定性来源**（workflow JS 无法执行 LLM 打分）
 - loader subagent 校验 enum，unknown → fail loud（不静默降级）
+
+**来源链**（依赖 writing-plans 增强，§13e）：
+```
+workflow 读 plan frontmatter model 字段（§11.2）
+  ← plan frontmatter 由 writing-plans 技能增强产出（§13e 待实现）
+    ← writing-plans agent 用判断标准标注：
+      - 安全/加密/认证相关 → opus
+      - 纯算法 + 边界条件 → opus
+      - 多模块集成/接口设计 → opus
+      - 其余（配置/声明/CRUD/模板）→ 不标注（默认 sonnet）
+```
+
+**降级路径**：writing-plans 增强未完成时，所有 task 默认 sonnet；BLOCKED → opus 兜底。非理想但可用。
 
 ### 2.3 BLOCKED 升级链（带上限）
 
@@ -76,6 +88,12 @@ orchestrator 是 JS sandbox：**无 fs、无 subprocess、无 Date.now/Math.rand
     "files_changed": ["app/domain/ssq.py"],
     "pytest_summary": "=== 12 passed, 0 failed in 0.3s ==="
   },
+  "diagnostics": {
+    "blocked_category": "interface" | "file" | "spec" | "dependency" | "external" | null,
+    "last_error": "app/domain/ssq.py does not exist",
+    "suggested_fix": "check plan ordering — Plan 02 creates this module",
+    "files_touched": ["app/domain/ssq.py", "tests/test_ssq.py"]
+  },
   "summary": "实现了双色球分区比对，12 测试全绿"
 }
 ```
@@ -83,6 +101,7 @@ orchestrator 是 JS sandbox：**无 fs、无 subprocess、无 Date.now/Math.rand
 - orchestrator 的所有 gate（测试通过/review 绿/commit 成功）基于 `evidence`，**非叙述**
 - `tests_exit_code` 由 subagent 实际执行测试命令获得（真实 exit code）
 - `commit_sha` 让 resume 和验证可追溯
+- `diagnostics` 供 orchestrator 路由 + final report 可操作性（§8/§9）；`null` 表示不适用
 
 ### 4.2 IO 委托边界
 
@@ -105,6 +124,53 @@ orchestrator 是 JS sandbox：**无 fs、无 subprocess、无 Date.now/Math.rand
 | 无 Date.now/Math.random | 不做时间戳/随机；run manifest 的时间由 subagent 写入 |
 | agent() 上限 min(16,cpu-2) | serial task → 同时仅 1 task in flight；每 task 最多 implementor + 3 review 并行 + simplify + commit ≈ 6 agent，远低于上限 |
 | 无持久化 | 状态靠 git log + run manifest（subagent 写盘，§6/§9） |
+
+### 4.4 orchestrator 状态管理
+
+orchestrator 维护 in-memory 状态（JS 变量），从 agent 返回值更新，据此做路由：
+
+```javascript
+// orchestrator in-memory state（每个 plan 执行开始时重置）
+let state = {
+  current_plan: null,
+  current_task: null,
+  tasks_completed: [],      // from bootstrap or commit subagent returns
+  task_status: {},          // {taskId: 'pending'|'in_progress'|'committed'|'blocked'}
+  review_round: 0,          // 当前 task 的 review round 计数
+  simplify_invoked: false,  // 当前 task simplify 是否已触发
+  files_touched_per_round: [], // [[file1,file2], [file2,file3], ...] 用于振荡检测
+}
+
+// 路由逻辑
+switch (agentReturn.status) {
+  case 'ok':
+    // review round 全 ✅ → next phase (simplify/commit/next-task)
+    break
+  case 'blocked':
+    if (state.upgraded_to_opus) halt()  // opus 仍 blocked → halt
+    else retry_with_opus()              // 升级
+    break
+  case 'needs_context':
+    dispatch_context_fetcher(agentReturn.diagnostics)
+    retry_with_more_context()
+    break
+  case 'failed':
+    // commit failed / test failed → retry once → BLOCKED
+    break
+}
+
+// 振荡检测（§9/§13g）
+if (state.files_touched_per_round.length >= 2) {
+  const prev = state.files_touched_per_round.at(-2)
+  const curr = state.files_touched_per_round.at(-1)
+  if (same_files_reversing(prev, curr)) {
+    mark_oscillating()
+    halt_and_surface()
+  }
+}
+```
+
+**orchestrator 不"理解"返回值语义**——它只做模式匹配（status enum → 路由）。诊断（为什么 blocked、是否振荡）由 agent 在 `diagnostics` 字段预计算，orchestrator 据此路由。
 
 ## 5. Task 执行流程（bounded review rounds）
 
@@ -297,10 +363,118 @@ frontmatter 是机器读，正文是人读，单文件不分离。
 
 ## 13. 待细化
 
-- [ ] 13a. workflow script JS 骨架（bootstrap → serial plan/task → review rounds → commit → gate → post-plan）
-- [ ] 13b. 各 subagent prompt 模板（继承 subagent-driven-development 的 implementer/spec/quality prompt + 新增 bootstrap/commit/context-fetcher/gate prompt）
-- [ ] 13c. Agent Boundary Protocol 的 evidence schema 严格化（每个 agent 的必填字段）
-- [ ] 13d. run manifest 的读写时机（哪个 subagent 写、何时写）
-- [ ] 13e. writing-plans 增强：产出 YAML frontmatter（id/tasks/model）
-- [ ] 13f. workflow init / validate-plans 命令实现
-- [ ] 13g. 振荡检测算法（files_touched_per_round 比对）
+- [ ] **13a. workflow script JS 骨架**（实现期）：bootstrap → serial plan/task → review rounds → commit → gate → post-plan
+- [ ] **13b. subagent prompt 模板**（实现期）：继承 subagent-driven-development 的 implementer/spec/quality prompt + 新增 bootstrap/commit/context-fetcher/gate/manifest-writer prompt
+
+### 13c. Agent Boundary Protocol — evidence schema per agent
+
+每个 agent 类型的必填 `evidence` + `diagnostics` 字段：
+
+| agent | evidence 必填 | diagnostics 必填 |
+|---|---|---|
+| **implementor** | `tests_exit_code`, `files_changed`, `pytest_summary` | — |
+| **spec-reviewer** | `status`（ok/failed） | `issues[]`（spec 不符列表） |
+| **quality-reviewer** | `status`（ok/failed） | `issues[]`（质量问题列表） |
+| **silent-failure-hunter** | `status`（ok/failed） | `silent_failures[]`（静默失败列表） |
+| **simplify** | `changed`（bool）, `files_changed[]` | — |
+| **commit** | `commit_sha`, `committed_files[]`, `tests_at_commit` | — |
+| **gate**（plan 级） | `tests_exit_code`, `pytest_summary` | — |
+| **bootstrap** | `config`, `plans[]`, `completed[]`, `in_progress`, `dirty_tree` | — |
+| **context-fetcher** | — | `context`（补充的上下文文本） |
+| **state-updater** | — | —（manifest 写入确认由 orchestrator 校验） |
+
+**evidence vs diagnostics**：evidence 是 gate 决策依据（硬数据），diagnostics 是诊断辅助（软信息，供 final report 和振荡检测）。
+
+- [ ] **13f. workflow init / validate-plans 命令实现**（实现期）
+
+### 13d. run manifest 读写时机
+
+```
+runs/<run-id>/
+  manifest.json           # {run_id, started_at, plans:[], status:'running'|'done'|'halted'}
+  per-task/<task-id>.json  # {task_id, plan_id, status, model, review_rounds, files_touched_per_round, commit_sha, blocked_info}
+  log.ndjson              # 每 agent 调用一行 {ts, agent_type, task_id, status, summary}
+```
+
+**写入时机与写入者**：
+
+| 事件 | 写入者 | 写入内容 |
+|---|---|---|
+| workflow 启动 | bootstrap subagent | 创建 manifest.json（新 run-id）；resume 时读已有 manifest |
+| task 开始 | state-updater subagent | 写 per-task `{status: in_progress, model, plan_id}` |
+| review round 结束 | review agent（在返回值里） | orchestrator 更新 in-memory `files_touched_per_round`；state-updater 写 per-task round 信息 |
+| simplify 完成 | state-updater subagent | 更新 per-task simplify 状态 |
+| commit 成功 | commit subagent | 更新 per-task `{status: committed, commit_sha}` |
+| BLOCKED | state-updater subagent | 更新 per-task `{status: blocked, blocked_info}` |
+| workflow 结束 | final-report subagent | 更新 manifest `{status: done/halted}`，输出 digest |
+
+**为什么不让 orchestrator JS 写**：orchestrator 无 fs（runtime 约束）。所有盘上写入必须由 subagent 执行。orchestrator 通过 prompt 指令告诉 subagent 写什么（把 manifest 路径和目标内容编码进 agent prompt）。
+
+**resume 读取**：bootstrap subagent 读 manifest + git log，交叉验证（manifest 说 committed 但 git log 无对应 commit → 以 git log 为准）。
+
+### 13e. writing-plans frontmatter 增强
+
+**推荐方案：workflow 启动时自动生成（bootstrap subagent），不修改 writing-plans 技能。**
+
+理由：writing-plans 是 upstream superpowers 技能，修改它侵入性大且需要维护 fork。workflow 框架应对现有 plan 格式自适应。
+
+**bootstrap subagent 的 frontmatter 生成逻辑**：
+
+```
+对每个 plan 文件：
+  如果已有 YAML frontmatter（--- 开头）→ 直接读取
+  如果没有 → 生成：
+    1. 提取 `## Task N` / `### Task N` headers → task 列表
+    2. 对每个 task，判断 modelHint：
+       - 标题/描述含"安全/加密/认证/JWT/CSRF/Fernet" → opus
+       - 标题/描述含"算法/比对/策略/边界" → opus
+       - 标题/描述含"集成/多模块/接口设计" → opus
+       - 其余 → 不标注（默认 sonnet）
+    3. 生成 YAML frontmatter 写回 plan 文件头部
+    4. 返回 {plans: [{id, tasks:[{id, model}]}]}
+```
+
+**frontmatter 写回是幂等的**：已有 frontmatter 的 plan 不重写。resume 时 bootstrap 直接读已有 frontmatter（不重新生成）。
+
+**判断标准的一致性**：§2.2 来源链的判断标准与这里一致（安全/算法/集成 → opus）。标准硬编码在 bootstrap prompt 里，不是配置文件（足够简单，不需要可配置）。
+
+### 13g. 振荡检测算法
+
+orchestrator JS 在每个 review round 结束后调用，纯数组操作（无 fs）：
+
+```javascript
+function detectOscillation(filesTouchedPerRound) {
+  // filesTouchedPerRound = [['f1','f2'], ['f2','f3'], ['f1','f2']]
+  if (filesTouchedPerRound.length < 3) return { oscillating: false }
+
+  // 规则 1：同文件出现在 ≥3 个 round → 振荡
+  const fileRoundCount = {}
+  for (const [i, files] of filesTouchedPerRound.entries()) {
+    for (const f of files) {
+      if (!fileRoundCount[f]) fileRoundCount[f] = []
+      fileRoundCount[f].push(i)
+    }
+  }
+  for (const [file, rounds] of Object.entries(fileRoundCount)) {
+    if (rounds.length >= 3) {
+      return { oscillating: true, reason: `${file} touched in ${rounds.length} rounds`, file, rounds }
+    }
+  }
+
+  // 规则 2：连续 2 个 round 的 files 高度重叠（≥2 文件且完全重叠）→ 可能振荡
+  for (let i = 1; i < filesTouchedPerRound.length; i++) {
+    const prev = new Set(filesTouchedPerRound[i - 1])
+    const curr = new Set(filesTouchedPerRound[i])
+    const overlap = [...curr].filter(f => prev.has(f))
+    if (overlap.length >= 2 && overlap.length === curr.size) {
+      return { oscillating: true, reason: `consecutive rounds fix same files: ${overlap.join(',')}`, files: overlap }
+    }
+  }
+
+  return { oscillating: false }
+}
+```
+
+**触发动作**：振荡 → orchestrator 不自动 halt（避免丢失 in-progress work），而是写 per-task `{status: OSCILLATING, oscillation_info}` + surface 用户决定（继续/跳过/干预）。
+
+**files_touched 的来源**：review agent 的返回值 `diagnostics.files_touched` 由 orchestrator 追加到 in-memory `filesTouchedPerRound[]`。review agent 在检查 diff 时顺带记录变更文件列表。
