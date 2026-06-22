@@ -430,7 +430,11 @@ try {
 }
 if (boot.status !== 'ok') { await halt(null, null, { reason: `bootstrap ${boot.status}`, diag: boot.diagnostics }); return { result: 'halted', reason: `bootstrap ${boot.status}` } }
 state.config = boot.evidence.config
-state.completed = boot.evidence.completed
+// run-2 根因：bootstrap 返回 "01/T1"（planSeq/taskId），task.id 是 "T1"——includes 永不命中 →
+// 已 commit 的 Plan 01 被重跑 → T4c 无改动 commit 失败 halt。归一化去 "NN/" 前缀。
+// args.completed 可手动覆盖（resume 时显式传已 commit 的 taskId 列表，双保险）。
+const _rawCompleted = (Array.isArray(args.completed) && args.completed.length ? args.completed : boot.evidence.completed) || []
+state.completed = _rawCompleted.map(id => String(id).replace(/^\d+\/+/, ''))
 
 for (const plan of boot.evidence.plans) {
   if (args.plan && plan.id !== args.plan && plan.seq !== args.plan) continue
