@@ -308,11 +308,17 @@ async function runTask(plan, task) {
   }
   // —— needs_context: dispatch contextFetcher, retry implementor with context (§8.1) ——
   if (impl.status === 'needs_context') {
-    const ctxr = await agent(buildPrompt('contextFetcher', {
-      needType: impl.diagnostics?.blocked_category || 'file',
-      query: impl.diagnostics?.last_error || impl.diagnostics?.suggested_fix || '',
-      specPath: cfg.spec_path, workdir: '.',
-    }), { schema: SCHEMAS.contextFetcher, label: `ctx:${task.id}` })
+    let ctxr
+    try {
+      ctxr = await agent(buildPrompt('contextFetcher', {
+        needType: impl.diagnostics?.blocked_category || 'file',
+        query: impl.diagnostics?.last_error || impl.diagnostics?.suggested_fix || '',
+        specPath: cfg.spec_path, workdir: '.',
+      }), { schema: SCHEMAS.contextFetcher, label: `ctx:${task.id}` })
+    } catch (e) {
+      if (isQuotaError(e)) return { halted: true, reason: 'model_unavailable', diag: { model, error: errStr(e) } }
+      throw e
+    }
     try {
       impl = await agent(buildPrompt('implementor', implCtx(ctxr.diagnostics?.context || '', `补充上下文后重试。context: ${ctxr.diagnostics?.context || ''}`)),
                          { schema: SCHEMAS.implementor, model, label: `impl:${task.id}:ctx` })
@@ -342,9 +348,9 @@ async function runTask(plan, task) {
     state.perTask[task.id].review_rounds = round
     const fc = filesChanged.join(',')
     const [spec, qual, hunt] = await parallel([
-      async () => { try { return await agent(buildPrompt('specReview', { taskId: task.id, specPath: cfg.spec_path, planFilePath: plan.file, filesChanged: fc }), { schema: SCHEMAS.specReview, model: 'opus', phase: `Plan ${plan.id}`, label: `spec:${task.id}:r${round}` }) } catch (e) { return isQuotaError(e) ? { status: 'model_unavailable', diagnostics: { error: errStr(e) } } : null } },
-      async () => { try { return await agent(buildPrompt('qualityReviewer', { taskId: task.id, filesChanged: fc }), { schema: SCHEMAS.qualityReviewer, model: 'opus', label: `qual:${task.id}:r${round}` }) } catch (e) { return isQuotaError(e) ? { status: 'model_unavailable', diagnostics: { error: errStr(e) } } : null } },
-      async () => { try { return await agent(buildPrompt('hunter', { taskId: task.id, filesChanged: fc }), { schema: SCHEMAS.hunter, label: `hunt:${task.id}:r${round}` }) } catch (e) { return isQuotaError(e) ? { status: 'model_unavailable', diagnostics: { error: errStr(e) } } : null } },
+      async () => { try { return await agent(buildPrompt('specReview', { taskId: task.id, specPath: cfg.spec_path, planFilePath: plan.file, filesChanged: fc }), { schema: SCHEMAS.specReview, model: 'opus', phase: `Plan ${plan.id}`, label: `spec:${task.id}:r${round}` }) } catch (e) { if (isQuotaError(e)) return { status: 'model_unavailable', diagnostics: { error: errStr(e) } }; log(`reviewer crashed: ${errStr(e)}`); return { status: 'failed', diagnostics: { issues: [`reviewer crashed: ${errStr(e)}`], files_touched: [] } } } },
+      async () => { try { return await agent(buildPrompt('qualityReviewer', { taskId: task.id, filesChanged: fc }), { schema: SCHEMAS.qualityReviewer, model: 'opus', label: `qual:${task.id}:r${round}` }) } catch (e) { if (isQuotaError(e)) return { status: 'model_unavailable', diagnostics: { error: errStr(e) } }; log(`reviewer crashed: ${errStr(e)}`); return { status: 'failed', diagnostics: { issues: [`reviewer crashed: ${errStr(e)}`], files_touched: [] } } } },
+      async () => { try { return await agent(buildPrompt('hunter', { taskId: task.id, filesChanged: fc }), { schema: SCHEMAS.hunter, label: `hunt:${task.id}:r${round}` }) } catch (e) { if (isQuotaError(e)) return { status: 'model_unavailable', diagnostics: { error: errStr(e) } }; log(`reviewer crashed: ${errStr(e)}`); return { status: 'failed', diagnostics: { issues: [`reviewer crashed: ${errStr(e)}`], files_touched: [] } } } },
     ])
     if (spec?.status === 'model_unavailable' || qual?.status === 'model_unavailable' || hunt?.status === 'model_unavailable') {
       return { halted: true, reason: 'model_unavailable', diag: { spec: spec?.diagnostics, qual: qual?.diagnostics, hunt: hunt?.diagnostics } }
@@ -376,15 +382,16 @@ async function runTask(plan, task) {
   if (simp.evidence.changed) {
     const fc = (simp.evidence.files_changed || []).join(',')
     const [spec2, qual2, hunt2] = await parallel([
-      async () => { try { return await agent(buildPrompt('specReview', { taskId: task.id, specPath: cfg.spec_path, planFilePath: plan.file, filesChanged: fc }), { schema: SCHEMAS.specReview, model: 'opus', label: `spec:${task.id}:simp` }) } catch (e) { return isQuotaError(e) ? { status: 'model_unavailable', diagnostics: { error: errStr(e) } } : null } },
-      async () => { try { return await agent(buildPrompt('qualityReviewer', { taskId: task.id, filesChanged: fc }), { schema: SCHEMAS.qualityReviewer, model: 'opus', label: `qual:${task.id}:simp` }) } catch (e) { return isQuotaError(e) ? { status: 'model_unavailable', diagnostics: { error: errStr(e) } } : null } },
-      async () => { try { return await agent(buildPrompt('hunter', { taskId: task.id, filesChanged: fc }), { schema: SCHEMAS.hunter, label: `hunt:${task.id}:simp` }) } catch (e) { return isQuotaError(e) ? { status: 'model_unavailable', diagnostics: { error: errStr(e) } } : null } },
+      async () => { try { return await agent(buildPrompt('specReview', { taskId: task.id, specPath: cfg.spec_path, planFilePath: plan.file, filesChanged: fc }), { schema: SCHEMAS.specReview, model: 'opus', label: `spec:${task.id}:simp` }) } catch (e) { if (isQuotaError(e)) return { status: 'model_unavailable', diagnostics: { error: errStr(e) } }; log(`reviewer crashed: ${errStr(e)}`); return { status: 'failed', diagnostics: { issues: [`reviewer crashed: ${errStr(e)}`], files_touched: [] } } } },
+      async () => { try { return await agent(buildPrompt('qualityReviewer', { taskId: task.id, filesChanged: fc }), { schema: SCHEMAS.qualityReviewer, model: 'opus', label: `qual:${task.id}:simp` }) } catch (e) { if (isQuotaError(e)) return { status: 'model_unavailable', diagnostics: { error: errStr(e) } }; log(`reviewer crashed: ${errStr(e)}`); return { status: 'failed', diagnostics: { issues: [`reviewer crashed: ${errStr(e)}`], files_touched: [] } } } },
+      async () => { try { return await agent(buildPrompt('hunter', { taskId: task.id, filesChanged: fc }), { schema: SCHEMAS.hunter, label: `hunt:${task.id}:simp` }) } catch (e) { if (isQuotaError(e)) return { status: 'model_unavailable', diagnostics: { error: errStr(e) } }; log(`reviewer crashed: ${errStr(e)}`); return { status: 'failed', diagnostics: { issues: [`reviewer crashed: ${errStr(e)}`], files_touched: [] } } } },
     ])
     if (spec2?.status === 'model_unavailable' || qual2?.status === 'model_unavailable' || hunt2?.status === 'model_unavailable') {
       return { halted: true, reason: 'model_unavailable', diag: { spec2: spec2?.diagnostics, qual2: qual2?.diagnostics, hunt2: hunt2?.diagnostics } }
     }
     if (!allGreen(spec2, qual2, hunt2)) { simplifyFailed = true; simplifyFiles = simp.evidence.files_changed || [] }
   }
+  if (simplifyFailed && simplifyFiles.length === 0) return { halted: true, reason: 'simplify reported changed but no files', diag: simp.evidence }
 
   // —— commit（§5：状态原子转换；simplify 回退委托此 agent）——
   let commit
@@ -406,7 +413,13 @@ async function runTask(plan, task) {
 phase('Bootstrap')
 const tsAgent = await agent('Run `date -u +%Y%m%dT%H%M%SZ` and return ONLY the timestamp string, nothing else.', { label: 'get-ts' })
 state.runTs = typeof tsAgent === 'string' ? tsAgent.trim() : String(tsAgent)
-const boot = await agent(buildPrompt('bootstrap', { configPath: args.configPath, plansDir: args.plansDir, runTs: state.runTs }), { schema: SCHEMAS.bootstrap, label: 'bootstrap' })
+let boot
+try {
+  boot = await agent(buildPrompt('bootstrap', { configPath: args.configPath, plansDir: args.plansDir, runTs: state.runTs }), { schema: SCHEMAS.bootstrap, label: 'bootstrap' })
+} catch (e) {
+  if (isQuotaError(e)) { await halt(null, null, { reason: 'model_unavailable', diag: { model: 'sonnet', error: errStr(e) } }); return { result: 'halted', reason: 'model_unavailable' } }
+  throw e
+}
 if (boot.status !== 'ok') { await halt(null, null, { reason: `bootstrap ${boot.status}`, diag: boot.diagnostics }); return { result: 'halted', reason: `bootstrap ${boot.status}` } }
 state.config = boot.evidence.config
 state.completed = boot.evidence.completed
@@ -434,7 +447,7 @@ for (const plan of boot.evidence.plans) {
     try {
       gate = await agent(buildPrompt('gate', { sha: lastSha, fullTestCommand: state.config.full_test_command }), { schema: SCHEMAS.gate, label: `gate:${plan.id}`, phase: `Plan ${plan.id}` })
     } catch (e) {
-      if (isQuotaError(e)) { await halt(plan, null, { reason: 'model_unavailable', diag: { model, error: errStr(e) } }); return { result: 'halted', reason: 'model_unavailable' } }
+      if (isQuotaError(e)) { await halt(plan, null, { reason: 'model_unavailable', diag: { model: 'sonnet', error: errStr(e) } }); return { result: 'halted', reason: 'model_unavailable' } }
       throw e
     }
     if (gate.status === 'model_unavailable') { await halt(plan, null, { reason: 'model_unavailable', diag: gate.diagnostics }); return { result: 'halted', reason: 'model_unavailable' } }
@@ -446,6 +459,6 @@ for (const plan of boot.evidence.plans) {
 }
 
 phase('Finalize')
-await agent(buildPrompt('finalReport', { mode: 'done', stateJson: JSON.stringify(state), runsDir: 'runs', runTs: state.runTs }), { schema: SCHEMAS.finalReport, label: 'final-report' })
+await finalReportWithFallback({ mode: 'done', stateJson: JSON.stringify(state), runsDir: 'runs', runTs: state.runTs })
 log('✓ workflow done')
 return { result: 'done', perTask: state.perTask }
