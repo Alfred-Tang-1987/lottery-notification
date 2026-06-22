@@ -127,7 +127,7 @@ Inputs: configPath={{configPath}} plansDir={{plansDir}} runTs={{runTs}}
 
 Steps:
 1. Read {{configPath}} → {test_command, full_test_command, build_command, lint_command, spec_path, language}.
-2. Config smoke: run test_command with --collect-only. If command-not-found or config typo → status=failed with error.
+2. Config smoke: run test_command with --collect-only. 判断：命令本身不存在（command not found / No such file: pytest）→ status=failed（环境/typo）；命令存在但 collect 失败（no module named pytest / pyproject.toml 不存在 / no tests collected / 业务代码未初始化）→ 记录 'project not yet initialized' 到 summary，status 仍 ok（业务代码由后续 task 创建，预期）。
 3. For each {{plansDir}}/*.md: if frontmatter (starts with ---) read task models; else generate — extract LEAF ids (## Task N with ### Task NX children → only NX; else N), modelHint (title contains 安全|加密|认证|JWT|CSRF|Fernet|算法|比对|策略|边界|集成|接口 → opus, else omit), write frontmatter at file top. Idempotent. Record each plan's file (full path) and seq (last two digits of filename, e.g. 01).
 4. git log → completed task ids via convention feat(plan-X/T-Y).
 5. git status --porcelain → dirty_tree.
