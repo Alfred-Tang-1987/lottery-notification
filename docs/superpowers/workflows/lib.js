@@ -66,5 +66,57 @@ export function issuesFromReviews(...reviews) {
   return out
 }
 
-export const SCHEMAS = {} // Task 5
+export const SCHEMAS = {
+  bootstrap: {
+    type: 'object', required: ['status', 'evidence'], additionalProperties: true,
+    properties: {
+      status: { type: 'string', enum: ['ok', 'failed', 'blocked'] },
+      evidence: { type: 'object', required: ['config', 'plans', 'completed', 'dirty_tree'],
+        properties: { config: { type: 'object' }, plans: { type: 'array' }, completed: { type: 'array' }, dirty_tree: { type: 'boolean' } } },
+      diagnostics: { type: 'object' }, summary: { type: 'string' },
+    },
+  },
+  implementor: {
+    type: 'object', required: ['status', 'evidence'], additionalProperties: true,
+    properties: {
+      status: { type: 'string', enum: ['ok', 'failed', 'blocked', 'needs_context'] },
+      evidence: { type: 'object', required: ['tests_exit_code', 'files_changed', 'pytest_summary'],
+        properties: { tests_exit_code: { type: 'integer' }, files_changed: { type: 'array' }, pytest_summary: { type: 'string' } } },
+      diagnostics: { type: 'object', properties: { blocked_category: { type: 'string' }, last_error: { type: 'string' }, suggested_fix: { type: 'string' } } },
+      summary: { type: 'string' },
+    },
+  },
+  specReview: reviewSchema(),
+  qualityReviewer: reviewSchema(),
+  hunter: { type: 'object', required: ['status'], additionalProperties: true,
+    properties: { status: { type: 'string', enum: ['ok', 'failed'] },
+      diagnostics: { type: 'object', properties: { files_touched: { type: 'array' }, silent_failures: { type: 'array' } } },
+      summary: { type: 'string' } } },
+  simplify: { type: 'object', required: ['evidence'], additionalProperties: true,
+    properties: { evidence: { type: 'object', required: ['changed', 'files_changed'],
+      properties: { changed: { type: 'boolean' }, files_changed: { type: 'array' } } }, summary: { type: 'string' } } },
+  commit: { type: 'object', required: ['status', 'evidence'], additionalProperties: true,
+    properties: { status: { type: 'string', enum: ['ok', 'failed'] },
+      evidence: { type: 'object', required: ['commit_sha', 'committed_files'],
+        properties: { commit_sha: { type: 'string' }, committed_files: { type: 'array' }, tests_at_commit: { type: 'integer' } } },
+      diagnostics: { type: 'object' }, summary: { type: 'string' } } },
+  contextFetcher: { type: 'object', required: ['diagnostics'], additionalProperties: true,
+    properties: { diagnostics: { type: 'object', required: ['context'], properties: { context: { type: 'string' } } }, summary: { type: 'string' } } },
+  gate: { type: 'object', required: ['status', 'evidence'], additionalProperties: true,
+    properties: { status: { type: 'string', enum: ['ok', 'failed'] },
+      evidence: { type: 'object', required: ['tests_exit_code', 'pytest_summary'],
+        properties: { tests_exit_code: { type: 'integer' }, pytest_summary: { type: 'string' } } }, summary: { type: 'string' } } },
+  finalReport: { type: 'object', required: ['summary'], additionalProperties: true,
+    properties: { evidence: { type: 'object', properties: { manifest_path: { type: 'string' } } }, summary: { type: 'string' } } },
+}
+
+function reviewSchema() {
+  return { type: 'object', required: ['status'], additionalProperties: true,
+    properties: {
+      status: { type: 'string', enum: ['ok', 'failed'] },
+      diagnostics: { type: 'object', properties: { files_touched: { type: 'array' }, issues: { type: 'array' } } },
+      summary: { type: 'string' },
+    } }
+}
+
 export const PROMPTS = {} // Task 6
