@@ -215,29 +215,31 @@ orchestrator 无法 diff，不能信任 simplify 自报"是否改了代码"。si
 
 ## 6. Bootstrap & Resume（崩溃恢复）
 
-runtime 无持久化。状态靠 **git log + run manifest**（subagent 写盘）。
+**Resume 主路径 = Workflow 原生 `resumeFromRunId`**（journal 缓存命中：完成的 agent() 秒回，首个改动的调用及之后重跑）。run manifest 降级为**仅供人读的观测日志**，不参与 resume 决策（决策依据见 §13h）。
 
 ### 6.1 启动 / Resume 流程
 
 ```
-bootstrap subagent:
+[首启动] bootstrap subagent:
   读 project config（§11）→ {test_command, spec_path, ...}
-  读 plan files frontmatter → {plans: [{id, tasks:[{id, model}]}]}
+  读 plan files → 生成/读取 frontmatter（§13e，含叶子 task 解析规则）→ {plans: [{id, tasks:[{id, model}]}]}
   读 git log → completed_task_ids（via commit convention feat(plan-X/T-Y)）
-  读 run manifest → in_progress task（若有）
-  返回 {config, plans, completed, in_progress, dirty_tree}
+  检查 dirty_tree（兜底，见 6.2）
+  返回 {config, plans, completed, dirty_tree}
                        ▼
-orchestrator:
-  completed task → 跳过
-  in_progress task（崩溃在 implementor-return 和 commit 间）:
-    git reset --hard <pre_task_sha>（清理半提交）→ 重派
-  committed task → 永不重跑
-  强制重跑某 task → workflow reset --task T4（删 manifest 行）
+orchestrator 路由:
+  committed task（git log 有对应 commit）→ 跳过
+  未完成 task → 正常派发
+
+[崩溃后 resume] Workflow({scriptPath, resumeFromRunId: <runId>}):
+  - 未改动的 agent()（同 prompt+opts）→ journal 秒回缓存
+  - 首个未完成 agent → 重跑（崩在 implementor 后/commit 前会自动重跑 implementor，覆盖半成品）
+  - bootstrap 重新读 git log 确认 completed（git log 是 ground truth，不读 manifest）
 ```
 
 ### 6.2 半提交状态清理（DX5）
 
-崩溃在 implementor 完成但 commit 未执行时，working tree 有半成品。resume 时 orchestrator 读 per-task 状态（`in_progress` + `pre_task_sha`），`git reset --hard <pre_task_sha>` 清理后重派。**commit 是状态原子转换**：manifest 写 committed 行 + git commit 在同一 orchestrator turn；turn 崩则 manifest 无行 → 重跑。
+崩溃在 implementor 完成但 commit 未执行时，working tree 有半成品。**native resume 会重跑未完成的 implementor**，TDD 重写自然覆盖半成品，无需显式 `git reset`。兜底：bootstrap 检测 `dirty_tree` 且该 task 无对应 commit → 视为半提交，`git reset --hard HEAD` 清理后由 native resume 重派。**commit 是状态原子转换**：commit subagent 返回 `{commit_sha}` 即 git commit 已落盘；崩在此点之后 → git log 有 commit → 视为 completed 跳过。
 
 ## 7. 串行调度
 
@@ -282,20 +284,20 @@ sonnet BLOCKED → opus 重派 → opus BLOCKED → halt
   → surface 用户（skip / 修改 plan / 终止）
 ```
 
-## 9. 可观测性（run manifest）
+## 9. 可观测性（run manifest，观测用途）
 
-orchestrator JS 只有 `log()`。强制 run manifest 让崩溃后可取证（DX2）：
+orchestrator JS 只有 `log()`。run manifest 角色 = **正常结束后的人读观测日志 + final report 数据源**，不参与 resume（resume 走 native，§6/§13h）。
 
 ```
 runs/<run-id>/
-  manifest.json    # {current_plan, current_task, task_status, review_round, last_commit_sha}
-  log.ndjson       # 每 agent() 调用一行 {ts, agent, status, summary}
-  per-task/<id>.json  # {status, review_rounds, files_touched_per_round, status_history}
+  manifest.json    # workflow 结束时由 final-report subagent 一次性写：{run_id, plans, per_task:{id:{status,model,review_rounds,files_touched_per_round,commit_sha,blocked_info}}, result}
+  log.ndjson       # 关键 agent() 返回后 append 一行 {ts, agent_type, task_id, status, summary}（ts 由 subagent 调 Bash date 获得）
 ```
 
-- 崩溃后：`cat runs/latest/manifest.json` 看状态，非翻 transcript
-- 振荡检测（DX6）：同文件连续 round 反转 diff → 标 OSCILLATING + surface
-- final report 是 manifest 的 digest
+- **写入策略**：orchestrator 在 in-memory 累积 per-task 状态（§4.4），**仅在 workflow 结束（done/halted）时** dispatch final-report subagent 一次性写盘。砍掉逐事件的 state-updater dispatch（避免 agent 调用膨胀，§13h）。
+- 崩溃中途：manifest 可能未写 → 靠 `/workflows` 实时面板 + native resume + git log，不依赖盘上 manifest
+- 振荡检测（DX6）：in-memory `files_touched_per_round` 实时算（§13g），OSCILLATING 时 orchestrator `log()` + surface，不依赖盘上 manifest
+- final report = manifest digest（final-report subagent 读 orchestrator 传入的 in-memory 累积值写盘并输出）
 
 ## 10. Post-Plan 阶段（全自动模式）
 
@@ -363,8 +365,101 @@ frontmatter 是机器读，正文是人读，单文件不分离。
 
 ## 13. 待细化
 
-- [ ] **13a. workflow script JS 骨架**（实现期）：bootstrap → serial plan/task → review rounds → commit → gate → post-plan
-- [ ] **13b. subagent prompt 模板**（实现期）：继承 subagent-driven-development 的 implementer/spec/quality prompt + 新增 bootstrap/commit/context-fetcher/gate/manifest-writer prompt
+### 13a. workflow script JS 骨架
+
+**产物**：`.claude/workflows/run-plans.js`（单文件，~300 行）。通过 `Workflow({scriptPath, args})` 触发，`resumeFromRunId` 续跑（§13h）。
+
+**顶层结构**：
+
+```
+meta{}             // name/description/phases（纯字面量）
+SCHEMAS{}          // 每个 agent 的 evidence schema（JS 对象常量，喂 agent({schema})）
+PROMPTS{}          // 每个 role 的 prompt 模板字符串（内联，因 orchestrator 无 fs）
+state{}            // §4.4 in-memory 状态
+detectOscillation(filesTouchedPerRound)   // §13g，copy
+buildPrompt(role, ctx)                    // 用 ctx 填充 PROMPTS[role]
+leafTasks(plan)                           // §13e 叶子优先规则
+main()
+```
+
+**主流程（main）**：
+
+```javascript
+phase('Bootstrap')
+const boot = await agent(buildPrompt('bootstrap', {configPath, plansDir}),
+                         {schema: SCHEMAS.bootstrap, label: 'bootstrap'})
+Object.assign(state, {config: boot.config, plans: boot.plans})
+
+for (const plan of boot.plans) {
+  phase(`Plan ${plan.id}`)
+  for (const task of leafTasks(plan)) {
+    if (boot.completed.includes(task.id)) { log(`skip ${task.id}`); continue }
+    const r = await runTask(plan, task)
+    if (r.halted) return halt(plan, task, r)         // 写 .workflow/blocked.md + surface（§8.2）
+  }
+  // plan 级独立 gate（§3）：committed SHA 上重跑 full_test_command
+  const gate = await agent(buildPrompt('gate', {plan}),
+                           {schema: SCHEMAS.gate, label: `gate:${plan.id}`})
+  if (gate.evidence.tests_exit_code !== 0) return halt(plan, null, {reason: 'plan gate failed', gate})
+}
+
+phase('Finalize')
+await agent(buildPrompt('finalReport', {state}), {schema: SCHEMAS.finalReport, label: 'final-report'})
+return {result: 'done', state}
+```
+
+**runTask(plan, task) 控制流（要点）**：
+
+1. **implementor**（`model = task.model || 'sonnet'`）；`status='blocked'` → §2.3 升级链（sonnet→opus→halt，带上限）
+2. **review rounds（max 3）**：每轮 `spec ‖ quality ‖ hunter` 并行（同 tree snapshot）；收集各 `diagnostics.files_touched` → 振荡检测（§13g）；全绿 break，任一 ❌ → implementor 修复 → 下一轮；max 3 耗尽 → halt
+3. **simplify（max 1，§5.2）**：无条件触发一轮 review（不信任自报 `changed`）；该轮 ❌ → 标记 `simplify_failed`，**回退委托 commit subagent**（orchestrator 无 fs，commit subagent 在 commit 前按 simplify 的 `files_changed` 先 `git checkout` 回退，再走正常 commit）；simplify 视为 no-op，用 simplify 前的 review 全绿状态继续
+4. **commit**：status check → test → `git commit -m "feat(plan-X/T-Y): ..."`；返回 `commit_sha` → `state.task_status[task.id]='committed'`
+
+**halt(plan, task, r)**（终止 helper）：累积 `blocked_info`（task/category/last_error/suggested_fix，来自 `r.diag`）到 state → dispatch `finalReport`（halted 模式）写 manifest + `.workflow/blocked.md`（§8.2）+ `log()` surface → return。收敛后无 state-updater，**中途终止也走 finalReport 写盘**。
+
+**3 个关键约束的落地**：
+
+- **prompt 内联**（`PROMPTS{}` + `buildPrompt`）：orchestrator 无 fs（§4.3），prompt 不能读外部 .md，只能内联字符串常量。
+- **schema 内联**（`SCHEMAS{}`）：每个 agent 的 evidence schema 作 JS 对象，`agent(p, {schema})` 在 tool-call 层校验（不信任叙述）。
+- **resume 不自建**：靠 Workflow 原生 `resumeFromRunId`（§13h）。骨架不读/写 manifest 做 resume；manifest 仅 final-report 结束写（§13d）。
+
+**验证节奏（首次端到端）**：
+
+1. T1 only（`args:{plan:'01', tasks:['T1']}`）→ 验证单 task 闭环（bootstrap→implementor→review→commit→gate）
+2. 全 Plan 01（7 叶子 task：T1/T2/T3/T4a/T4b/T4c/T4d）→ plan gate 全绿 + manifest 写出
+3. 中途 kill → `resumeFromRunId` 续跑验证
+
+### 13b. subagent prompt 模板
+
+**载体**：`PROMPTS{role: 模板字符串}` 内联在 run-plans.js，`buildPrompt(role, ctx)` 用 ctx 填充。**不外置 .md**（orchestrator 无 fs）。
+
+**继承 upstream**（subagent-driven-development）：implementor / spec-reviewer / quality-reviewer 三角色 prompt 骨架沿用（TDD 纪律、逐行 spec 比对、质量门禁、Red Flags）。
+
+**收敛后 10 类 agent 的 prompt 职责 + evidence 契约**：
+
+| role | prompt 核心职责 | model | evidence 必填（§13c） |
+|---|---|---|---|
+| `bootstrap` | 读 config（§11.1）+ plan files（§13e 生成 frontmatter、叶子优先解析）+ git log（completed）+ dirty_tree | sonnet | config, plans[], completed[], dirty_tree |
+| `implementor` | TDD（RED→GREEN→REFACTOR），跑 `test_command`，self-review；BLOCKED 时填 diagnostics | task.model\|\|sonnet | tests_exit_code, files_changed[], pytest_summary |
+| `specReviewer` | 代码 vs spec（`spec_path`）逐行比对，记 files_touched | opus | status, issues[] |
+| `qualityReviewer` | 质量/架构/边界/类型/不可变性，记 files_touched | opus | status, issues[] |
+| `hunter` | 静默失败/吞错/bad fallback（ECC silent-failure-hunter 语义），记 files_touched | sonnet | status, silent_failures[] |
+| `simplify` | 精简代码（ECC simplify 语义），**如实报 `changed(bool)`** | sonnet | changed, files_changed[] |
+| `commit` | status check → test → `git commit -m "feat(plan-X/T-Y): ..."`，返回 commit_sha | sonnet | commit_sha, committed_files[], tests_at_commit |
+| `contextFetcher` | NEEDS_CONTEXT 兑现（grep/glob/LSP/读 spec/Context7/WebSearch） | sonnet | context |
+| `gate` | committed SHA 上 `git checkout <sha>` + 跑 `full_test_command` + **`git checkout -` 回原 HEAD**，真实 exit code（§3 独立 gate） | sonnet | tests_exit_code, pytest_summary |
+| `finalReport` | 读 orchestrator 传入的 in-memory state，写 `runs/<run-id>/manifest.json`（§13d），输出 digest | sonnet | — |
+
+> 收敛后原 `state-updater` / `manifest-writer` 已并入 `finalReport`（§13h 砍逐事件写盘）。
+
+**agentType 映射**（实现时核对实际可用 subagent_type）：
+
+- `hunter` → `agentType: 'silent-failure-hunter'`（ECC 存在）
+- `simplify` → default workflow subagent + prompt（simplify 是 skill 非 agent type）
+- `specReviewer` / `qualityReviewer` → default + prompt + `model: 'opus'`（upstream 角色语义，无专门 agent type）
+- 其余（bootstrap/implementor/commit/contextFetcher/gate/finalReport）→ default workflow subagent + prompt
+
+**prompt 共同结构**：每个 prompt 编码 ① 角色职责边界 ② 输入 ctx 字段说明 ③ **必填 evidence 字段**（gate 据此，§4.1，绝不叙述替代 evidence）④ Red Flag 提醒（绝不跳 review / 绝不模糊通过 / BLOCKED 必填 diagnostics）。
 
 ### 13c. Agent Boundary Protocol — evidence schema per agent
 
@@ -387,30 +482,31 @@ frontmatter 是机器读，正文是人读，单文件不分离。
 
 - [ ] **13f. workflow init / validate-plans 命令实现**（实现期）
 
-### 13d. run manifest 读写时机
+### 13d. run manifest 写入策略（收敛后）
+
+**决策（§13h）**：manifest 是观测日志，不参与 resume。砍掉逐事件 state-updater dispatch，改为 orchestrator in-memory 累积 + workflow 结束时一次性写盘。
 
 ```
 runs/<run-id>/
-  manifest.json           # {run_id, started_at, plans:[], status:'running'|'done'|'halted'}
-  per-task/<task-id>.json  # {task_id, plan_id, status, model, review_rounds, files_touched_per_round, commit_sha, blocked_info}
-  log.ndjson              # 每 agent 调用一行 {ts, agent_type, task_id, status, summary}
+  manifest.json     # 仅 workflow 结束时写：{run_id, plans, per_task:{id:{status,model,review_rounds,files_touched_per_round,commit_sha,blocked_info}}, result}
+  log.ndjson        # 关键 agent() 返回后 append 一行（ts 由 subagent 调 Bash date）
 ```
 
-**写入时机与写入者**：
+**写入时机（收敛后）**：
 
-| 事件 | 写入者 | 写入内容 |
+| 事件 | 写入者 | 内容 |
 |---|---|---|
-| workflow 启动 | bootstrap subagent | 创建 manifest.json（新 run-id）；resume 时读已有 manifest |
-| task 开始 | state-updater subagent | 写 per-task `{status: in_progress, model, plan_id}` |
-| review round 结束 | review agent（在返回值里） | orchestrator 更新 in-memory `files_touched_per_round`；state-updater 写 per-task round 信息 |
-| simplify 完成 | state-updater subagent | 更新 per-task simplify 状态 |
-| commit 成功 | commit subagent | 更新 per-task `{status: committed, commit_sha}` |
-| BLOCKED | state-updater subagent | 更新 per-task `{status: blocked, blocked_info}` |
-| workflow 结束 | final-report subagent | 更新 manifest `{status: done/halted}`，输出 digest |
+| 每个 agent() 返回 | orchestrator（in-memory 累积） | 更新 state（§4.4）；无需 dispatch |
+| 关键节点（committed/blocked/oscillating） | orchestrator `log()` + 累积 | in-memory，不写盘 |
+| workflow 结束（done/halted） | final-report subagent（唯一写盘者） | 读 orchestrator 传入的 in-memory 累积值，写 manifest.json + 输出 digest |
 
-**为什么不让 orchestrator JS 写**：orchestrator 无 fs（runtime 约束）。所有盘上写入必须由 subagent 执行。orchestrator 通过 prompt 指令告诉 subagent 写什么（把 manifest 路径和目标内容编码进 agent prompt）。
+**砍掉的 dispatch**（原设计的 state-updater 逐事件写盘）：task 开始/round 结束/simplify 完成等不再单独 dispatch 写盘 agent。这些状态都在 orchestrator in-memory，结束时一次写。
 
-**resume 读取**：bootstrap subagent 读 manifest + git log，交叉验证（manifest 说 committed 但 git log 无对应 commit → 以 git log 为准）。
+**为什么能砍**：resume 走 Workflow native `resumeFromRunId`（journal 缓存），不依赖盘上 manifest 的 in_progress 字段。盘上 manifest 唯一消费者是"人读"和"final report"。
+
+**resume 时 manifest 的角色**：不读。bootstrap 只读 git log 确认 completed（git log 是 ground truth）。manifest 崩溃中途可能未写，不影响 resume。
+
+> orchestrator JS 写盘的通用约束仍成立：无 fs（§4.3），所有盘上写入由 subagent 执行。收敛后唯一写盘 subagent = final-report。
 
 ### 13e. writing-plans frontmatter 增强
 
@@ -424,7 +520,11 @@ runs/<run-id>/
 对每个 plan 文件：
   如果已有 YAML frontmatter（--- 开头）→ 直接读取
   如果没有 → 生成：
-    1. 提取 `## Task N` / `### Task N` headers → task 列表
+    1. 提取 task 列表（**叶子优先规则**，处理 Plan 01 式嵌套）：
+       - 扫描 `## Task N` 与 `### Task NX` headers
+       - 若某 `## Task N` 下存在 `### Task NX` 子 task → 只入子 task（NX），父 Task N 视为容器不入列
+       - 若某 `## Task N` 下无子 task → 入 Task N 本身
+       - ID 规范化：`plan-01/T1`、`plan-01/T4a`（保留字母后缀），全局唯一
     2. 对每个 task，判断 modelHint：
        - 标题/描述含"安全/加密/认证/JWT/CSRF/Fernet" → opus
        - 标题/描述含"算法/比对/策略/边界" → opus
@@ -478,3 +578,20 @@ function detectOscillation(filesTouchedPerRound) {
 **触发动作**：振荡 → orchestrator 不自动 halt（避免丢失 in-progress work），而是写 per-task `{status: OSCILLATING, oscillation_info}` + surface 用户决定（继续/跳过/干预）。
 
 **files_touched 的来源**：review agent 的返回值 `diagnostics.files_touched` 由 orchestrator 追加到 in-memory `filesTouchedPerRound[]`。review agent 在检查 diff 时顺带记录变更文件列表。
+
+### 13h. Resume 机制收敛决策
+
+**问题**：原设计（§6/§9/§13d）用自建 run manifest + bootstrap 重读做 resume，与 Workflow 工具原生 `resumeFromRunId`（journal 缓存）重叠冲突。逐事件 state-updater 写盘还让每 task agent 调用数从 §4.3 的 ~6 膨胀到 ~10+。
+
+**决策**：
+1. **Resume 主路径 = Workflow 原生 `resumeFromRunId`**。完成的 agent()（同 prompt+opts）秒回缓存，首个改动的调用及之后重跑。
+2. **Manifest 降级为观测日志**：仅供人读 + final report 数据源，不参与 resume 决策。
+3. **砍掉逐事件 state-updater dispatch**：orchestrator in-memory 累积状态（§4.4），仅 workflow 结束时 final-report subagent 一次写盘（§13d）。
+4. **半提交清理（§6.2）**：native resume 重跑未完成 implementor 自然覆盖半成品，无需显式 git reset；bootstrap 仅做 dirty_tree 兜底检查。
+
+**影响**：
+- §4.3 的"每 task ≈6 agent"估算成立（无 state-updater 膨胀）
+- §4.4 in-memory state 是执行期间的事实来源；native resume 重跑 bootstrap 重建之
+- §6/§9/§13d 已据此收敛
+
+**代价**：崩溃中途无盘上 manifest（靠 `/workflows` 面板 + native resume + git log）。可接受——native resume 比自建 manifest 更可靠（journal 是 Workflow 内置、自动维护，改 prompt 才失效缓存，而改 prompt 本就期望重跑）。
