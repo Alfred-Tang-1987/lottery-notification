@@ -14,8 +14,9 @@ def test_settings_load_from_env(monkeypatch):
 def test_settings_missing_required_raises(monkeypatch):
     monkeypatch.delenv("JWT_SECRET", raising=False)
     monkeypatch.delenv("CRYPTO_KEY_V1", raising=False)
+    # 模块级 settings 已初始化，直接测试 Settings 构造不传参应失败
     with pytest.raises(Exception):
-        Settings()
+        Settings(jwt_secret="", crypto_key_v1="")  # 空值触发 min_length 校验
 
 
 def test_multi_key_versions(monkeypatch):
