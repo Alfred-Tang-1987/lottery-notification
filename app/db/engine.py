@@ -1,6 +1,5 @@
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
-from sqlmodel import Session
 
 
 def build_engine(url: str) -> Engine:
@@ -28,9 +27,3 @@ def apply_sqlite_pragmas(eng: Engine) -> None:
     """兼容入口：PRAGMA 已在 build_engine 内注册。保留供测试/旧调用，内部 no-op
     （避免对同一 engine 重复注册 connect 事件）。"""
     return None
-
-
-def get_session(eng: Engine):
-    """FastAPI 依赖：每请求一会话。"""
-    with Session(eng) as session:
-        yield session
