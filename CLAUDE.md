@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目状态
 
-**设计/规划阶段**：spec + **9 页 prototype 全部完成**（见 `docs/`）；**业务代码尚未实现**。开始编码前先读 spec。原 6 个分阶段 plan 已删除（内容过时，实现时基于最新 spec 重新 writing-plans）。
+**Plan 01（基础设施骨架）已完成，58 tests green。** 其余 Plan 02–06 待实现，plan 在 `docs/superpowers/plans/`。改代码前先读 spec + 对应 plan；实现通过 **workflow orchestrator**（见下）自动跑 plan。
 
 ## 项目是什么
 
@@ -16,7 +16,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 技术栈
 
-- 后端：Python 3.12、FastAPI、SQLModel + SQLite（类型选可迁 PostgreSQL）、APScheduler、httpx、PyJWT、passlib、cryptography(Fernet)
+- 后端：Python 3.12（**用 uv，不用 pip/poetry**——本机系统 Python 是 3.9，项目锁 3.12，`uv sync` 自动建 3.12 venv）、FastAPI、SQLModel + SQLite（类型选可迁 PostgreSQL）、Alembic、APScheduler、httpx、PyJWT、passlib、cryptography(Fernet)
 - 前端：Vue3 + Vite + Vue Router + Pinia + UnoCSS + ECharts
 - 部署：Docker（NAS FnOS）
 
@@ -37,6 +37,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **用户隔离**：所有用户私有表强制 `user_id`，repository 查询一律 `WHERE user_id=?`，FastAPI `current_user` 依赖注入；开奖结果 `draw_results` 是全局共享数据。
 - **金额用分**（int）存储，展示层再除 100，避免浮点。
 
+### 已实现分层（Plan 01）
+
+```
+app/
+├── config.py          # pydantic-settings Settings；field_validator 强制 CRYPTO_KEY 是可用 Fernet key
+├── db/
+│   ├── engine.py      # build_engine(): SQLite + WAL/NORMAL/busy_timeout + pool_size=1（单写连接）
+│   └── session.py     # get_engine() 惰性单例 / get_session()
+├── infrastructure/
+│   └── crypto.py      # CryptoService: Fernet 多版本（key_version 选 key 解密、current 加密、re_encrypt 轮换）；CipherBlob=(version,ciphertext)
+├── models/            # SQLModel 全 13 表 + apscheduler_jobs；__init__.py 汇总 import（建表靠 SQLModel.metadata.create_all）
+├── seeds/             # 7 彩种 LotteryType 种子（spec_json pydantic 校验，启动幂等写入）
+└── main.py            # FastAPI app；lifespan 启动校验(validate_startup)+种子；GET /health（db+tz 探活）
+alembic/               # 首迁移含全 schema + apscheduler_jobs（job_state LargeBinary）
+import_linter.toml     # app.domain 禁 import infrastructure/adapters/api/services（Plan 02 落地后强制）
+```
+
+**SQLite 并发模型**：`pool_size=1` + WAL + `busy_timeout` —— 单写连接串行化，配合 APScheduler jobstore 独立 engine（见 Plan 04）避免写竞争。
+
 ## 彩种规则（⚠️ 必读，领域层正确性的前提）
 
 **权威源：[`docs/reference/lottery-rules.md`](docs/reference/lottery-rules.md)**（子代理复核福彩/体彩官网，含号码规则/玩法/称呼/奖级/倍投/追加 + 来源链接）。实现 `LotterySpec`/`prize_tables`/号码校验前**务必对照该文档**，不要凭记忆。
@@ -48,28 +67,47 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **倍投**：所有彩种 2–99 倍（影响投入与中奖金额）。**追加投注仅大乐透**（基本 2 元 + 追加 1 元，追加仅参与一二等奖 80%）。
 - 七乐彩特别号**同源于 01–30 池**（非独立分区）。
 
-## 常用命令
-
-> 代码尚未实现，以下为 plan 规划的命令（实现后生效）。
+## 常用命令（已验证可用）
 
 ```bash
 # 后端
-uv sync --extra dev                                          # 安装（含 dev 依赖）
-uv run pytest -v                                             # 全量测试（领域层覆盖率门禁 95%+）
-uv run pytest tests/domain/test_partition_compare.py -v    # 单文件
-uv run pytest tests/domain/test_partition_compare.py::test_x -v  # 单测试
-uv run python -m app.cli ssq                                 # 手动触发一期闭环（获取→比对→推送）
-uv run uvicorn app.main:app --reload                         # 启动 API（开发）
+uv sync --extra dev                                          # 装依赖（uv.lock 锁定；首次 uv python install 3.12）
+uv run pytest -v                                             # 全量测试
+uv run pytest tests/test_models_t4c.py -v                    # 单文件
+uv run pytest tests/test_models_t4c.py::test_defaults -v     # 单测试
+uv run uvicorn app.main:app --reload                         # 启动 API（需 .env，见下）
+uv run python -m app.cli ssq                                 # [Plan 03 后] 手动触发一期闭环（获取→比对→推送）
 
-# 前端（web/）
-cd web && npm install
-npm run dev          # 开发（代理 /api → localhost:8000）
-npm run build        # 产物到 ../static（后端静态托管 SPA）
-npx vitest run       # 组件测试
+# 数据库迁移
+uv run alembic upgrade head                                  # 应用迁移
+uv run alembic revision --autogenerate -m "msg"              # 改 model 后生成新迁移
+
+# 领域层 purity 护栏
+uv run lint-imports                                          # app.domain 不得 import infra/adapters/api/services
+
+# 前端（web/，[Plan 06 后]）
+cd web && npm install && npm run dev                         # 开发（代理 /api → :8000）；npm run build → ../static
 
 # 部署（NAS Docker，端口 8280）
 docker compose up -d --build
 ```
+
+**密钥**（`.env`，不进库不进日志；模板 `.env.example`）：`JWT_SECRET`（≥32 字符）、`CRYPTO_KEY_V1`（44 字符 Fernet key，生成 `python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())"`）、`MXNZP_API_KEY`/`JUHE_API_KEY`（数据源）、`SMTP_*`（email 渠道）、`ADMIN_BARK_KEY`。启动时 `validate_startup()` 会端到端冒烟验证 crypto key 可用——无效即拒绝启动。
+
+## workflow orchestrator（执行 plan）
+
+`.claude/workflows/run-plans.js` 自动执行 `docs/superpowers/plans/*.md`：每 task implementor(TDD RED→GREEN→REFACTOR) → review 三链并行(spec 逐行 ‖ quality 架构 ‖ silent-failure-hunter) → simplify → commit `feat(plan-X/T-Y)`，plan 级独立 gate（在 committed SHA 上重跑全量测试，不信 implementor 自报）。详见 `docs/superpowers/workflows/USAGE.md`。
+
+**进度以 git 为单一事实源**——bootstrap 读 git log 的 `feat(plan-X/T-Y)` convention 跳过已完成 task。跨机器/跨 session 续跑无需 manifest 或 runId：clone + 跑全新 workflow 即从未完成的 task 继续。
+
+触发（Claude 调 Workflow 工具）：
+```
+Workflow({ scriptPath: '.claude/workflows/run-plans.js', args: { plan: '02' } })  # 单 plan
+Workflow({ scriptPath: '...', args: {} })                                          # 所有 plan
+Workflow({ scriptPath: '...', resumeFromRunId: '<runId>' })                        # 同 session 续跑
+```
+
+**§2.4 模型策略（务必遵守）**：开发用指定 opus/sonnet/haiku；一旦不可用——**含 429 落 router stderr、不在 `Error.message` 的情形**——一律视作 `model_unavailable` → halt + 保存进度（finalReport 依次试 opus/sonnet/haiku 写 manifest）→ **等用户发指令才 resume**。**绝不降级到可用 model（如 glm）继续开发**，`'uncaught error'` 等同于 `model_unavailable`。
 
 ## 关键约定
 
@@ -94,6 +132,8 @@ docker compose up -d --build
 
 - `docs/superpowers/specs/2026-06-16-lottery-notification-design.md` — **设计 spec（15 节，需求/架构/数据/合规的单一事实源）**
 - `docs/reference/lottery-rules.md` — **7 大彩种规则权威参考**（号码/玩法/称呼/奖级/倍投/追加 + 来源）
+- `docs/superpowers/plans/` — implementation plan（6 份业务 plan：01 已完成，02–06 待实现）
+- `docs/superpowers/workflows/USAGE.md` — workflow orchestrator 使用指南（触发/参数/限额容错/resume/调试）
 - `docs/superpowers/prototypes/` — 页面 prototype（视觉基准，9 页）
 
 ## NAS 部署约束
