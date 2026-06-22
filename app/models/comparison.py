@@ -13,7 +13,7 @@ class Comparison(TimestampMixin, table=True):
     hits_json: str
     prize_tier: int | None = None
     prize_amount: int | None = None  # 分；null=浮动奖待派奖
-    is_win: bool = Field(default=False)
+    is_win: bool = Field(default=False, sa_column_kwargs={"server_default": "0"})
     corrected_at: datetime | None = None
 
     __table_args__ = (
@@ -25,6 +25,9 @@ class PrizeClaim(TimestampMixin, table=True):
     __tablename__ = "prize_claims"
     id: int | None = Field(default=None, primary_key=True)
     comparison_id: int = Field(foreign_key="comparisons.id", index=True)
-    status: str = Field(default="pending", max_length=16)  # pending|claimed|expired
+    status: str = Field(
+        default="pending", max_length=16,
+        sa_column_kwargs={"server_default": "'pending'"},
+    )  # pending|claimed|expired
     deadline: datetime
     claimed_at: datetime | None = None

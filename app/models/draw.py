@@ -12,10 +12,17 @@ class DrawResult(TimestampMixin, table=True):
     draw_date: datetime
     numbers_json: str
     source: str = Field(max_length=16)  # mxnzp | juhe
-    fetched_at: datetime = Field(default_factory=datetime.utcnow)
-    verified: bool = Field(default=False)
-    single_source: bool = Field(default=False)
-    version: int = Field(default=1)  # 官方更正递增
+    fetched_at: datetime = Field(
+        default_factory=datetime.utcnow,
+        sa_column_kwargs={"server_default": "CURRENT_TIMESTAMP"},
+    )
+    verified: bool = Field(default=False, sa_column_kwargs={"server_default": "0"})
+    single_source: bool = Field(
+        default=False, sa_column_kwargs={"server_default": "0"},
+    )
+    version: int = Field(
+        default=1, sa_column_kwargs={"server_default": "1"},
+    )  # 官方更正递增
 
     __table_args__ = (
         UniqueConstraint("lottery_code", "draw_no", name="uq_draw_lottery_no"),
@@ -28,6 +35,7 @@ class DrawCorrection(TimestampMixin, table=True):
     draw_result_id: int = Field(foreign_key="draw_results.id", index=True)
     old_numbers_json: str
     new_numbers_json: str
+    corrected_at: datetime | None = Field(default=None, nullable=True)
     reason: str | None = None
 
 
