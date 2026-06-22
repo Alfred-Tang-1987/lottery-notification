@@ -98,6 +98,7 @@ def upgrade() -> None:
     sa.Column('draw_result_id', sa.Integer(), nullable=False),
     sa.Column('old_numbers_json', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
     sa.Column('new_numbers_json', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+    sa.Column('corrected_at', sa.DateTime(), nullable=True),
     sa.Column('reason', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
     sa.ForeignKeyConstraint(['draw_result_id'], ['draw_results.id'], ),
     sa.PrimaryKeyConstraint('id')
