@@ -1,0 +1,8 @@
+{
+  "test_command": "uv run pytest",
+  "full_test_command": "uv run pytest -v",
+  "build_command": "uv build",
+  "lint_command": "uv run ruff check .",
+  "spec_path": "docs/superpowers/specs/2026-06-16-lottery-notification-design.md",
+  "language": "python"
+}
