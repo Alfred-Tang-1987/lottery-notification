@@ -61,6 +61,49 @@ sonnet BLOCKED → opus 重派 → opus BLOCKED → halt + 写 .workflow/blocked
 
 **不无限升级**。opus 仍 BLOCKED 则停止整个 workflow（serial 下不阻塞下游，而是 halt 等人工）。
 
+### 2.4 Model 限额容错（halt + fallback 链保存 + resume）
+
+**问题**：opus/sonnet 额度不一，限额耗尽 → agent 调用失败。§2.3 BLOCKED 升级链为「任务太难」设计，限额是「资源不可用」，走升级链无意义（opus 限额耗尽时升级 opus 无用）。
+
+**核心原则**：限额耗尽 → **halt（不降级继续开发）** → fallback 链**仅用于保存进度** → 额度恢复后 resume。**fallback_model 绝不用于继续开发**（避免弱 model 产出低质量代码污染进度）。
+
+```
+agent(model=opus/sonnet) 调用
+  → 限额耗尽（quota / rate-limit / 429）
+    → agent 抛错 或 返回 status:'model_unavailable'
+      → workflow 识别（双重：自报 + 捕获抛错，错误含 quota/rate-limit/429/overloaded）
+        → halt（不进 §2.3 升级链，不降级）
+          → halt 的 finalReport 按 fallback 链 [opus, sonnet, haiku] 逐一尝试
+            → 第一个可用 model 写 manifest（quota_exhausted + completed + current_task + resume_point）
+              → 全链失败 → 环境默认 model 兜底（不指定 model）
+                → surface：「X model 限额耗尽，进度已保存，额度恢复后 resumeFromRunId」
+                  → [额度恢复] resumeFromRunId 续跑（§13h）
+```
+
+**关键设计**：
+
+1. **`model_unavailable` 新 status**（§4.1/§4.4）：agent 遇 quota/rate-limit → 返回 `status:'model_unavailable'`（非 blocked/failed）。workflow 路由：`model_unavailable → halt`（不升级、不降级）。
+2. **双重限额检测**：agent 自报 `model_unavailable` + workflow 捕获 agent() 抛错（限额常致 agent 直接抛错而非返回 status）。workflow 判断错误关键词（quota / rate-limit / 429 / overloaded）。
+3. **fallback 链 [opus, sonnet, haiku] 仅用于 halt/finalReport 保存**（逐一尝试）：
+   ```javascript
+   async function finalReportWithFallback(ctx) {
+     for (const m of ['opus', 'sonnet', 'haiku']) {
+       try {
+         return await agent(buildPrompt('finalReport', ctx),
+                            {schema: SCHEMAS.finalReport, model: m, label: `final-report:${m}`})
+       } catch (e) { log(`finalReport ${m} 不可用: ${errStr(e)}, 试下一个`) }
+     }
+     log('fallback 链全失败，用环境默认 model 保存')
+     return await agent(buildPrompt('finalReport', ctx),
+                        {schema: SCHEMAS.finalReport, label: 'final-report:default'})
+   }
+   ```
+   halt() 调用 finalReportWithFallback。**确保至少 haiku（最便宜、限额最宽）或环境默认能保存进度**。fallback 链**只此一处用途**——runTask 的主 agent 调用**不**用 fallback（不降级继续开发）。
+4. **runTask 限额捕获**：implementor/review/commit/gate 的 agent() 包 try/catch。捕获错误若含限额关键词 → 返回 `{halted:true, reason:'model_unavailable', diag:{model, error}}` → halt → finalReportWithFallback 保存。非限额错误 → 正常错误处理（retry/halt）。
+5. **resume 走 §13h**：额度恢复后 `resumeFromRunId`，native resume 重跑中断 task（此时额度可用）。manifest 的 `quota_exhausted` 字段提醒用户确认恢复再续跑。
+
+**UX 附带**（解决长任务中断根因）：bootstrap/implementor 跑长命令（uv sync/build）前 `log()` 打「预计 N 分钟」；`workflow.config.json` 可选加 `task_timeout`（超时 surface）。
+
 ## 3. 测试策略
 
 | 层级 | 时机 | 命令来源 | 说明 |
@@ -81,7 +124,7 @@ orchestrator 是 JS sandbox：**无 fs、无 subprocess、无 Date.now/Math.rand
 
 ```json
 {
-  "status": "ok" | "failed" | "blocked" | "needs_context",
+  "status": "ok" | "failed" | "blocked" | "needs_context" | "model_unavailable",
   "evidence": {
     "tests_exit_code": 0,
     "commit_sha": "abc1234",
@@ -156,6 +199,10 @@ switch (agentReturn.status) {
     break
   case 'failed':
     // commit failed / test failed → retry once → BLOCKED
+    break
+  case 'model_unavailable':
+    // 限额耗尽（§2.4）→ halt（不升级不降级）→ fallback 链 [opus,sonnet,haiku] 仅保存进度
+    halt_via_fallback()
     break
 }
 
