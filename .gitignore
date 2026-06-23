@@ -11,3 +11,6 @@ data/
 *.db-shm
 .env
 runs/
+.coverage
+htmlcov/
+*.egg-info/
