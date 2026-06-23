@@ -46,6 +46,15 @@ function errStr(e) {
   return String(e?.message || e || '').slice(0, 200)
 }
 
+// 把 completed id 归一化为 plan-scoped key "plan-{seq}/T-{id}"（inline 自 lib.js）。
+// 避免跨 plan 同名 task 误跳过：去 plan 前缀会让 Plan 02 的 T2 被 Plan 01 的 T2 误 skip。
+function normalizeCompleted(ids) {
+  return ids.map(id => {
+    const m = String(id).match(/^(?:plan-)?(\d+)\/+(T[\w-]+)$/i)
+    return m ? `plan-${m[1]}/${m[2]}` : String(id)
+  })
+}
+
 // ===== SCHEMAS（inline 自 lib.js Task 5，去 export）=====
 function reviewSchema() {
   return { type: 'object', required: ['status'], additionalProperties: true,
@@ -422,11 +431,13 @@ try {
 }
 if (boot.status !== 'ok') { await halt(null, null, { reason: `bootstrap ${boot.status}`, diag: boot.diagnostics }); return { result: 'halted', reason: `bootstrap ${boot.status}` } }
 state.config = boot.evidence.config
-// run-2 根因：bootstrap 返回 "01/T1"（planSeq/taskId），task.id 是 "T1"——includes 永不命中 →
-// 已 commit 的 Plan 01 被重跑 → T4c 无改动 commit 失败 halt。归一化去 "NN/" 前缀。
-// args.completed 可手动覆盖（resume 时显式传已 commit 的 taskId 列表，双保险）。
+// plan-scoped completed：bootstrap 从 git log 解析的 id（"01/T1" / "plan-01/T1" / 裸 "T1"）
+// 归一化为 "plan-{seq}/T-{id}"。run-2 旧逻辑【去】plan 前缀→单 plan 内能匹配，但跨 plan 同名
+// task（Plan 01/02 都有 T1-T10）会让 Plan 02 的 T2 被 Plan 01 的 T2 误 skip → domain layer 残缺。
+// plan-scoped key 修复：见下方比对 `plan-${plan.seq}/${task.id}`。
+// args.completed 可手动覆盖（resume 时显式传已 commit 的 plan-scoped id 列表，双保险）。
 const _rawCompleted = (Array.isArray(args.completed) && args.completed.length ? args.completed : boot.evidence.completed) || []
-state.completed = _rawCompleted.map(id => String(id).replace(/^\d+\/+/, ''))
+state.completed = normalizeCompleted(_rawCompleted)
 
 for (const plan of boot.evidence.plans) {
   if (args.plan && plan.id !== args.plan && plan.seq !== args.plan) continue
@@ -435,7 +446,8 @@ for (const plan of boot.evidence.plans) {
   const want = (args.tasks && args.tasks.length) ? new Set(args.tasks) : null
   const tasks = plan.tasks.filter(t => !want || want.has(t.id))
   for (const task of tasks) {
-    if (state.completed.includes(task.id)) { log(`skip ${task.id} (already committed)`); continue }
+    const taskKey = `plan-${plan.seq}/${task.id}`  // plan-scoped：跨 plan 同名 task 不误跳过
+    if (state.completed.includes(taskKey)) { log(`skip ${taskKey} (already committed)`); continue }
     let r
     try {
       r = await runTask(plan, task)
