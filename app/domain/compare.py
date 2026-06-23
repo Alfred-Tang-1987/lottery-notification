@@ -79,3 +79,36 @@ class PositionalCompare(CompareStrategy):
             if tier:
                 return HitResult(hit, 0, tier.tier, tier.amount, is_win=True)
         return HitResult(hit, 0, None, None, is_win=False)
+
+
+class QxcHybridCompare(CompareStrategy):
+    """七星彩混合型：前区 6 位按位连续命中 + 后区单值 0-14。
+
+    前区按位（0-9，允许跨位重复），后区单值（0-14）。
+    front_hit = 前区从首位起**连续命中位数**（前缀计数）。
+    back_hit = 后区单值是否命中（0/1）。
+
+    语义澄清：lottery-rules.md「按位对应（无需连续对位）」指**选号无需连号**
+    （不要求选 1,2,3,4,5,6 连续数字），**非**命中判定方式。七星彩奖级按
+    **连续命中位数**（consecutive correct positions）判定——该彩种本质。
+    MVP 用「首位起前缀连续命中」近似；若官方按「最长连续段」(longest run)，
+    Phase 2 用真实开奖校准 front_hit 计算与 condition。一二等（6 位全对）不受影响。
+    """
+
+    @staticmethod
+    def compare(lottery, draw_front, draw_back, combo_front, combo_back, *,
+                append=False, **_kw) -> HitResult:
+        # 前区：首位起前缀连续命中位数
+        front_hit = 0
+        for a, b in zip(draw_front, combo_front):
+            if a == b:
+                front_hit += 1
+            else:
+                break
+        # 后区：单值是否命中（draw_back/combo_back 均为单元素 tuple）
+        back_hit = 1 if (combo_back and draw_back and combo_back[0] == draw_back[0]) else 0
+
+        tier = _match_tier(lottery, front_hit=front_hit, back_hit=back_hit)
+        if tier is None:
+            return HitResult(front_hit, back_hit, None, None, is_win=False)
+        return HitResult(front_hit, back_hit, tier.tier, tier.amount, is_win=True)
