@@ -112,3 +112,46 @@ class QxcHybridCompare(CompareStrategy):
         if tier is None:
             return HitResult(front_hit, back_hit, None, None, is_win=False)
         return HitResult(front_hit, back_hit, tier.tier, tier.amount, is_win=True)
+
+
+# 显式注册表（不用装饰器自动发现——可测、可预测）。
+# 新增彩种：在此登记 code → CompareStrategy；核心比对逻辑不动。
+REGISTRY: dict[str, type[CompareStrategy]] = {
+    "ssq": PartitionCompare,
+    "dlt": PartitionCompare,
+    "qlc": PartitionCompare,
+    "fc3d": PositionalCompare,
+    "pl3": PositionalCompare,
+    "pl5": PositionalCompare,
+    "qxc": QxcHybridCompare,
+}
+
+
+def compare(spec, *, draw_front, draw_back, entry) -> list[HitResult]:
+    """领域入口：按 spec.code 选策略 → 展开 entry → 对每个 SingleCombo 比对。
+
+    spec: LotterySpec（决定路由策略 + number_style）
+    draw_front / draw_back: 本期开奖号码（draw_back=None 表示无后区，如按位型）
+    entry: Entry（原始注单；single 玩法 expand 返回自身一注，复式/胆拖 Phase 2）
+
+    返回每个展开单式的 HitResult（顺序与 expand 一致）。
+    未知彩种 code 不在 REGISTRY → KeyError（不静默 fallback，显式失败暴露配置缺失）。
+    """
+    from app.domain.entry import expand
+
+    strategy = REGISTRY[spec.code]
+    results: list[HitResult] = []
+    for combo in expand(entry):
+        if spec.number_style == "positional":
+            # 按位型：无后区，draw_front 即开奖序列，combo.front 即选号
+            r = strategy.compare(
+                lottery=spec.code, draw=draw_front, combo=combo.front,
+            )
+        else:
+            # partition / hybrid：前区 + 后区都参与
+            r = strategy.compare(
+                lottery=spec.code, draw_front=draw_front, draw_back=draw_back,
+                combo_front=combo.front, combo_back=combo.back, append=entry.append,
+            )
+        results.append(r)
+    return results
