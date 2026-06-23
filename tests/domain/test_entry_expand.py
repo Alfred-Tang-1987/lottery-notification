@@ -127,3 +127,13 @@ def test_count_combos_enforces_max_combinations():
 def test_max_combinations_constant_exists():
     """MAX_COMBINATIONS must be defined and equal to 10000."""
     assert MAX_COMBINATIONS == 10000
+
+
+def test_compare_strategy_base_raises():
+    """CompareStrategy base class compare() must raise NotImplementedError."""
+    from app.domain.compare import CompareStrategy
+    with pytest.raises(NotImplementedError):
+        CompareStrategy.compare(
+            lottery="ssq", draw_front=(1, 2, 3, 4, 5, 6), draw_back=(7,),
+            combo_front=(1, 2, 3, 4, 5, 6), combo_back=(7,), append=False,
+        )

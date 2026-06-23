@@ -75,3 +75,51 @@ def test_lottery_spec_validates_welfare_rate():
     d["welfare_rate"] = 150
     with pytest.raises(ValueError, match="welfare_rate"):
         LotterySpec.from_dict(d)
+
+
+def test_number_range_min_greater_than_max():
+    with pytest.raises(ValueError, match="min"):
+        NumberRange(min=10, max=5, count=1)
+
+
+def test_number_range_count_less_than_one():
+    with pytest.raises(ValueError, match="count"):
+        NumberRange(min=1, max=33, count=0)
+
+
+def test_positional_digits_min_greater_than_max():
+    with pytest.raises(ValueError, match="min"):
+        PositionalDigits(min=10, max=5, length=3)
+
+
+def test_positional_digits_length_less_than_one():
+    with pytest.raises(ValueError, match="length"):
+        PositionalDigits(min=0, max=9, length=0)
+
+
+def test_lottery_spec_invalid_number_style():
+    d = _ssq_spec_dict()
+    d["number_style"] = "invalid"
+    with pytest.raises(ValueError, match="number_style"):
+        LotterySpec.from_dict(d)
+
+
+def test_lottery_spec_invalid_price_per_bet():
+    d = _ssq_spec_dict()
+    d["price_per_bet"] = 0
+    with pytest.raises(ValueError, match="price_per_bet"):
+        LotterySpec.from_dict(d)
+
+
+def test_lottery_spec_invalid_draw_days():
+    d = _ssq_spec_dict()
+    d["draw_days"] = [7]
+    with pytest.raises(ValueError, match="draw_days"):
+        LotterySpec.from_dict(d)
+
+
+def test_lottery_spec_empty_draw_days():
+    d = _ssq_spec_dict()
+    d["draw_days"] = []
+    with pytest.raises(ValueError, match="draw_days"):
+        LotterySpec.from_dict(d)
