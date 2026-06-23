@@ -1,5 +1,5 @@
 from fastapi.testclient import TestClient
-from app.main import app, validate_startup
+from app.main import app, validate_startup, get_db_for_health
 from app.config import reset_settings_cache
 from cryptography.fernet import Fernet
 import pytest
@@ -13,19 +13,25 @@ def mock_env(monkeypatch):
     monkeypatch.setenv("CRYPTO_KEY_V1", Fernet.generate_key().decode())
 
 
-def test_health_ok():
-    client = TestClient(app)
-    r = client.get("/health")
-    assert r.status_code == 200
-    body = r.json()
-    assert body["status"] == "ok"
-    assert "tz" in body
-    assert body["tz"] == "Asia/Shanghai"
+def test_health_ok(db_engine):
+    # 注入隔离的测试 engine（与 test_health_includes_db_check 一致）。
+    # 避免连默认 ./data/lottery.db——该目录被 .gitignore 排除，干净 checkout 上不存在，
+    # 会导致 health 探活失败返回 degraded（测试不应依赖工作目录的文件系统状态）。
+    app.dependency_overrides[get_db_for_health] = lambda: db_engine
+    try:
+        client = TestClient(app)
+        r = client.get("/health")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["status"] == "ok"
+        assert "tz" in body
+        assert body["tz"] == "Asia/Shanghai"
+    finally:
+        app.dependency_overrides.clear()
 
 
 def test_health_includes_db_check(db_engine):
     # 注入测试 engine（try/finally 保证清理，避免污染后续测试）
-    from app.main import app, get_db_for_health
     app.dependency_overrides[get_db_for_health] = lambda: db_engine
     try:
         client = TestClient(app)
