@@ -47,6 +47,35 @@ class PartitionCompare(CompareStrategy):
         if tier is None:
             return HitResult(front_hit, back_hit, None, None, is_win=False)
 
-        amount = tier.amount
         # 浮动档：amount=None（运行时回填，append_multiplier 在回填时应用）
-        return HitResult(front_hit, back_hit, tier.tier, amount, is_win=True)
+        return HitResult(front_hit, back_hit, tier.tier, tier.amount, is_win=True)
+
+
+class PositionalCompare(CompareStrategy):
+    """按位型（直选/单选）：逐位精确匹配，顺序敏感。福彩3D/排列3/排列5。
+
+    front_hit = 逐位全等的位数（直选：全部对才算中）。无后区。
+    调用约定两种形态：
+      - compare("fc3d", draw=(1,2,3), combo=(1,2,3))   ← 按位型自然形态（关键字）
+      - compare("fc3d", (1,2,3), (1,2,9))              ← 位置参数（draw/combo 顺序）
+    """
+
+    @staticmethod
+    def compare(lottery, draw_front=None, draw_back=None, combo_front=None,
+                combo_back=None, *, append=False, draw=None, combo=None,
+                **_kw) -> HitResult:
+        # 归一 draw / combo 来源
+        # 位置形 compare(lottery, draw, combo)：第二 tuple 落在 draw_back，combo_front 缺省
+        if combo_front is None and combo is None and isinstance(draw_back, tuple):
+            d, c = tuple(draw_front or ()), tuple(draw_back)
+        else:
+            d = tuple((draw if draw is not None else draw_front) or ())
+            c = tuple((combo if combo is not None else combo_front) or ())
+
+        hit = sum(1 for a, b in zip(d, c) if a == b)
+        all_match = bool(d) and hit == len(d)
+        if all_match:
+            tier = _match_tier(lottery, front_hit=hit, back_hit=0)
+            if tier:
+                return HitResult(hit, 0, tier.tier, tier.amount, is_win=True)
+        return HitResult(hit, 0, None, None, is_win=False)
