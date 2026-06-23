@@ -1,5 +1,5 @@
 import pytest
-from app.domain.spec import NumberRange, PositionalDigits
+from app.domain.spec import NumberRange, PositionalDigits, LotterySpec
 
 
 def test_number_range_rejects_duplicates():
@@ -27,3 +27,51 @@ def test_positional_digits_validates_range():
 def test_number_range_count_exceeds_pool():
     with pytest.raises(ValueError):
         NumberRange(min=1, max=16, count=20)
+
+
+def _ssq_spec_dict():
+    return {
+        "code": "ssq", "name": "双色球", "category": "welfare", "number_style": "partition",
+        "front": {"min": 1, "max": 33, "count": 6},
+        "back": {"min": 1, "max": 16, "count": 1},
+        "draw_days": [1, 3, 6], "play_types": ["single", "fushi", "dantuo"],
+        "welfare_rate": 36, "price_per_bet": 200,
+    }
+
+
+def test_lottery_spec_from_dict_partition():
+    spec = LotterySpec.from_dict(_ssq_spec_dict())
+    assert spec.code == "ssq"
+    assert isinstance(spec.front, NumberRange)
+    assert spec.welfare_rate == 36
+
+
+def test_lottery_spec_from_dict_positional():
+    spec = LotterySpec.from_dict({
+        "code": "fc3d", "name": "福彩3D", "category": "welfare", "number_style": "positional",
+        "front": {"min": 0, "max": 9, "length": 3}, "back": None,
+        "draw_days": [0, 1, 2, 3, 4, 5, 6], "play_types": ["danxuan"],
+        "welfare_rate": 34, "price_per_bet": 200,
+    })
+    assert isinstance(spec.front, PositionalDigits)
+    assert spec.back is None
+
+
+def test_lottery_spec_hybrid_qxc():
+    spec = LotterySpec.from_dict({
+        "code": "qxc", "name": "七星彩", "category": "sport", "number_style": "hybrid",
+        "front": {"min": 0, "max": 9, "length": 6},
+        "back": {"min": 0, "max": 14, "count": 1},
+        "draw_days": [1, 4, 6], "play_types": ["single"],
+        "welfare_rate": 37, "price_per_bet": 200,
+    })
+    assert isinstance(spec.front, PositionalDigits)  # 前区按位
+    assert isinstance(spec.back, NumberRange)  # 后区单值 0-14
+    assert spec.back.max == 14
+
+
+def test_lottery_spec_validates_welfare_rate():
+    d = _ssq_spec_dict()
+    d["welfare_rate"] = 150
+    with pytest.raises(ValueError, match="welfare_rate"):
+        LotterySpec.from_dict(d)
