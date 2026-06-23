@@ -109,6 +109,8 @@ Workflow({ scriptPath: '...', resumeFromRunId: '<runId>' })                     
 
 **§2.4 模型策略（务必遵守）**：开发用指定 opus/sonnet/haiku；一旦不可用——**含 429 落 router stderr、不在 `Error.message` 的情形**——一律视作 `model_unavailable` → halt + 保存进度（finalReport 依次试 opus/sonnet/haiku 写 manifest）→ **等用户发指令才 resume**。**绝不降级到可用 model（如 glm）继续开发**，`'uncaught error'` 等同于 `model_unavailable`。
 
+**本机 model 现状（`~/.claude/settings.json`，无 Claude 订阅）**：三槽固定映射——`opus`→`anthropic/glm-5.2[1M]`、`sonnet`→`anthropic/kimi-k2.7`、`haiku`→`anthropic/deepseek-v4-pro`（router `192.168.8.167:4010`）。§2.4 禁的是**中途因限额降级**到更弱模型；这种**主动配置的稳定映射不属降级**，可正常开发——仅当 router 真正返回 429/quota 或发生 model 切换时才视作 `model_unavailable` → halt。⚠️ `haiku`→deepseek 槽不支持 ultracode `effort=xhigh`（直接 400），跑 workflow 前须 `/effort` 降到 high/medium。
+
 ## 关键约定
 
 - 彩种代码：`ssq`(双色球)/`dlt`(大乐透)/`qlc`(七乐彩)/`fc3d`(福彩3D)/`qxc`(七星彩)/`pl3`(排列3)/`pl5`(排列5)
