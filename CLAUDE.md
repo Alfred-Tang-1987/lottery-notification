@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目状态
 
-**Plan 01（基础设施骨架）已完成，58 tests green。** 其余 Plan 02–06 待实现，plan 在 `docs/superpowers/plans/`。改代码前先读 spec + 对应 plan；实现通过 **workflow orchestrator**（见下）自动跑 plan。
+**Plan 01（基础设施）+ 02（领域层）+ 03（仓储/核心闭环 T1–T5）已完成，175 tests green。** Plan 03 剩 T6–T7，Plan 04–06 待实现，plan 在 `docs/superpowers/plans/`。改代码前先读 spec + 对应 plan；实现通过 **workflow orchestrator**（见下）自动跑 plan。
 
 ## 项目是什么
 
@@ -37,7 +37,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **用户隔离**：所有用户私有表强制 `user_id`，repository 查询一律 `WHERE user_id=?`，FastAPI `current_user` 依赖注入；开奖结果 `draw_results` 是全局共享数据。
 - **金额用分**（int）存储，展示层再除 100，避免浮点。
 
-### 已实现分层（Plan 01）
+### 已实现分层（Plan 01–03）
 
 ```
 app/
@@ -45,16 +45,42 @@ app/
 ├── db/
 │   ├── engine.py      # build_engine(): SQLite + WAL/NORMAL/busy_timeout + pool_size=1（单写连接）
 │   └── session.py     # get_engine() 惰性单例 / get_session()
+├── domain/            # [Plan 02] 纯逻辑层，零 IO（import-linter 强制）
+│   ├── spec.py        # LotterySpec（hydrate from spec_json + 校验）；NumberRange/PositionalDigits 类型不变式
+│   ├── entry.py       # Entry + expand()（复式/胆拖展开，MAX_COMBINATIONS 上限）
+│   ├── prize.py       # PrizeTier + HitResult（front_hit/back_hit/tier/amount/is_win）
+│   ├── compare.py     # 策略模式：PartitionCompare/PositionalCompare/QxcHybridCompare + REGISTRY + compare() 入口
+│   └── prize_tables.py# 7 彩种奖级表（可配置）
+├── adapters/          # [Plan 03] 数据源适配器（httpx，MockTransport 测试友好）
+│   ├── base.py        # DrawSource protocol + DrawNumbers dataclass + normalize_draw_no（期号归一化）
+│   ├── mxnzp.py       # MXNZP 主源
+│   └── juhe.py        # 聚合数据备源
 ├── infrastructure/
-│   └── crypto.py      # CryptoService: Fernet 多版本（key_version 选 key 解密、current 加密、re_encrypt 轮换）；CipherBlob=(version,ciphertext)
+│   ├── crypto.py      # CryptoService: Fernet 多版本；CipherBlob=(version,ciphertext)
+│   └── repositories.py# [Plan 03] Repository 基类 + TicketRepo/UserRepo（user_id 注入，IDOR-safe）
+├── services/          # [Plan 03] 应用服务层（编排，调 domain 不反向）
+│   ├── fetch_service.py    # FetchService: 双源交叉校验 + grace + 退避 + 幂等存储（spec §7.2/§10）
+│   ├── compare_service.py  # CompareService: outbox 原子认领 + domain.compare + comparisons/prize_claims
+│   └── refill_service.py   # FloatRefillWorker: 浮奖回填（7天上限 + unresolved 标记）
 ├── models/            # SQLModel 全 13 表 + apscheduler_jobs；__init__.py 汇总 import（建表靠 SQLModel.metadata.create_all）
 ├── seeds/             # 7 彩种 LotteryType 种子（spec_json pydantic 校验，启动幂等写入）
 └── main.py            # FastAPI app；lifespan 启动校验(validate_startup)+种子；GET /health（db+tz 探活）
-alembic/               # 首迁移含全 schema + apscheduler_jobs（job_state LargeBinary）
+alembic/               # 首迁移 0001 含全 schema + apscheduler_jobs；b6a04a1 加 comparisons.unresolved
 import_linter 配置内联于 pyproject.toml [tool.importlinter]     # app.domain 禁 import infrastructure/adapters/api/services（裸 `uv run lint-imports` 即生效，workflow gate 也走此命令）
 ```
 
 **SQLite 并发模型**：`pool_size=1` + WAL + `busy_timeout` —— 单写连接串行化，配合 APScheduler jobstore 独立 engine（见 Plan 04）避免写竞争。
+
+### ⚠️ 静默失败纪律（silent-failure，最高优先级）
+
+系统核心价值是「**中奖永不静默漏通知**」。services 层反复因 silent-failure 被 review 链拦下，实现时务必主动设防：
+
+- **DB 写不得 split-commit**：一个逻辑操作（如 DrawResult + PendingComparison outbox）必须**单事务一次 commit**。分两次 commit 时，若第二次失败，重试走幂等分支会因「已存在」跳过、不补 outbox → 永不比对 → 漏通知。（FetchService._store 已修）
+- **per-row 异常隔离用 savepoint**：循环里逐行处理 + 共享 session 时，单行失败必须 `with session.begin_nested():`（SAVEPOINT）隔离——否则 flush 时 DB 错毒化 session（PendingRollback），后续好行全丢 + 末尾 commit 变 rollback。**bare `except Exception` 不够**，必须 savepoint。（CompareService._compare_one 已修）
+- **批量循环里单行故障不得中断整批**：per-row try/except + log（含 `exc_info=True`），不阻断后续行；批末的兜底标记（如 expired/unresolved）须无条件执行（独立方法/finally），不依赖循环不抛。
+- **更正路径重置终态标记**：行被标 `unresolved=True` 后经官方更正重比，须在 upsert existing 分支重置 `unresolved=False`，否则永久卡死、永不再查官方金额。
+- **datetime 时区对齐**：SQLite 对 datetime 做**字符串比较**（非 tz-aware）。`created_at`（模型 `default_factory=datetime.utcnow` = naive UTC）与 cutoff 比较时，cutoff 必须**同为 naive UTC**——若用 aware CST，字符串排序错位会让边界行被误判超期、永久排除回填 → 浮奖金额永久 null。`_cutoff_naive_utc` 用 `datetime.now(UTC).replace(tzinfo=None)`（非弃用 `utcnow()`）。系统性根治（created_at 也 aware CST + 迁移旧行）待后续。
+- **claim-before-compare 的 tradeoff**：`_claim` 在比对前提交 `processed_at`，故比对抛异常的期不再自动重试（靠 ERROR 日志人工介入）——避免配置错无限重试，但瞬态错误会丢该期，Plan 04 调度层决定重试策略。
 
 ## 彩种规则（⚠️ 必读，领域层正确性的前提）
 
@@ -102,10 +128,11 @@ docker compose up -d --build
 
 触发（Claude 调 Workflow 工具）：
 ```
-Workflow({ scriptPath: '.claude/workflows/run-plans.js', args: { plan: '02' } })  # 单 plan
+Workflow({ scriptPath: '.claude/workflows/run-plans.js', args: { plan: '03' } })  # 单 plan
 Workflow({ scriptPath: '...', args: {} })                                          # 所有 plan
-Workflow({ scriptPath: '...', resumeFromRunId: '<runId>' })                        # 同 session 续跑
 ```
+
+**⚠️ 续跑用「全新跑」，不要用 `resumeFromRunId`**：resume 回放缓存的 bootstrap agent，其 `completed` 是 halt 当时的快照，看不到 halt 后 workflow 外手动提交的 task（如 review halt → 手动修完 commit）→ 直接回放旧 halt、0 token 0 agent 推进；且 resume 不传 `args` 会因 `args.configPath` 抛 undefined crash。halt/限额/断 session/手动修完后续跑，一律全新跑（bootstrap 重新读 git log 跳过已 commit 的 task）。review-halt 后推荐流程：看 `runs/<ts>/manifest.json` 的 `blocked_info` 定位缺陷 → 手动修 + commit `feat(plan-X/T-Y)` → （可选）派 spec/quality subagent 复核 → 全新跑续。详见 `docs/superpowers/workflows/USAGE.md` §7.1。
 
 **§2.4 模型策略（务必遵守）**：开发用指定 opus/sonnet/haiku；一旦不可用——**含 429 落 router stderr、不在 `Error.message` 的情形**——一律视作 `model_unavailable` → halt + 保存进度（finalReport 依次试 opus/sonnet/haiku 写 manifest）→ **等用户发指令才 resume**。**绝不降级到可用 model（如 glm）继续开发**，`'uncaught error'` 等同于 `model_unavailable`。
 
