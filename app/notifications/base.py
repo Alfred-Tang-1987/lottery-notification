@@ -14,7 +14,7 @@ class NotificationPayload:
     """推送内容（spec §8.3）。渠道插件只消费 title/body，其余字段供 Notifier 记日志/去重。"""
     title: str
     body: str
-    user_id: int
+    user_id: int | None = None
     lottery_code: str | None = None
     draw_no: str | None = None
     tier: int | None = None
