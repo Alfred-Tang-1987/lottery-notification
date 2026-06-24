@@ -9,7 +9,7 @@
 
 - **每 task**：派 implementor subagent（TDD RED→GREEN→REFACTOR）→ review chain 并行（spec 逐行比对 ‖ quality 架构 ‖ silent-failure-hunter）→ 精简 simplify → git commit
 - **plan 级**：独立 gate（在 committed SHA 上重跑 test + lint_command + extra_lint_commands，任一非 0 halt，不信 implementor 自报）
-- **全流程**：多 plan 串行、振荡检测、BLOCKED 升级链、限额容错（halt + resume）
+- **全流程**：多 plan 串行、振荡检测、BLOCKED 升级链、限额容错（halt，恢复后用全新跑续跑，见 §7.1）
 
 它把"用 subagent-driven-development 手动跑 plan"自动化了——你就是用它替代手动 dispatch + review。
 
@@ -119,15 +119,62 @@ get-ts（取时间戳）
 ### 限额耗尽（opus/sonnet 额度用完）
 - workflow **halt**（不降级继续开发——避免弱 model 污染进度）
 - 用 fallback 链 `[opus, sonnet, haiku, 环境默认]` **逐一尝试保存 manifest**（至少 haiku/默认能存）
-- surface：「X model 限额耗尽，进度已保存，额度恢复后 resumeFromRunId」
-- **额度恢复后续跑**：
-  ```
-  Workflow({ scriptPath: '.claude/workflows/run-plans.js', resumeFromRunId: '<runId>', args: {...} })
-  ```
-  native resume：已 commit 的 task 跳过，中断的 task 重跑。
+- surface：「X model 限额耗尽，进度已保存，额度恢复后用全新跑续跑」
+- **额度恢复后续跑**：见 §7.1（用**全新跑**，不是 resumeFromRunId）。
 
 ### 手动中断 / 崩溃
-同样用 `resumeFromRunId` 续跑。崩在 implementor 后/commit 前的半成品，native resume 重跑 implementor 覆盖。
+同样见 §7.1——用全新跑续跑。崩在 implementor 后/commit 前的半成品，全新跑会重跑该 task 覆盖。
+
+## 7.1 续跑：用「全新跑」，不要用 resumeFromRunId（重要）
+
+**进度以 git 为单一事实源**——**全新跑**时 bootstrap 从 git log 解析已完成的
+task（`feat(plan-X/T-Y)` convention），已 commit 的 task 一律跳过。所以**跨 session、跨机器、
+限额恢复后、review halt 后手动修完继续**——全部用「全新跑」：
+
+```
+Workflow({ scriptPath: '.claude/workflows/run-plans.js', args: { plan: '03' } })   # 从未完成 task 继续
+Workflow({ scriptPath: '.claude/workflows/run-plans.js', args: {} })               # 所有 plan，跳过已 commit
+```
+
+全新跑每次重新 bootstrap：重新读 config、重新解析 git log、重新生成 frontmatter。已 commit 的
+task 被识别为 completed 直接跳过，从第一个未 commit 的 task 接着跑。**不依赖 runId、不依赖 manifest**。
+
+### ⚠️ 为什么不要用 `resumeFromRunId` 续跑业务 plan
+
+`resumeFromRunId` 是 Workflow runtime 的**缓存回放**机制——它把上次 run 里**已完成的 agent 调用**
+按 `(prompt, opts)` 原样返回缓存结果，**第一个未命中缓存的 agent 起才真正重跑**。这对
+run-plans.js 这种 git-log 驱动的编排器是**错配**，会踩两个坑：
+
+1. **看不到 workflow 外的提交**。halt 后你（或 Claude 主循环）手动修完一个 task 并 commit 了
+   `feat(plan-03/T3)`。resume 会**回放缓存的 bootstrap agent**——它的 `evidence.completed` 是
+   **halt 当时的快照**，不含你新提交的 T3。于是它仍判定 T3「未完成/被 block」，直接回放旧的
+   halt 结果，**瞬间 halt、0 token、0 agent**，没有任何推进。bootstrap 的 git-log 重解析逻辑
+   在 resume 路径下被缓存跳过了。
+
+2. **resume 不传 `args` 会直接 crash**。脚本体访问 `args.configPath`（bootstrap prompt 构造处）。
+   resume 调用若省略 `args`，`args` 为 `undefined`，`undefined.configPath` 抛
+   `Error: undefined is not an object (evaluating 'args.configPath')`，workflow 立刻失败。
+   要 resume 必须带上 `args: {}`——但即便带上了，坑 1 仍在。
+
+**resume 唯一真正合适的场景**：在**同一个 session 内**、**没有任何 workflow 外改动**的前提下，
+限额 halt 后立刻恢复额度、想省掉重跑已完成 agent 的 token。即便如此，全新跑也能正确续跑，只是
+重新跑一遍 bootstrap/get-ts（成本可忽略）。**结论：续跑一律用全新跑。**
+
+### 手动修完 review-halt 的 task 后继续（推荐流程）
+
+review 链 max-rounds halt 后，task 留在「未 commit」状态（implementor 的改动在工作树/未提交）。
+推荐流程：
+
+1. 看 `runs/<ts>/manifest.json` 的 `per_task.<T>.blocked_info`（`reason: review max rounds` +
+   spec/qual/hunt 的 issues）定位阻塞缺陷。
+2. 手动修代码（主循环 Claude 或你）→ 跑 test + lint 确认绿 → `git commit -m "feat(plan-X/T-Y): ..."`
+   （遵守 convention）。
+3. （可选）派 spec-review / quality-review subagent 复核该 commit。
+4. **全新跑**续跑：`Workflow({ scriptPath, args: { plan: '<seq>' } })`——bootstrap 读 git log
+   见该 task 已 commit，跳过，从下一个未完成 task 继续。
+
+> 该流程正是本项目 Plan-03/T3 实际走过的路径：review halt → 手动修 split-commit 静默失败 +
+   stale-numbers bless → commit → spec/quality subagent 复核 → 全新跑从 T4 继续。
 
 ## 8. manifest 输出
 
@@ -154,13 +201,13 @@ get-ts（取时间戳）
 
 ## 9. 常见场景
 
-| 场景 | args |
+| 场景 | 触发 |
 |---|---|
-| 跑单 plan 全 task | `{ plan: '01' }` |
-| 跑单 task 验证闭环 | `{ plan: '01', tasks: ['T1'] }` |
-| 跑所有 plan | `{}`（不传 plan/tasks） |
-| resume 续跑 | `Workflow({ scriptPath, resumeFromRunId: '<runId>', args: {...} })` |
-| 限额恢复后续跑 | 同 resume（先看 manifest 的 `quota_exhausted`） |
+| 跑单 plan 全 task | `Workflow({ scriptPath, args: { plan: '01' } })` |
+| 跑单 task 验证闭环 | `Workflow({ scriptPath, args: { plan: '01', tasks: ['T1'] } })` |
+| 跑所有 plan | `Workflow({ scriptPath, args: {} })` |
+| **续跑（halt/限额/断 session/手动修完）** | **全新跑**——`Workflow({ scriptPath, args: { plan: '<seq>' } })`（详见 §7.1，不要用 resumeFromRunId） |
+| 限额恢复后续跑 | 同上，全新跑（先看 manifest 的 `quota_exhausted` 确认是限额而非别的 halt 原因） |
 
 ## 10. task modelHint（用哪个 model）
 
@@ -175,7 +222,7 @@ plan frontmatter 的 `model` 字段决定 implementor 用 sonnet 还是 opus：
 
 - **首次跑会修改所有 plan 文件**（加 frontmatter，幂等，已加的不重写）
 - **业务代码必须可测**——`test_command` 跑不通时 implementor/gate 会失败（项目未初始化时 bootstrap 容忍，但 implementor 跑测试需要 pyproject.toml 等就绪）
-- **commit convention**：`feat(plan-X/T-Y): <title>`——resume 靠 git log 识别已完成 task
+- **commit convention**：`feat(plan-X/T-Y): <title>`——**全新跑**靠 git log 识别已完成 task 并跳过（这是续跑的单一体机制，见 §7.1）
 - **不降级继续**：限额 halt 后不会用弱 model 继续开发，只保存进度等恢复（§2.4 核心原则）
 - **错误恢复**：bootstrap/get-ts/implementor/review/simplify/commit/gate/finalReport **所有** agent 路径都有 quota 捕获 + 兜底，不会裸 crash 丢进度
 
@@ -186,7 +233,7 @@ plan frontmatter 的 `model` 字段决定 implementor 用 sonnet 还是 opus：
 | workflow paused | `/workflows` 看卡在哪个 agent；读 `runs/<ts>/manifest.json` 或 transcript |
 | implementor 反复失败 | 看 `blocked_info.last_error` + `suggested_fix`；可能 plan 顺序错（依赖前序 task） |
 | review 振荡 halt | `blocked_info.reason: OSCILLATING`——同文件多 round 反复改，人工介入 |
-| 限额 halt | `blocked_info.quota_exhausted: true`——等额度恢复 `resumeFromRunId` |
+| 限额 halt | `blocked_info.quota_exhausted: true`——等额度恢复后**全新跑**续跑（见 §7.1，勿用 resumeFromRunId） |
 | gate 失败 | committed SHA 上 test/lint 任一非 0——看 `tests_exit_code` + `pytest_summary` + `lint_results`（lint 失败多为架构纪律违反，如 domain 层 import infra 被 `lint-imports` 抓到） |
 
 ## 13. 相关文件
