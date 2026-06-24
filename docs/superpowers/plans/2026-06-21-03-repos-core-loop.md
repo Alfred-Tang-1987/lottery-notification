@@ -2,7 +2,7 @@
 models:
   T1: sonnet
   T2: sonnet
-  T3: sonnet
+  T3: opus
   T4: opus
   T5: sonnet
   T6: sonnet
