@@ -176,6 +176,12 @@ class CompareService:
             existing.prize_amount = amount
             existing.is_win = hit.is_win
             existing.corrected_at = _now()
+            # 官方更正重比命中同一注：若该行曾被标 unresolved（浮奖超期未回填），更正后
+            # prize_amount 可能重置回 None（待派奖），须重置 unresolved=False 让它重回
+            # FloatRefillWorker 回填管线——否则永久卡死（refill 排除 unresolved=True），
+            # 中奖金额永远 null（spec §7.1 浮奖回填契约被破坏，quality review I2）。
+            if existing.unresolved:
+                existing.unresolved = False
             _sync_claim(session, existing, is_win_now=hit.is_win, was_win=was_win)
         else:
             cmp = Comparison(
