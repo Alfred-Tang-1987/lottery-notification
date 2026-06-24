@@ -171,14 +171,23 @@ def test_compare_isolates_bad_ticket_same_draw(db_engine, caplog):
 def test_compare_isolates_bad_ticket_across_draws(db_engine):
     """一个坏注所在的期不得阻塞后续期的比对（跨期隔离，silent-failure 回归保护）。
 
-    期 A 含坏注（fushi Phase2 未支持 → expand 抛 NotImplementedError），期 B 含好注。
+    期 A 含坏注（numbers_json 损坏 → json.loads 抛 JSONDecodeError），期 B 含好注。
     旧版 process_pending 的 for-pending 循环无 per-draw try/except，期 A 抛异常直接
-    中断循环 → 期 B 永不比对。"""
+    中断循环 → 期 B 永不比对。
+
+    坏注触发用 corrupt JSON（稳定的纯 Python 错误），不依赖 fushi 的 Phase-2 未实现——
+    Phase 2 实现 fushi 后该注会变合法，测试意图需存活（I3 稳定化）。"""
     with Session(db_engine) as s:
         u = _make_user(s)
-        # 期 A：坏注（fushi，Phase 2 未实现 → expand NotImplementedError）
+        # 期 A：坏注（numbers_json 损坏，§10「格式异常」）
         _seed_draw(s, code="ssq", front=(1, 2, 3, 4, 5, 6), back=(7,))
-        # _seed_draw 写死 draw_no="062"，需另起一期；直接构造第二期
+        s.add(Ticket(
+            user_id=u.id, lottery_code="ssq", play_type="single",
+            numbers_json="not-valid-json{",  # 稳定的坏注触发，不依赖 Phase 2
+            multiplier=1, append=False, cost=200, enabled=True,
+        ))
+        s.commit()
+        # 期 B：好注（中一等奖）。_seed_draw 写死 draw_no="062"，另起一期
         dr_b = DrawResult(
             lottery_code="ssq", draw_no="063", draw_date=datetime.utcnow(),
             numbers_json=json.dumps({"front": [1, 2, 3, 4, 5, 6], "back": [7]}),
@@ -186,14 +195,7 @@ def test_compare_isolates_bad_ticket_across_draws(db_engine):
         )
         s.add(dr_b); s.commit(); s.refresh(dr_b)
         s.add(PendingComparison(draw_result_id=dr_b.id)); s.commit()
-        # 期 A 的坏注
-        s.add(Ticket(
-            user_id=u.id, lottery_code="ssq", play_type="fushi",
-            numbers_json=json.dumps({"front": [1, 2, 3, 4, 5, 6], "back": [7]}),
-            multiplier=1, append=False, cost=200, enabled=True,
-        ))
-        # 期 B 的好注（中一等奖）
-        _seed_ticket(s, u.id)
+        _seed_ticket(s, u.id)  # 好注，但挂在期 A 同彩种——下面手动改 draw_result 不需要
         s.commit()
     svc = CompareService(db_engine)
     n = svc.process_pending()  # 不得抛异常；两期都应被 claim
@@ -202,3 +204,77 @@ def test_compare_isolates_bad_ticket_across_draws(db_engine):
         cmps = s.exec(select(Comparison).order_by(Comparison.id)).all()
         # 期 B 的好注 comparison 必须存在
         assert any(c.is_win and c.prize_tier == 1 for c in cmps)
+
+
+def test_compare_isolates_db_error_does_not_poison_session(db_engine, caplog):
+    """C1 回归（quality review Critical）：per-ticket 失败若是 DB 级错误（flush 时抛
+    IntegrityError），不得毒化共享 session 导致整期好注 comparison 全丢。
+
+    场景：同期 3 注——好注#1（中一等奖，先比对→先 flush 落库）+ 坏注#2（DB flush
+    抛 IntegrityError）+ 好注#3（中一等奖）。正确隔离：坏注#2 被回滚，好注#1、#3
+    的 comparison 都落库（共 2 行 winning）。
+
+    旧版（bare except 无 savepoint）实测：坏注#2 flush 抛 IntegrityError 被吞 →
+    session 进入 PendingRollback 态 → 好注#3 的 session.exec 撞 PendingRollbackError
+    也被吞（误记坏注）→ 末尾 s.commit() 在毒化 session 上变 rollback → 好注#1 已
+    flush 的 comparison 也被抹 → 整期 0 行 comparison + claim 已提交 processed_at
+    → 永久静默漏通知。
+
+    DB 错触发用 monkeypatch 包装 _upsert_comparison：对坏注#2 的调用抛 IntegrityError
+    （模拟 flush 时 NOT NULL/constraint 失败——真实场景如 database is locked /
+    uq_cmp_draw_ticket 竞态 / schema 不匹配），其余正常。
+    """
+    import logging
+    from unittest.mock import patch
+
+    with Session(db_engine) as s:
+        u = _make_user(s)
+        _seed_draw(s)  # draw_no="062"
+        # 3 注：好#1（蓝7中一等）、坏#2（DB flush 错）、好#3（蓝7中一等）
+        _seed_ticket(s, u.id, front=(1, 2, 3, 4, 5, 6), back=(7,))
+        bad_t = Ticket(
+            user_id=u.id, lottery_code="ssq", play_type="single",
+            numbers_json=json.dumps({"front": [2, 3, 4, 5, 6, 7], "back": [8]}),
+            multiplier=1, append=False, cost=200, enabled=True,
+        )
+        s.add(bad_t); s.commit(); s.refresh(bad_t)
+        _seed_ticket(s, u.id, front=(1, 2, 3, 4, 5, 6), back=(7,))
+        s.commit()
+        bad_ticket_id = bad_t.id
+
+    # 包装 _upsert_comparison：坏注#2 模拟 flush 时 DB 约束失败（NOT NULL 违反）。
+    # 关键：必须在 session.add 之后、flush 之时抛——这才毒化 session（entry 处抛不毒化，
+    # 与 JSONDecodeError 同路径）。复刻 _upsert_comparison else 分支但 hits_json=None 触发
+    # NOT NULL，flush 抛 IntegrityError，session 进入 PendingRollback 态。
+    real_upsert = CompareService._upsert_comparison
+    poisoned = {"called": False}
+
+    def patched_upsert(self, session, *, user_id, draw_result_id, ticket_id, hit, multiplier=1):
+        if ticket_id == bad_ticket_id:
+            poisoned["called"] = True
+            # 复刻真实 flush 时 DB 错：add 一个违反 NOT NULL 的行，flush 时抛
+            cmp = Comparison(
+                user_id=user_id, draw_result_id=draw_result_id, ticket_id=ticket_id,
+                hits_json=None,  # NOT NULL 违反 → flush 抛 IntegrityError（毒化 session）
+                prize_tier=hit.tier, prize_amount=None, is_win=hit.is_win,
+            )
+            session.add(cmp)
+            session.flush()  # ← flush 时抛，session 进入 PendingRollback（C1 核心）
+            return
+        return real_upsert(self, session, user_id=user_id, draw_result_id=draw_result_id,
+                           ticket_id=ticket_id, hit=hit, multiplier=multiplier)
+
+    svc = CompareService(db_engine)
+    with patch.object(CompareService, "_upsert_comparison", patched_upsert):
+        with caplog.at_level(logging.WARNING, logger="app.services.compare_service"):
+            svc.process_pending()  # 不得抛异常
+
+    assert poisoned["called"], "测试前提：坏注#2 的 upsert 确被调用并注入了 flush 时 DB 错"
+    with Session(db_engine) as s:
+        cmps = s.exec(select(Comparison)).all()
+        winning = [c for c in cmps if c.is_win and c.prize_tier == 1]
+        # 两注好注的 comparison 必须都落库——DB 错只毒化坏注#2（被 savepoint 隔离），不波及好注
+        assert len(winning) == 2, (
+            f"C1：flush 时 DB 错须用 savepoint 隔离到坏注#2，好注#1/#3 应存活，"
+            f"实际 {len(winning)} 行 winning（旧版 bare-except 无 savepoint 会全丢→0 行）")
+

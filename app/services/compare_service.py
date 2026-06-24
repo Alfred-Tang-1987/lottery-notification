@@ -71,12 +71,13 @@ class CompareService:
             processed += 1
             try:
                 self._compare_one(pc.draw_result_id)
-            except Exception as exc:
+            except Exception:
                 # 期级失败（如 spec 缺失/开奖号损坏）：不阻断后续期，但必须留痕——
                 # claim 已提交，此期不再自动重试（避免配置错无限重试），靠日志告警人工介入。
+                # 期级失败多为编程/配置错，含 traceback 便于定位（I2）。
                 logger.error(
-                    "compare_failed draw_result_id=%s pending_id=%s error=%s",
-                    pc.draw_result_id, pc.id, exc,
+                    "compare_failed draw_result_id=%s pending_id=%s",
+                    pc.draw_result_id, pc.id, exc_info=True,
                 )
         return processed
 
@@ -108,35 +109,42 @@ class CompareService:
 
             for t in tickets:
                 # per-ticket 隔离（spec §10 line375：坏注单/格式异常 → 隔离该注，不影响
-                # 其他注的比对；记录错误日志）。坏注的失败发生在纯 Python 阶段
-                # （json.loads 损坏 JSON / fushi·dantuo Phase2 expand NotImplementedError /
-                # 号码结构异常）——这些在到达 DB 写入前抛出，session 不受污染，好注照常
-                # 在循环结束统一 commit。旧版无此隔离：一注坏 → 整个 _compare_one unwind
-                # → 好注（未 commit 的 session）回滚丢失 + claim 已提交 processed_at
-                # → 该期永久无比对、中奖静默漏通知。
+                # 其他注的比对；记录错误日志）。
+                #
+                # ⚠️ 必须 savepoint（s.begin_nested()）：坏注失败可能发生在 DB 写入阶段
+                # （_upsert_comparison 内的 session.add/flush/exec/delete——如 flush 时
+                # IntegrityError「database is locked」/ NOT NULL 违反 / uq 竞态 / schema
+                # 不匹配），不是仅纯 Python 阶段。无 savepoint 时 bare except 吞掉异常，
+                # 但 session 已进入 PendingRollback 态：后续好注的 session.exec 撞
+                # PendingRollbackError（也被吞，误记为坏注）→ 末尾 s.commit() 在毒化 session
+                # 上变 rollback → 好注已 flush 的 comparison 全被抹 → claim 已提交
+                # processed_at → 该期永久无比对、中奖静默漏通知（C1 实测复现）。
+                # savepoint 让坏注失败只回滚该注，外层 session 保持干净，好注照常 commit。
                 try:
-                    tn = json.loads(t.numbers_json)
-                    entry = Entry(
-                        lottery_code=t.lottery_code, play_type=t.play_type,
-                        front=tuple(tn["front"]),
-                        back=tuple(tn["back"]) if tn.get("back") else None,
-                        multiplier=t.multiplier, append=t.append,
-                    )
-                    results = domain_compare(
-                        spec, draw_front=draw_front, draw_back=draw_back, entry=entry,
-                    )
-                    # single/zhixuan 玩法展开为 1 注；复式/胆拖 Phase 2 扩展后逐注比对写行
-                    for hit in results:
-                        self._upsert_comparison(
-                            s, user_id=t.user_id, draw_result_id=dr.id,
-                            ticket_id=t.id, hit=hit, multiplier=t.multiplier,
+                    with s.begin_nested():  # SAVEPOINT：失败只回滚该注
+                        tn = json.loads(t.numbers_json)
+                        entry = Entry(
+                            lottery_code=t.lottery_code, play_type=t.play_type,
+                            front=tuple(tn["front"]),
+                            back=tuple(tn["back"]) if tn.get("back") else None,
+                            multiplier=t.multiplier, append=t.append,
                         )
-                except Exception as exc:
-                    # 隔离该注：跳过 + 记录错误日志，继续比对同期的其他注（§10）。
+                        results = domain_compare(
+                            spec, draw_front=draw_front, draw_back=draw_back, entry=entry,
+                        )
+                        # single/zhixuan 玩法展开为 1 注；复式/胆拖 Phase 2 扩展后逐注比对写行
+                        for hit in results:
+                            self._upsert_comparison(
+                                s, user_id=t.user_id, draw_result_id=dr.id,
+                                ticket_id=t.id, hit=hit, multiplier=t.multiplier,
+                            )
+                except Exception:
+                    # 隔离该注：savepoint 已回滚该注的写，跳过 + 记录错误日志（含 traceback，
+                    # 便于排查 DB 错根因——I2），继续比对同期的其他注（§10）。
                     logger.warning(
                         "compare_skip_bad_ticket ticket_id=%s user_id=%s "
-                        "lottery=%s draw_result_id=%s error=%s",
-                        t.id, t.user_id, t.lottery_code, dr.id, exc,
+                        "lottery=%s draw_result_id=%s",
+                        t.id, t.user_id, t.lottery_code, dr.id, exc_info=True,
                     )
                     continue
             s.commit()
