@@ -1,7 +1,6 @@
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Callable
-from zoneinfo import ZoneInfo
 
 from sqlmodel import Session, select
 from sqlalchemy.engine import Engine
@@ -9,23 +8,15 @@ from app.models import Comparison, DrawResult
 
 logger = logging.getLogger(__name__)
 
-_CST = ZoneInfo("Asia/Shanghai")  # spec：全程 Asia/Shanghai
-
-
-def _now() -> datetime:
-    """aware CST now，用于 corrected_at/processed_at/deadline 等展示与时区敏感写入
-    （与 FetchService/CompareService 统一，替代弃用的 datetime.utcnow）。"""
-    return datetime.now(_CST)
-
 
 def _cutoff_naive_utc(days: int) -> datetime:
     """回填窗口下限——**naive UTC**，刻意与 Comparison.created_at 同时区比较。
 
     ⚠️ created_at 存储形态是 naive UTC（TimestampMixin default_factory=datetime.utcnow）。
-    若 cutoff 用 aware CST（_now()），SQLite 对 datetime 做**字符串比较**（非 tz-aware），
-    aware-CST 串（如 '2026-06-17 23:15+08:00'）会排在 naive-UTC 串（'2026-06-17 15:15'）
-    之后 → created_at < cutoff 误成立 → 恰好窗口边界（~8h，CST=UTC+8）的行被误判超期、
-    标 unresolved → 永久排除回填 → 浮动奖金额永久 null（spec §7.1 核心特性静默失效，
+    若 cutoff 用 aware CST，SQLite 对 datetime 做**字符串比较**（非 tz-aware），aware-CST 串
+    （如 '2026-06-17 23:15+08:00'）会排在 naive-UTC 串（'2026-06-17 15:15'）之后 →
+    created_at < cutoff 误成立 → 恰好窗口边界（~8h，CST=UTC+8）的行被误判超期、标
+    unresolved → 永久排除回填 → 浮动奖金额永久 null（spec §7.1 核心特性静默失效，
     quality re-review 实测复现）。故 cutoff 必须 naive UTC 与 created_at 对齐。
 
     用 datetime.now(UTC).replace(tzinfo=None) 而非弃用的 datetime.utcnow()。
