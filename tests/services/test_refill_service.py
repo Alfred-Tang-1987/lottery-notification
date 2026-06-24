@@ -150,3 +150,61 @@ def test_refill_lookup_returns_none_is_patient_retry(db_engine):
         cmp = s.get(Comparison, cmp_id)
         assert cmp.prize_amount is None  # 未公布，不回填
         assert cmp.unresolved is not True  # cutoff 内，下轮重试，不标 unresolved
+
+
+# ────────── quality re-review tz 回归修复 ──────────
+
+
+def test_refill_boundary_not_misclassified_expired_by_tz(db_engine):
+    """tz 回归（quality re-review）：created_at（模型默认 naive UTC）与 cutoff 须同时区比较，
+    否则 SQLite 字符串比较会让恰好 7 天的行被误判「超期」→ 标 unresolved → 永久排除回填
+    → 浮动奖金额永久 null（spec §7.1 核心特性静默失效）。
+
+    场景：created_at = 6 天 20 小时前（naive UTC，与模型 default_factory 一致）——明确在
+    [0, 7d] 窗口内（refillable），且落在 tz bug 的 8h 误判区（真实 [7d-8h, 7d) 内的行被
+    误判超期；6d20h = 7d-4h 在该区）。
+    正确：该行窗口内 → 应被选入回填（refillable），不标 unresolved。
+
+    旧 bug（I3 引入）：cutoff 用 aware CST（_now()），created_at 是 naive UTC → SQLite 字符串
+    比较把 aware-CST 串排在 naive-UTC 串之后 → created_at < cutoff 误成立 → 该行被判超期、
+    标 unresolved、永久排除 → 浮奖金额永远 null。8 小时窗口（CST=UTC+8）内的边界行全中招。
+    """
+    from datetime import datetime, timedelta, timezone
+
+    # created_at 用 naive UTC（忠实复刻模型 default_factory=datetime.utcnow 的真实存储形态）。
+    # 6d20h 前 = 窗口内（< 7d），且在 tz bug 8h 误判区内（7d-8h=6d16h < 6d20h < 7d）。
+    created_at_naive_utc = datetime.utcnow() - timedelta(days=6, hours=20)
+    with Session(db_engine) as s:
+        u = User(username="utz", password_hash="x", role="user", invite_code="C")
+        s.add(u); s.commit(); s.refresh(u)
+        dr = DrawResult(
+            lottery_code="ssq", draw_no="062tz",
+            draw_date=datetime.utcnow(), numbers_json='{"front":[1,2,3,4,5,6],"back":[7]}',
+            source="mxnzp", verified=True, version=1,
+        )
+        s.add(dr); s.commit(); s.refresh(dr)
+        t = Ticket(
+            user_id=u.id, lottery_code="ssq", play_type="single",
+            numbers_json='{"front":[1,2,3,4,5,6],"back":[7]}', multiplier=1, cost=200,
+        )
+        s.add(t); s.commit(); s.refresh(t)
+        cmp = Comparison(
+            user_id=u.id, draw_result_id=dr.id, ticket_id=t.id,
+            hits_json='{}', prize_tier=1, prize_amount=None, is_win=True,
+            created_at=created_at_naive_utc,  # 恰好 7 天前，naive UTC（模型真实形态）
+        )
+        s.add(cmp); s.commit(); s.refresh(cmp)
+        cmp_id = cmp.id
+
+    from unittest.mock import MagicMock
+    worker = FloatRefillWorker(
+        db_engine, amount_lookup=MagicMock(return_value=5_000_000), max_age_days=7
+    )
+    n = worker.refill()
+    with Session(db_engine) as s:
+        cmp = s.get(Comparison, cmp_id)
+        # 恰好 7 天 = 窗口边界内（>= cutoff）→ 应回填，不标 unresolved
+        assert n == 1, f"恰好 7 天的行应 refillable（窗口内），实际回填 {n}"
+        assert cmp.prize_amount == 5_000_000, "边界行应被回填"
+        assert cmp.unresolved is not True, (
+            "边界行不得因 tz 字符串比较被误判超期标 unresolved → 永久排除回填")
