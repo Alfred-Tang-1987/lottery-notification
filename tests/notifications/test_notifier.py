@@ -111,11 +111,16 @@ def test_dnd_defers_path_b(monkeypatch, db_engine):
 
 
 def test_path_a_does_not_hold_session_during_retry(monkeypatch, db_engine):
-    """spec §7.1: 路径A异步——notify_path_a 关闭 Session 后才做重试/退避，绝不持有 DB 连接。"""
+    """spec §7.1: 路径A异步——notify_path_a 关闭 Session 后才做重试/退避，绝不持有 DB 连接。
+
+    N6（quality re-review）：旧测试用 once-flag（session_closed 置位后永远 True），无法
+    抓「retry 间意外开 Session」。改实时 open_count——每次 send 时断言 0 个 Session 开启，
+    覆盖全部 3 次重试，与路径B 测试同等严格。
+    """
     uid, cmp_id = _seed(db_engine)
     bark = MagicMock()
     # 前两次失败，第三次成功
-    bark.send.side_effect = [
+    results = [
         SendResult(status=ChannelStatus.FAILED, error="timeout"),
         SendResult(status=ChannelStatus.FAILED, error="timeout"),
         SendResult(status=ChannelStatus.SENT, error=None),
@@ -123,23 +128,36 @@ def test_path_a_does_not_hold_session_during_retry(monkeypatch, db_engine):
     crypto = MagicMock()
     crypto.decrypt.return_value = '{"key":"k","url":"https://api.day.app"}'
 
-    session_closed = [False]
-    original_session = Session
+    send_session_open = []  # 每次 send 时的 Session 开启数
 
-    class TrackingSession(original_session):
-        def __exit__(self, exc_type, exc_val, exc_tb):
-            session_closed[0] = True
-            return super().__exit__(exc_type, exc_val, exc_tb)
+    class TrackingSession(Session):
+        def __enter__(self):
+            self.__class__._depth = getattr(self.__class__, "_depth", 0) + 1
+            return super().__enter__()
 
+        def __exit__(self, *a):
+            self.__class__._depth = getattr(self.__class__, "_depth", 1) - 1
+            return super().__exit__(*a)
+
+        @classmethod
+        def open_count(cls):
+            return getattr(cls, "_depth", 0)
+
+    def spy_send(payload, config):
+        send_session_open.append(TrackingSession.open_count())
+        return results[len(send_session_open) - 1]
+
+    bark.send.side_effect = spy_send
     monkeypatch.setattr("app.notifications.notifier.Session", TrackingSession)
 
     notifier = Notifier(db_engine, channels={"bark": bark}, crypto=crypto)
     notifier.notify_path_a(comparison_id=cmp_id, lottery_name="双色球", draw_no="062",
                              tier=1, amount=None)
 
-    # 第一次 send 必须在 Session 关闭后发生
-    assert session_closed[0], "Session must be closed before first send attempt"
-    assert bark.send.call_count == 3
+    assert len(send_session_open) == 3, "应触发 3 次重试 send"
+    assert all(n == 0 for n in send_session_open), (
+        f"路径A 每次 send 都须在 Session 关闭后（spec §7.1），实际各次 send 时 "
+        f"Session 开启数={send_session_open}（retry 间不得持有 DB 连接）")
 
 
 def test_admin_bark_fallback_on_all_channels_fail(db_engine):
@@ -473,3 +491,152 @@ def test_decrypt_config_logs_on_failure(db_engine, caplog):
                or "config" in rec.message.lower() for rec in caplog.records), (
         "_decrypt_config 解密失败须记 WARNING 日志（含 user_id/channel），不得 bare except 静默返回 None")
     bark.send.assert_not_called()  # 解密失败的渠道被跳过
+
+
+# ====== Review Round 3 Fixes (quality re-review of 0d91602) ======
+
+
+def test_sent_at_is_naive_utc_aligned_with_created_at(db_engine):
+    """N1（quality re-review Important）：NotificationLog.sent_at 须 naive UTC，与
+    created_at（TimestampMixin default_factory=datetime.utcnow，naive UTC）同时区且同数值。
+
+    CLAUDE.md「silent-failure 纪律」明文：SQLite 对 datetime 做**字符串比较**（非 tz-aware），
+    且存取会剥离 tzinfo。若 sent_at 用 datetime.now(CST)（aware CST），写入的是 CST 本地
+    数值（如 05:10），而 created_at 用 utcnow() 写的是 UTC 数值（如 21:10）——同一时刻
+    sent_at 比 created_at 数值小 8h，SQLite 字符串排序会让 sent_at < created_at，未来按时间
+    过滤 log 的运维查询（清理过期 / 查 pending 超时 / 统计发送延迟）静默误判边界行。
+    与 FloatRefillWorker _cutoff_naive_utc 同源雷，新代码不应重蹈。
+
+    正确：sent_at = datetime.now(UTC).replace(tzinfo=None)（naive UTC 数值）。
+    验证：sent_at 与「当前 UTC 时刻」差 < 5 分钟（非 CST 数值——CST 会差 8h）。
+    """
+    from datetime import timezone, datetime as _dt
+    uid, cmp_id = _seed(db_engine)
+    bark = MagicMock()
+    bark.send.return_value = SendResult(status=ChannelStatus.SENT, error=None)
+    crypto = MagicMock()
+    crypto.decrypt.return_value = '{"key":"k","url":"https://api.day.app"}'
+    notifier = Notifier(db_engine, channels={"bark": bark}, crypto=crypto)
+    before = _dt.now(timezone.utc).replace(tzinfo=None)
+    notifier.notify_path_a(comparison_id=cmp_id, lottery_name="双色球", draw_no="062",
+                           tier=1, amount=None)
+    after = _dt.now(timezone.utc).replace(tzinfo=None)
+
+    with Session(db_engine) as s:
+        log = s.exec(select(NotificationLog)).first()
+        assert log and log.status == "sent"
+        assert log.sent_at is not None
+        # sent_at 须落在 [before, after] UTC 窗口内——若误用 CST 数值，会比 UTC 早 8h，
+        # 落在 before 之前 → 断言失败（暴露时区错位）。
+        assert before <= log.sent_at <= after, (
+            f"sent_at={log.sent_at} 须 naive UTC（落 [{before}, {after}]），"
+            f"实际落在窗口外——疑用 datetime.now(CST) 写了 CST 数值（比 UTC 早 8h），"
+            "与 created_at(utcnow) 在 SQLite 字符串比较中错位，埋静默误判雷")
+
+
+def test_admin_bark_alert_failure_is_logged(db_engine, caplog):
+    """N2（quality re-review Minor→silent-failure）：_alert_admin 自身 send 返回 FAILED
+    须记日志——否则「全渠道失败」时连兜底告警通道也挂了，运维却无感知（双重静默）。
+
+    BarkChannel.send 永不抛异常（base.py 契约），但会返回 FAILED（admin key 失效 /
+    Bark 服务挂）。_alert_admin 丢弃返回值则告警链路失败静默。须记 ERROR 含原因。
+    """
+    import logging
+    uid, cmp_id = _seed(db_engine)
+    bark = MagicMock()
+    bark.send.return_value = SendResult(status=ChannelStatus.FAILED, error="net err")  # 用户渠道全失败
+    crypto = MagicMock()
+    crypto.decrypt.return_value = '{"key":"k","url":"https://api.day.app"}'
+
+    admin_bark = MagicMock()
+    admin_bark.send.return_value = SendResult(status=ChannelStatus.FAILED, error="admin key invalid")
+
+    notifier = Notifier(
+        db_engine, channels={"bark": bark}, crypto=crypto,
+        admin_bark_config={"key": "admin_key", "url": "https://admin.day.app"},
+    )
+    notifier._admin_bark_channel = admin_bark
+
+    with caplog.at_level(logging.ERROR, logger="app.notifications.notifier"):
+        notifier.notify_path_a(comparison_id=cmp_id, lottery_name="双色球", draw_no="062",
+                               tier=1, amount=None)
+
+    admin_bark.send.assert_called_once()
+    # admin Bark 自身失败必须留痕（非丢弃返回值静默）
+    assert any("admin" in rec.message.lower() or "告警" in rec.message for rec in caplog.records), (
+        "_alert_admin 的 send 返回 FAILED 须记 ERROR（含原因），不得丢弃返回值静默——"
+        "否则全渠道失败时兜底告警也挂了却无人知晓（双重静默）")
+
+
+def test_no_user_channels_does_not_trigger_admin_alert(monkeypatch, db_engine, caplog):
+    """N4（quality re-review Minor→噪音）：用户未配/全禁用渠道（channels_data 为空）≠
+    全渠道失败，不应触发 admin fallback——否则新用户每次路径B 有汇总内容都告警，噪音
+    淹没真实「全渠道失败」告警。
+
+    正确：空渠道单独记 WARNING（提示该用户无可用渠道），不调 _alert_admin。
+    """
+    import logging
+    from app.models import User, DrawResult, Comparison, NotificationRule
+    from app.seeds.lottery_types import seed_lottery_types
+    # seed 一个无任何渠道的用户
+    with Session(db_engine) as s:
+        seed_lottery_types(s)
+        u = User(username="noch", password_hash="x", role="user", invite_code="C")
+        s.add(u); s.commit(); s.refresh(u)
+        s.add(NotificationRule(user_id=u.id, lottery_code="ssq", strategy="every"))
+        dr = DrawResult(lottery_code="ssq", draw_no="062",
+                        draw_date=datetime(2026, 6, 21, 12, 0, 0),
+                        numbers_json='{"front":[1,2,3,4,5,6],"back":[7]}',
+                        source="mxnzp", verified=True, version=1)
+        s.add(dr); s.commit(); s.refresh(dr)
+        t = Ticket(user_id=u.id, lottery_code="ssq", play_type="single",
+                   numbers_json='{"front":[1,2,3,4,5,6],"back":[7]}',
+                   multiplier=1, cost=200, enabled=True)
+        s.add(t); s.commit(); s.refresh(t)
+        s.add(Comparison(user_id=u.id, draw_result_id=dr.id, ticket_id=t.id, hits_json='{}',
+                         prize_tier=1, prize_amount=None, is_win=True)); s.commit()
+        uid = u.id
+
+    bark = MagicMock()
+    crypto = MagicMock()
+    import app.notifications.notifier as mod
+    monkeypatch.setattr(mod, "_now_hour", lambda: 12)
+
+    notifier = Notifier(
+        db_engine, channels={"bark": bark}, crypto=crypto,
+        admin_bark_config={"key": "admin_key", "url": "https://admin.day.app"},
+    )
+    admin_bark = MagicMock()
+    notifier._admin_bark_channel = admin_bark
+
+    with caplog.at_level(logging.WARNING, logger="app.notifications.notifier"):
+        notifier.notify_path_b(user_id=uid, date_str="2026-06-21")
+
+    bark.send.assert_not_called()  # 无渠道
+    # 空渠道不应触发 admin fallback（不是「全渠道失败」）
+    assert not admin_bark.send.called, "空渠道≠全渠道失败，不应触发 admin 告警（噪音淹没真实失败）"
+
+
+def test_notifier_close_releases_admin_and_user_channels(db_engine):
+    """N3（quality re-review Minor→资源泄漏）：Notifier.close() 须释放用户渠道 +
+    懒加载的 admin Bark channel 的 httpx.Client（APScheduler 常驻进程下避免连接泄漏）。
+
+    close() 须幂等（重复调用不报错），且关后 admin channel 置 None。
+    """
+    bark = MagicMock()
+    crypto = MagicMock()
+    notifier = Notifier(
+        db_engine, channels={"bark": bark}, crypto=crypto,
+        admin_bark_config={"key": "k", "url": "https://admin.day.app"},
+    )
+    admin_bark = MagicMock()
+    notifier._admin_bark_channel = admin_bark
+
+    notifier.close()
+
+    bark.close.assert_called_once()  # 用户渠道释放
+    admin_bark.close.assert_called_once()  # admin channel 释放
+    assert notifier._admin_bark_channel is None  # 置空
+    # 幂等：重复 close 不报错（admin 已 None 不再关；用户渠道 close 须自身幂等）
+    notifier.close()
+    assert admin_bark.close.call_count == 1  # admin 只关一次（已置 None）
