@@ -1,7 +1,7 @@
 import json
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from sqlmodel import Session, select
@@ -41,6 +41,31 @@ class Notifier:
         self._dnd_end = dnd_end
         # admin Bark channel 懒加载（只在需要时构造）
         self._admin_bark_channel: NotifierChannel | None = None
+
+    def close(self) -> None:
+        """释放渠道持有的资源（httpx.Client 连接池等）。
+
+        N3（quality re-review）：admin Bark channel 懒加载后长期不释放，APScheduler
+        常驻进程下连接泄漏。用户渠道（bark/feishu）也持有 httpx.Client，由 Notifier 统一
+        释放。email 用完即关无需处理，close() 默认空操作（base.py）幂等。
+        """
+        for ch in self._channels.values():
+            try:
+                ch.close()
+            except Exception:
+                logger.warning("notify_close_channel_failed type=%s", ch.type, exc_info=True)
+        if self._admin_bark_channel is not None:
+            try:
+                self._admin_bark_channel.close()
+            except Exception:
+                logger.warning("notify_close_admin_channel_failed", exc_info=True)
+            self._admin_bark_channel = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
 
     def _in_dnd(self) -> bool:
         h = _now_hour()
@@ -155,20 +180,34 @@ class Notifier:
             log.status = result.status.value
             log.error = result.error
             if result.status == ChannelStatus.SENT:
-                log.sent_at = datetime.now(_CST)
+                # naive UTC，刻意与 created_at（default_factory=datetime.utcnow）同时区同数值。
+                # SQLite 对 datetime 做字符串比较且存取剥离 tzinfo——若用 datetime.now(_CST)，
+                # 写入 CST 本地数值（比 UTC 早 8h），未来按时间过滤 log 的运维查询会静默
+                # 误判边界行（与 FloatRefillWorker _cutoff_naive_utc 同源雷，CLAUDE.md 纪律）。
+                log.sent_at = datetime.now(timezone.utc).replace(tzinfo=None)
             s.commit()
 
     def _send_to_user_channels(self, user_id: int, channels_data: list,
                                payload: NotificationPayload, force: bool) -> SendResult:
-        """Session 外发送（路径A/B 共用）。channels_data: [(plugin, config, type), ...]"""
-        if not force and self._in_dnd():
-            return SendResult(ChannelStatus.FAILED, "DND deferred")
+        """Session 外发送（路径A/B 共用）。channels_data: [(plugin, config, type), ...]
+
+        DND 检查由调用方负责：路径B notify_path_b 入口已检 DND 顺延；路径A force=True
+        破例。此处不再二次检查（force 参数保留供未来扩展，当前恒由调用方保证 DND 语义）。
+        """
+        # 空渠道 ≠ 全渠道失败：用户未配/全禁用渠道（新用户）不应触发 admin 告警——
+        # 否则每次有内容都告警，噪音淹没真实「全渠道失败」（N4）。
+        if not channels_data:
+            logger.warning(
+                "notify_no_channels user_id=%s type=%s（用户未配置/全禁用渠道，跳过推送）",
+                user_id, payload.title,
+            )
+            return SendResult(ChannelStatus.FAILED, "no channels")
         last = SendResult(ChannelStatus.FAILED, "no channels")
         for plugin, config, _ch_type in channels_data:
             last = self._send_with_retry(plugin, payload, config)
             if last.status == ChannelStatus.SENT:
                 return last
-        # 全失败 → admin Bark fallback
+        # 全渠道失败 → admin Bark fallback（spec §8.1/§10）
         self._alert_admin(payload, user_id=user_id)
         return last
 
@@ -210,8 +249,17 @@ class Notifier:
             return None
 
     def _alert_admin(self, payload: NotificationPayload, *, user_id: int) -> None:
-        """全渠道失败 → admin Bark fallback（spec §8.1/§10）。"""
+        """全渠道失败 → admin Bark fallback（spec §8.1/§10）。
+
+        admin send 永不抛异常（BarkChannel 契约），但可能返回 FAILED（admin key 失效 /
+        Bark 服务挂）。须记录返回值——否则「全渠道失败」时连兜底告警也挂了却无感知，
+        双重静默（N2）。
+        """
         if self._admin_bark_config is None:
+            logger.warning(
+                "admin_alert_skipped user_id=%s（未配置 admin_bark_config，全渠道失败无处告警）",
+                user_id,
+            )
             return
         if self._admin_bark_channel is None:
             from app.notifications.bark import BarkChannel
@@ -221,7 +269,14 @@ class Notifier:
             body=f"用户 {user_id} 推送失败（全渠道不可用）。消息：{payload.title}",
             user_id=user_id,
         )
-        self._admin_bark_channel.send(admin_payload, self._admin_bark_config)
+        result = self._admin_bark_channel.send(admin_payload, self._admin_bark_config)
+        if result.status != ChannelStatus.SENT:
+            # 兜底告警通道自身失败——ERROR 级，运维须立刻感知（告警链路断了）
+            logger.error(
+                "admin_bark_alert_failed user_id=%s error=%s（全渠道失败 + 兜底告警也失败，"
+                "中奖推送完全丢失，须人工介入）",
+                user_id, result.error,
+            )
 
     def _collect_user_results(self, session, user_id, date_str):
         """汇总该用户当日比对结果（仅含追投彩种）。
