@@ -360,3 +360,54 @@ def test_unknown_lottery_defaults_to_strict_positional(db_engine):
     svc = FetchService(primary, backup, db_engine, grace_seconds=0)
     r = svc.fetch_and_store("zzz")
     assert not r.verified, "未知彩种默认 strict positional：顺序不同即拒，不得 lenient 放过"
+
+
+# ────────── quality review Important 修复覆盖 ──────────
+
+
+def test_cross_verify_mismatch_logged(db_engine, caplog):
+    """quality Important①：双源交叉校验不一致必须告警日志（spec §7.2「不一致→告警」）。
+
+    不一致是最严重信号（双源分歧=潜在脏数据），与源故障同属不得静默吞没——否则运维查
+    "为何 062 没入库"无迹可寻。主流程与 grace 路径两处 mismatch 都须留痕。"""
+    primary = _src(_dn("ssq", "062", [1, 2, 3, 4, 5, 6], [7]), name="mxnzp")
+    backup = _src(_dn("ssq", "062", [1, 2, 3, 4, 5, 6], [8]), name="juhe")  # 蓝球不同
+    svc = FetchService(primary, backup, db_engine, grace_seconds=0)
+    with caplog.at_level(logging.WARNING):
+        r = svc.fetch_and_store("ssq")
+    assert r.error == "cross_verify_mismatch"
+    assert "cross_verify_mismatch" in caplog.text, "双源不一致必须告警日志，不得静默"
+
+
+def test_grace_recover_attributes_actual_source(db_engine):
+    """quality Important②：grace 恢复入库的 source 必须是实际提供数据的源，而非恒记主源。
+
+    场景：主源首抓未开奖，grace 重抓仍无 → 此时备源是 present 源；grace 内若重抓主源
+    成功且匹配，入库数据实际来自备源（present_dn=b）。source 字段应记备源名，否则主源
+    故障期间靠备源恢复的行全错标主源，丢失 ops 追溯。与单源兜底归属逻辑一致。"""
+    # 备源 present（有数据）；主源 grace 重抓成功且与备源匹配 → 双源入库
+    backup_dn = _dn("ssq", "062", [1, 2, 3, 4, 5, 6], [7])
+    primary = MagicMock(); primary.name = "mxnzp"
+    primary.fetch.side_effect = [None, backup_dn]  # 首抓无 → grace 重抓有
+    backup = _src(backup_dn, name="juhe")
+    svc = FetchService(primary, backup, db_engine, grace_seconds=1, sleep=lambda *_: None)
+    r = svc.fetch_and_store("ssq")
+    assert r.stored and r.verified and not r.single_source
+    with Session(db_engine) as s:
+        dr = s.exec(select(DrawResult)).first()
+        # present 源是备源（主源首抓为 None）→ source 应记备源 juhe，非 mxnzp
+        assert dr.source == "juhe", (
+            f"grace 恢复入库 source 须记实际提供数据的源 juhe，得到 {dr.source}")
+
+
+def test_single_source_fallback_attributes_actual_source(db_engine):
+    """quality Important② 配套：单源兜底归属已正确（锁定不回归）。主源故障→备源单源入库，
+    source 必须记备源。"""
+    primary = MagicMock(); primary.name = "mxnzp"
+    primary.fetch.side_effect = RuntimeError("mxnzp down")
+    backup = _src(_dn("ssq", "062", [1, 2, 3, 4, 5, 6], [7]), name="juhe")
+    svc = FetchService(primary, backup, db_engine, grace_seconds=0, max_attempts=1)
+    svc.fetch_and_store("ssq")
+    with Session(db_engine) as s:
+        dr = s.exec(select(DrawResult)).first()
+        assert dr.source == "juhe"

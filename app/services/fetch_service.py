@@ -16,7 +16,7 @@ import logging
 import random
 import time
 from dataclasses import dataclass
-from datetime import datetime, date
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from sqlalchemy.exc import IntegrityError
@@ -123,29 +123,41 @@ class FetchService:
             if _numbers_match(p, b):
                 return self._store(p, verified=True, single_source=False,
                                    source_name=self._primary.name)
-            return FetchResult(stored=False, verified=False, error="cross_verify_mismatch")
+            return self._mismatch(lottery_code, p, b)
 
         # 恰一源有效：grace 后重抓缺失源（spec §7.2 部分源 grace window）。
         # 重抓三态分流：拿到数据→双源校验（不一致即拒绝，不得降级单源——否则双源
         # 安全网在 grace 路径被绕过，§10 准确性优先）；仍无/故障→单源兜底。
         if self._grace > 0:
             self._sleep(self._grace)
-            if p is not None or b is not None:
-                present_dn = p if p is not None else b
-                if present_dn is None:
-                    pass  # 理论不可达（已保证恰一源有效），保留防御
-                else:
-                    verdict = self._grace_refetch(
-                        lottery_code, present_dn=present_dn,
-                        missing_source=self._primary if p is None else self._backup,
-                        present_source_name=self._primary.name)
-                    if verdict is not None:
-                        return verdict  # 双源校验成功入库 / mismatch 拒绝
+            present_dn = p if p is not None else b  # 恰一源有效，必非 None
+            assert present_dn is not None  # 类型窄化（上面分支已排双 None/双有）
+            # 归属：以实际提供数据的源为准（与单源兜底 :147 一致），而非恒记主源——
+            # 否则主源故障靠备源恢复入库的行会错标 source=主源，丢失 ops 追溯来源。
+            present_source_name = self._primary.name if p is not None else self._backup.name
+            verdict = self._grace_refetch(
+                lottery_code, present_dn=present_dn,
+                missing_source=self._primary if p is None else self._backup,
+                present_source_name=present_source_name)
+            if verdict is not None:
+                return verdict  # 双源校验成功入库 / mismatch 拒绝
 
         # grace 后仍单源（重抓仍无/故障）→ single_source 存（记录实际来源）
         only = p if p is not None else b
         src_name = self._primary.name if p is not None else self._backup.name
         return self._store(only, verified=True, single_source=True, source_name=src_name)
+
+    def _mismatch(self, lottery_code: str, a: DrawNumbers, b: DrawNumbers) -> FetchResult:
+        """双源交叉校验不一致 → verified=false 拒入库 + 告警日志（spec §7.2）。
+
+        不一致是最严重信号（双源对同期号码有分歧 → 潜在脏数据），必须留痕——否则运维
+        查"为何 062 期没入库"无迹可寻（与源故障同属不得静默吞没，silent-failure-hunter）。
+        """
+        logger.warning(
+            "cross_verify_mismatch lottery=%s draw_no=%s primary=%s/%s backup=%s/%s",
+            lottery_code, a.draw_no, a.front, a.back, b.front, b.back,
+        )
+        return FetchResult(stored=False, verified=False, error="cross_verify_mismatch")
 
     def _grace_refetch(
         self, lottery_code: str, present_dn: DrawNumbers, missing_source: DrawSource,
@@ -158,7 +170,7 @@ class FetchService:
         if _numbers_match(m2, present_dn):
             return self._store(present_dn, verified=True, single_source=False,
                                source_name=present_source_name)
-        return FetchResult(stored=False, verified=False, error="cross_verify_mismatch")
+        return self._mismatch(lottery_code, m2, present_dn)
 
     # ------------------------------------------------------------------ store
     def _store(self, dn: DrawNumbers, *, verified: bool, single_source: bool,
