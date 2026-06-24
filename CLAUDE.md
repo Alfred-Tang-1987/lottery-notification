@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目状态
 
-**Plan 01（基础设施）+ 02（领域层）+ 03（仓储/核心闭环 T1–T5）已完成，175 tests green。** Plan 03 剩 T6–T7，Plan 04–06 待实现，plan 在 `docs/superpowers/plans/`。改代码前先读 spec + 对应 plan；实现通过 **workflow orchestrator**（见下）自动跑 plan。
+**Plan 01（基础设施）+ 02（领域层）+ 03（仓储/核心闭环 T1–T7）+ 04（推送 T1–T3）已完成，215 tests green。** Plan 04 剩 T4+，Plan 05–06 待实现，plan 在 `docs/superpowers/plans/`。改代码前先读 spec + 对应 plan；实现通过 **workflow orchestrator**（见下）自动跑 plan。
 
 ## 项目是什么
 
@@ -37,7 +37,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **用户隔离**：所有用户私有表强制 `user_id`，repository 查询一律 `WHERE user_id=?`，FastAPI `current_user` 依赖注入；开奖结果 `draw_results` 是全局共享数据。
 - **金额用分**（int）存储，展示层再除 100，避免浮点。
 
-### 已实现分层（Plan 01–03）
+### 已实现分层（Plan 01–04）
 
 ```
 app/
@@ -60,8 +60,15 @@ app/
 │   └── repositories.py# [Plan 03] Repository 基类 + TicketRepo/UserRepo（user_id 注入，IDOR-safe）
 ├── services/          # [Plan 03] 应用服务层（编排，调 domain 不反向）
 │   ├── fetch_service.py    # FetchService: 双源交叉校验 + grace + 退避 + 幂等存储（spec §7.2/§10）
-│   ├── compare_service.py  # CompareService: outbox 原子认领 + domain.compare + comparisons/prize_claims
-│   └── refill_service.py   # FloatRefillWorker: 浮奖回填（7天上限 + unresolved 标记）
+│   ├── compare_service.py  # CompareService: outbox 原子认领 + domain.compare + comparisons/prize_claims（per-ticket savepoint）
+│   ├── refill_service.py   # FloatRefillWorker: 浮奖回填（7天上限 + unresolved 标记 + cutoff naive UTC）
+│   └── correct_service.py  # [Plan 03 T6] DrawCorrectService: 官方更正（version++ + outbox 重比 + 原地更新）
+├── notifications/     # [Plan 04 T1–T3] 推送层
+│   ├── base.py             # NotifierChannel 接口 + NotificationPayload/SendResult（send 永不抛异常）
+│   ├── bark.py/feishu.py   # httpx 渠道，HTTP 状态码 + 业务码双判（防静默成功，spec §10）
+│   ├── email_channel.py    # 系统统一发件（用户只填收件地址）
+│   ├── templates.py        # 路径A即时简讯 + 路径B汇总（spec §8.3）
+│   └── notifier.py         # Notifier: 路径A/B 编排（session 内读+写log→关session→发网络→新session 更新log，spec §7.1）+ 多渠道降级重试 + DND + admin Bark fallback
 ├── models/            # SQLModel 全 13 表 + apscheduler_jobs；__init__.py 汇总 import（建表靠 SQLModel.metadata.create_all）
 ├── seeds/             # 7 彩种 LotteryType 种子（spec_json pydantic 校验，启动幂等写入）
 └── main.py            # FastAPI app；lifespan 启动校验(validate_startup)+种子；GET /health（db+tz 探活）
@@ -79,7 +86,11 @@ import_linter 配置内联于 pyproject.toml [tool.importlinter]     # app.domai
 - **per-row 异常隔离用 savepoint**：循环里逐行处理 + 共享 session 时，单行失败必须 `with session.begin_nested():`（SAVEPOINT）隔离——否则 flush 时 DB 错毒化 session（PendingRollback），后续好行全丢 + 末尾 commit 变 rollback。**bare `except Exception` 不够**，必须 savepoint。（CompareService._compare_one 已修）
 - **批量循环里单行故障不得中断整批**：per-row try/except + log（含 `exc_info=True`），不阻断后续行；批末的兜底标记（如 expired/unresolved）须无条件执行（独立方法/finally），不依赖循环不抛。
 - **更正路径重置终态标记**：行被标 `unresolved=True` 后经官方更正重比，须在 upsert existing 分支重置 `unresolved=False`，否则永久卡死、永不再查官方金额。
-- **datetime 时区对齐**：SQLite 对 datetime 做**字符串比较**（非 tz-aware）。`created_at`（模型 `default_factory=datetime.utcnow` = naive UTC）与 cutoff 比较时，cutoff 必须**同为 naive UTC**——若用 aware CST，字符串排序错位会让边界行被误判超期、永久排除回填 → 浮奖金额永久 null。`_cutoff_naive_utc` 用 `datetime.now(UTC).replace(tzinfo=None)`（非弃用 `utcnow()`）。系统性根治（created_at 也 aware CST + 迁移旧行）待后续。
+- **datetime 时区对齐**（已两次踩同源雷：T5 refill + Plan 04/T3 notifier）：SQLite 对 datetime 做**字符串比较**（非 tz-aware），且**存取会剥离 tzinfo**。规则：模型里凡与其他 datetime 字段比较/排序的写入值，须与项目主流惯例（`TimestampMixin.created_at = default_factory=datetime.utcnow` = **naive UTC**）同时区**同数值**。用 `datetime.now(timezone.utc).replace(tzinfo=None)`（非弃用 `utcnow()`、非 aware CST）。
+  - **雷 1（T5 refill）**：cutoff 用 aware CST 与 naive-UTC `created_at` 比 → 字符串排序错位 → 边界行误判超期、永久排除回填 → 浮奖金额永久 null。修：`_cutoff_naive_utc`。
+  - **雷 2（T3 notifier `sent_at`）**：`sent_at = datetime.now(_CST)` 写 **CST 本地数值**（如 05:10），`created_at`(utcnow) 写 **UTC 数值**（如 21:10）——同一时刻 `sent_at` 比 `created_at` 数值小 8h，SQLite 字符串排序 `sent_at < created_at`，未来按时间过滤 log 的运维查询（清理过期/查 pending 超时/统计延迟）静默误判边界行。修：`sent_at = datetime.now(timezone.utc).replace(tzinfo=None)`。
+  - **⚠️ 测试写法陷阱**：因 SQLite 存取剥离 tzinfo，断言 `log.sent_at.tzinfo is None` **抓不到**雷 2（aware CST 存进去取回也是 None，但**数值**仍是 CST）。须断言**数值落 UTC 窗口**：`before = now(UTC).naive; ...; assert before <= sent_at <= after`——CST 数值会早 8h 落窗口外才暴露。光查 tzinfo 会假绿。
+  - 系统性根治（让 `created_at` 也 aware CST + 迁移规整旧行）待后续。
 - **claim-before-compare 的 tradeoff**：`_claim` 在比对前提交 `processed_at`，故比对抛异常的期不再自动重试（靠 ERROR 日志人工介入）——避免配置错无限重试，但瞬态错误会丢该期，Plan 04 调度层决定重试策略。
 
 ## 彩种规则（⚠️ 必读，领域层正确性的前提）
