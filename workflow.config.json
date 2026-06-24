@@ -2,7 +2,6 @@
   "test_command": "uv run pytest",
   "full_test_command": "uv run pytest -v",
   "build_command": "uv build",
-  "lint_command": "uv run ruff check .",
   "extra_lint_commands": ["uv run lint-imports"],
   "spec_path": "docs/superpowers/specs/2026-06-16-lottery-notification-design.md",
   "reference_paths": ["docs/reference/lottery-rules.md"],
