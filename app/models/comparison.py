@@ -13,6 +13,7 @@ class Comparison(TimestampMixin, table=True):
     hits_json: str
     prize_tier: int | None = None
     prize_amount: int | None = None  # 分；null=浮动奖待派奖
+    unresolved: bool = Field(default=False, sa_column_kwargs={"server_default": "0"})
     is_win: bool = Field(default=False, sa_column_kwargs={"server_default": "0"})
     corrected_at: datetime | None = None
 
