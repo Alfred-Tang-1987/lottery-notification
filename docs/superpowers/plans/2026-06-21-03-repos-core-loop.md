@@ -439,6 +439,16 @@ def test_fetch_not_drawn(db_engine):
     svc = FetchService(primary, backup, db_engine)
     r = svc.fetch_and_store("ssq")
     assert not r.stored and r.not_drawn
+
+
+def test_fetch_cross_verify_positional_order_sensitive(db_engine):
+    """positional 彩种（福彩3D）双源号码顺序不同 → 必须判 mismatch，verified=False。
+    回归保护：旧版 _numbers_match 用 sorted 会把 (1,2,3) 与 (3,2,1) 判同，对 positional 失效。"""
+    primary = MagicMock(); primary.name = "mxnzp"; primary.fetch.return_value = _dn("fc3d", "062", [1, 2, 3])
+    backup = MagicMock(); backup.name = "juhe"; backup.fetch.return_value = _dn("fc3d", "062", [3, 2, 1])  # 同号不同序
+    svc = FetchService(primary, backup, db_engine, grace_seconds=0)
+    r = svc.fetch_and_store("fc3d")
+    assert not r.verified  # 顺序不同 → mismatch，拒绝入库
 ```
 
 - [ ] **Step 2: 运行确认失败**
@@ -569,7 +579,20 @@ class FetchService:
 
 
 def _numbers_match(a: DrawNumbers, b: DrawNumbers) -> bool:
-    """partition 无序→排序比；统一排序对 positional 也安全（内容相同即匹配）。"""
+    """双源号码一致性校验。按彩种 number_style 分流（参照 docs/reference/lottery-rules.md）：
+    - partition/hybrid（双色球/大乐透/七乐彩/七星彩）：号码无序，排序后比（前/后区独立）。
+    - positional（福彩3D/排列3/排列5）：号码有顺序意义，必须逐位 tuple ==，绝不可排序——
+      否则 (1,2,3) 与 (3,2,1) 会被判相同，positional 双源校验失效。
+    ⚠️ 旧版用统一 sorted 是错的，正是 specReview 越界/规则校验要拦的 bug。"""
+    from app.seeds import SPECS
+    style = next((s["number_style"] for s in SPECS if s["code"] == a.lottery_code), "partition")
+    if style == "positional":
+        if a.front != b.front:
+            return False
+        if (a.back is None) != (b.back is None):
+            return False
+        return a.back == b.back  # positional 后区（若有）也按位
+    # partition / hybrid：无序，排序比，前/后区独立
     if sorted(a.front) != sorted(b.front):
         return False
     if (a.back is None) != (b.back is None):
@@ -579,14 +602,14 @@ def _numbers_match(a: DrawNumbers, b: DrawNumbers) -> bool:
     return True
 ```
 
-> 注：`source` 字段在单源时记录实际来源（primary/backup）。`max_attempts`/`backoff` 防限流封禁（spec §7.2 退避抖动）。
+> 注：`source` 字段在单源时记录实际来源（primary/backup）。`max_attempts`/`backoff` 防限流封禁（spec §7.2 退避抖动）。`_numbers_match` 须按 number_style 分流——positional（3D/PL3/PL5）逐位比较，绝不可 sorted（否则双源校验对按位彩种失效）。
 
 - [ ] **Step 4: 运行确认通过**
 
 ```bash
 uv run pytest tests/services/test_fetch_service.py -v
 ```
-Expected: 4 passed
+Expected: 5 passed
 
 - [ ] **Step 5: Commit**
 

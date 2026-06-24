@@ -41,3 +41,12 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
+
+[tool.importlinter]
+root_packages = ["app"]
+
+[[tool.importlinter.contracts]]
+name = "Domain layer is pure (no IO)"
+type = "forbidden"
+source_modules = ["app.domain"]
+forbidden_modules = ["app.infrastructure", "app.adapters", "app.api", "app.services"]

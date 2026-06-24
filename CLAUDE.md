@@ -51,7 +51,7 @@ app/
 ├── seeds/             # 7 彩种 LotteryType 种子（spec_json pydantic 校验，启动幂等写入）
 └── main.py            # FastAPI app；lifespan 启动校验(validate_startup)+种子；GET /health（db+tz 探活）
 alembic/               # 首迁移含全 schema + apscheduler_jobs（job_state LargeBinary）
-import_linter.toml     # app.domain 禁 import infrastructure/adapters/api/services（Plan 02 落地后强制）
+import_linter 配置内联于 pyproject.toml [tool.importlinter]     # app.domain 禁 import infrastructure/adapters/api/services（裸 `uv run lint-imports` 即生效，workflow gate 也走此命令）
 ```
 
 **SQLite 并发模型**：`pool_size=1` + WAL + `busy_timeout` —— 单写连接串行化，配合 APScheduler jobstore 独立 engine（见 Plan 04）避免写竞争。
