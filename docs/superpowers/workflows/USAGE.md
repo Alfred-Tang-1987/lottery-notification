@@ -8,7 +8,7 @@
 `run-plans` 是一个**自动执行 implementation plan 的编排器**。给它一份或多份 plan，它会：
 
 - **每 task**：派 implementor subagent（TDD RED→GREEN→REFACTOR）→ review chain 并行（spec 逐行比对 ‖ quality 架构 ‖ silent-failure-hunter）→ 精简 simplify → git commit
-- **plan 级**：独立 gate（在 committed SHA 上重跑全量测试，不信 implementor 自报）
+- **plan 级**：独立 gate（在 committed SHA 上重跑 test + lint_command + extra_lint_commands，任一非 0 halt，不信 implementor 自报）
 - **全流程**：多 plan 串行、振荡检测、BLOCKED 升级链、限额容错（halt + resume）
 
 它把"用 subagent-driven-development 手动跑 plan"自动化了——你就是用它替代手动 dispatch + review。
@@ -17,7 +17,7 @@
 
 | 条件 | 说明 |
 |---|---|
-| `workflow.config.json`（项目根） | test/build/lint 命令 + spec_path + language。bootstrap 会自动发现 |
+| `workflow.config.json`（项目根） | test/build/lint 命令 + spec_path + language + 可选 extra_lint_commands / reference_paths。bootstrap 会自动发现 |
 | plan 文件（`docs/superpowers/plans/*.md`） | 无 YAML frontmatter 也行——bootstrap 自动生成（含 modelHint） |
 | 业务代码可测 | `test_command` 要能跑（否则 implementor TDD 失败）。项目未初始化时 bootstrap 容忍（标 'project not yet initialized'，status 仍 ok） |
 
@@ -28,10 +28,27 @@
   "full_test_command": "uv run pytest -v",
   "build_command": "uv build",
   "lint_command": "uv run ruff check .",
+  "extra_lint_commands": ["uv run lint-imports"],
   "spec_path": "docs/superpowers/specs/2026-06-16-lottery-notification-design.md",
+  "reference_paths": ["docs/reference/lottery-rules.md"],
   "language": "python"
 }
 ```
+
+### config 字段说明
+
+| 字段 | 必填 | 作用 |
+|---|---|---|
+| `test_command` | 是 | implementor/commit 跑的单测命令 |
+| `full_test_command` | 是 | plan gate 跑的全量测试命令 |
+| `build_command` | 否 | 构建（当前未在 gate 强制） |
+| `lint_command` | 否 | 通用 lint（gate 会跑，非 0 即 halt） |
+| `extra_lint_commands` | 否 | **架构/专项 lint 数组**（gate 依次跑）。承载项目架构纪律——如本项目的 `uv run lint-imports`（domain 层零 IO 纯度护栏）。不配即不约束 |
+| `spec_path` | 是 | 设计 spec（specReview 逐条对照） |
+| `reference_paths` | 否 | **额外权威文档数组**（implementor/specReview 对照）。承载 spec 之外的硬规则——如本项目的彩种规则参考。不配即该 prompt 段消失 |
+| `language` | 否 | `python` / `general`（可扩展 ts/go…）。决定 qualityReviewer 的语言专项清单。未知值 → 通用清单 |
+
+> **通用性原则**：项目特有内容（彩种规则、domain 纯度纪律）只走 config，不写进 prompt。换一个非彩票 Python 项目，改几个路径即可复用；换 TS 项目加 `language: "typescript"` 清单即可。新字段全部可选——旧 config 无它们照跑（条件渲染：orchestrator 传空串，相关 prompt 段消失）。
 
 ## 3. 怎么触发
 
@@ -77,12 +94,13 @@ get-ts（取时间戳）
               → blocked → 升级 opus → 仍 blocked → halt
               → needs_context → contextFetcher → 重试
               → failed → 重试一次 → halt
+              → done_with_concerns → 记疑虑，继续进 review（不 halt）
             review rounds (max 3): spec ‖ quality ‖ hunter 并行
               → 全绿 break / 任一❌→ implementor 修复 → 下轮 / max3 → halt
               → 振荡检测（同文件≥3 round）
             simplify (max 1) → 无条件重跑 review → 失败委托 commit 回退
             commit → git commit feat(plan-X/T-Y)
-        plan gate: committed SHA 上重跑 full_test_command
+        plan gate: committed SHA 上依次重跑 test + lint_command + extra_lint_commands（任一非 0 halt）
     → finalize: 写 manifest
 ```
 
@@ -169,15 +187,15 @@ plan frontmatter 的 `model` 字段决定 implementor 用 sonnet 还是 opus：
 | implementor 反复失败 | 看 `blocked_info.last_error` + `suggested_fix`；可能 plan 顺序错（依赖前序 task） |
 | review 振荡 halt | `blocked_info.reason: OSCILLATING`——同文件多 round 反复改，人工介入 |
 | 限额 halt | `blocked_info.quota_exhausted: true`——等额度恢复 `resumeFromRunId` |
-| gate 失败 | committed SHA 上全量测试挂——看 `pytest_summary`，implementor 单测过但集成挂 |
+| gate 失败 | committed SHA 上 test/lint 任一非 0——看 `tests_exit_code` + `pytest_summary` + `lint_results`（lint 失败多为架构纪律违反，如 domain 层 import infra 被 `lint-imports` 抓到） |
 
 ## 13. 相关文件
 
 | 文件 | 作用 |
 |---|---|
-| `.claude/workflows/run-plans.js` | orchestrator 主体（顶层 await + runTask/halt/编排） |
-| `docs/superpowers/workflows/lib.js` | 纯函数真源（leafTasks/detectOscillation/buildPrompt/SCHEMAS/PROMPTS，19 测试） |
-| `docs/superpowers/workflows/tests/` | node:test 单元测试 |
+| `.claude/workflows/run-plans.js` | orchestrator 主体（顶层 await + runTask/halt/编排；inline 复制 lib.js 的 PROMPTS/SCHEMAS/helpers） |
+| `docs/superpowers/workflows/lib.js` | 纯函数真源（leafTasks/detectOscillation/buildPrompt/SCHEMAS/PROMPTS + 条件渲染 helpers，45 测试） |
+| `docs/superpowers/workflows/tests/` | node:test 单元测试；含 `sync.test.js` 同步护栏（断言 run-plans.js 的 PROMPTS/SCHEMAS 与 lib.js 一致——改 lib 必须 sync 副本，否则测试红） |
 | `workflow.config.json` | 项目配置（命令 + spec_path） |
 | `docs/superpowers/workflow-design.md` | 设计 spec（§1-13 + §2.4） |
 | `docs/superpowers/plans/` | implementation plan（6 份业务 plan + 1 份本工具 plan） |
