@@ -132,3 +132,73 @@ def test_compare_float_prize_amount_stays_null_with_multiplier(db_engine):
         cmp = cmps[0]
         assert cmp.prize_tier == 1
         assert cmp.prize_amount is None  # 浮动奖不乘倍投，回填时应用
+
+
+def test_compare_isolates_bad_ticket_same_draw(db_engine, caplog):
+    """坏注单（格式异常）必须隔离，不影响同期其他注的比对（spec §10 line375）。
+
+    同一期开奖下：用户 u1 的好注（中一等奖）+ 用户 u2 的坏注（numbers_json 损坏）。
+    process_pending 不得抛异常，u1 的 comparison 必须照常写入，坏注被跳过并记日志。
+    回归保护：旧版 _compare_one 无 per-ticket try/except，坏注的 json.loads 抛
+    JSONDecodeError 直接 unwind 整个 _compare_one → u1 的 comparison 也在未 commit 的
+    session 里被回滚丢失，且 _claim 已提交 processed_at → 该期永久无比对、中奖漏通知。
+    """
+    import logging
+    with Session(db_engine) as s:
+        u1 = _make_user(s, "good"); u2 = _make_user(s, "bad")
+        _seed_draw(s)
+        _seed_ticket(s, u1.id)  # 好注：6红+7蓝 → 一等奖
+        # 坏注：numbers_json 损坏（§10「格式异常」，如 CSV 导入脏数据）
+        s.add(Ticket(
+            user_id=u2.id, lottery_code="ssq", play_type="single",
+            numbers_json="not-valid-json{", multiplier=1, append=False,
+            cost=200, enabled=True,
+        ))
+        s.commit()
+    svc = CompareService(db_engine)
+    with caplog.at_level(logging.WARNING, logger="app.services.compare_service"):
+        n = svc.process_pending()  # 不得抛异常
+    assert n == 1  # 该期已处理（claim 成功 + 好注照常比对）
+    with Session(db_engine) as s:
+        cmps = s.exec(select(Comparison)).all()
+        # u1 的好注 comparison 必须存在（坏注被隔离，未阻塞它）
+        assert len(cmps) == 1
+        assert cmps[0].is_win and cmps[0].prize_tier == 1
+    # 坏注被跳过并记日志（§10「记录错误日志」，非静默）
+    assert any("ticket" in rec.message.lower() for rec in caplog.records)
+
+
+def test_compare_isolates_bad_ticket_across_draws(db_engine):
+    """一个坏注所在的期不得阻塞后续期的比对（跨期隔离，silent-failure 回归保护）。
+
+    期 A 含坏注（fushi Phase2 未支持 → expand 抛 NotImplementedError），期 B 含好注。
+    旧版 process_pending 的 for-pending 循环无 per-draw try/except，期 A 抛异常直接
+    中断循环 → 期 B 永不比对。"""
+    with Session(db_engine) as s:
+        u = _make_user(s)
+        # 期 A：坏注（fushi，Phase 2 未实现 → expand NotImplementedError）
+        _seed_draw(s, code="ssq", front=(1, 2, 3, 4, 5, 6), back=(7,))
+        # _seed_draw 写死 draw_no="062"，需另起一期；直接构造第二期
+        dr_b = DrawResult(
+            lottery_code="ssq", draw_no="063", draw_date=datetime.utcnow(),
+            numbers_json=json.dumps({"front": [1, 2, 3, 4, 5, 6], "back": [7]}),
+            source="mxnzp", verified=True, version=1,
+        )
+        s.add(dr_b); s.commit(); s.refresh(dr_b)
+        s.add(PendingComparison(draw_result_id=dr_b.id)); s.commit()
+        # 期 A 的坏注
+        s.add(Ticket(
+            user_id=u.id, lottery_code="ssq", play_type="fushi",
+            numbers_json=json.dumps({"front": [1, 2, 3, 4, 5, 6], "back": [7]}),
+            multiplier=1, append=False, cost=200, enabled=True,
+        ))
+        # 期 B 的好注（中一等奖）
+        _seed_ticket(s, u.id)
+        s.commit()
+    svc = CompareService(db_engine)
+    n = svc.process_pending()  # 不得抛异常；两期都应被 claim
+    assert n == 2  # 期 A、期 B 均处理（坏注被隔离，不阻断期 B）
+    with Session(db_engine) as s:
+        cmps = s.exec(select(Comparison).order_by(Comparison.id)).all()
+        # 期 B 的好注 comparison 必须存在
+        assert any(c.is_win and c.prize_tier == 1 for c in cmps)

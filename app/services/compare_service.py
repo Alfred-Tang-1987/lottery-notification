@@ -5,6 +5,7 @@ outbox 原子认领（pending_comparisons）→ 取追投 tickets → 领域 com
 中奖写 prize_claims(pending)。比对只做一次（spec §4 line99：路径 A/B 复用 comparisons）。
 """
 import json
+import logging
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -19,6 +20,8 @@ from app.models import (
     Comparison, DrawResult, PendingComparison, PrizeClaim, Ticket,
 )
 from app.seeds import SPECS
+
+logger = logging.getLogger(__name__)
 
 # 全程 Asia/Shanghai（spec §4.3）。aware datetime，与 FetchService 统一。
 _CST = ZoneInfo("Asia/Shanghai")
@@ -51,6 +54,11 @@ class CompareService:
         先快照待处理列表（短事务读），再逐条原子认领+比对。认领用
         UPDATE...WHERE processed_at IS NULL RETURNING 防并发重复认领（单写连接下
         亦保证幂等：已认领的行 processed_at 非空，WHERE 命中 0 行）。
+
+        per-draw 隔离（spec §10 + silent-failure 防护）：单期比对抛异常不得中断
+        后续期——否则一期坏注/配置错会让整批 process_pending 崩溃，后续期永不比对
+        （claim 已提交 processed_at → 永久丢失）。此处 catch+log+continue，把错误
+        显式留痕（不静默），processed_at 保持已认领（不无限重试配置错）。
         """
         with Session(self._engine) as s:
             pending = list(s.exec(
@@ -58,9 +66,18 @@ class CompareService:
             ).all())
         processed = 0
         for pc in pending:
-            if self._claim(pc.id):
+            if not self._claim(pc.id):
+                continue
+            processed += 1
+            try:
                 self._compare_one(pc.draw_result_id)
-                processed += 1
+            except Exception as exc:
+                # 期级失败（如 spec 缺失/开奖号损坏）：不阻断后续期，但必须留痕——
+                # claim 已提交，此期不再自动重试（避免配置错无限重试），靠日志告警人工介入。
+                logger.error(
+                    "compare_failed draw_result_id=%s pending_id=%s error=%s",
+                    pc.draw_result_id, pc.id, exc,
+                )
         return processed
 
     def _claim(self, pending_id: int) -> bool:
@@ -90,22 +107,38 @@ class CompareService:
             )).all())
 
             for t in tickets:
-                tn = json.loads(t.numbers_json)
-                entry = Entry(
-                    lottery_code=t.lottery_code, play_type=t.play_type,
-                    front=tuple(tn["front"]),
-                    back=tuple(tn["back"]) if tn.get("back") else None,
-                    multiplier=t.multiplier, append=t.append,
-                )
-                results = domain_compare(
-                    spec, draw_front=draw_front, draw_back=draw_back, entry=entry,
-                )
-                # single/zhixuan 玩法展开为 1 注；复式/胆拖 Phase 2 扩展后逐注比对写行
-                for hit in results:
-                    self._upsert_comparison(
-                        s, user_id=t.user_id, draw_result_id=dr.id,
-                        ticket_id=t.id, hit=hit, multiplier=t.multiplier,
+                # per-ticket 隔离（spec §10 line375：坏注单/格式异常 → 隔离该注，不影响
+                # 其他注的比对；记录错误日志）。坏注的失败发生在纯 Python 阶段
+                # （json.loads 损坏 JSON / fushi·dantuo Phase2 expand NotImplementedError /
+                # 号码结构异常）——这些在到达 DB 写入前抛出，session 不受污染，好注照常
+                # 在循环结束统一 commit。旧版无此隔离：一注坏 → 整个 _compare_one unwind
+                # → 好注（未 commit 的 session）回滚丢失 + claim 已提交 processed_at
+                # → 该期永久无比对、中奖静默漏通知。
+                try:
+                    tn = json.loads(t.numbers_json)
+                    entry = Entry(
+                        lottery_code=t.lottery_code, play_type=t.play_type,
+                        front=tuple(tn["front"]),
+                        back=tuple(tn["back"]) if tn.get("back") else None,
+                        multiplier=t.multiplier, append=t.append,
                     )
+                    results = domain_compare(
+                        spec, draw_front=draw_front, draw_back=draw_back, entry=entry,
+                    )
+                    # single/zhixuan 玩法展开为 1 注；复式/胆拖 Phase 2 扩展后逐注比对写行
+                    for hit in results:
+                        self._upsert_comparison(
+                            s, user_id=t.user_id, draw_result_id=dr.id,
+                            ticket_id=t.id, hit=hit, multiplier=t.multiplier,
+                        )
+                except Exception as exc:
+                    # 隔离该注：跳过 + 记录错误日志，继续比对同期的其他注（§10）。
+                    logger.warning(
+                        "compare_skip_bad_ticket ticket_id=%s user_id=%s "
+                        "lottery=%s draw_result_id=%s error=%s",
+                        t.id, t.user_id, t.lottery_code, dr.id, exc,
+                    )
+                    continue
             s.commit()
 
     def _upsert_comparison(
