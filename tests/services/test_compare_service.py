@@ -278,3 +278,39 @@ def test_compare_isolates_db_error_does_not_poison_session(db_engine, caplog):
             f"C1：flush 时 DB 错须用 savepoint 隔离到坏注#2，好注#1/#3 应存活，"
             f"实际 {len(winning)} 行 winning（旧版 bare-except 无 savepoint 会全丢→0 行）")
 
+
+def test_correction_resets_unresolved_so_row_reenters_refill(db_engine):
+    """I2（quality review Important）：官方更正重比命中同一注时，须重置 unresolved=False。
+
+    场景：一注已标 unresolved=True（浮奖超期未回填，refill 排除它）。后官方更正开奖
+    结果触发重比，_upsert_comparison 走 existing 分支重写 prize_amount（可能重置回 None
+    待派奖）。若不重置 unresolved，该行永久卡死：refill 永远排除 unresolved=True，无人
+    再查官方金额 → 中奖金额永远 null（spec §7.1 浮奖回填契约被破坏）。
+
+    正确：更正重比命中时 existing.unresolved=False，让该行重回回填管线。
+    """
+    with Session(db_engine) as s:
+        u = _make_user(s)
+        _seed_draw(s)  # draw_no=062，6红+7蓝
+        _seed_ticket(s, u.id)  # 好注，中一等奖
+        s.commit()
+    # 首次比对 → comparison 落库（prize_tier=1, prize_amount=None 浮动奖待派奖）
+    CompareService(db_engine).process_pending()
+    with Session(db_engine) as s:
+        cmp = s.exec(select(Comparison)).first()
+        cmp.unresolved = True  # 模拟浮奖超期未回填被标记
+        s.commit()
+        dr_id = cmp.draw_result_id
+        cmp_id = cmp.id
+    # 官方更正 → 重新生成 outbox（Plan 03 T6 DrawCorrectService 的职责，此处直接模拟）
+    with Session(db_engine) as s:
+        s.add(PendingComparison(draw_result_id=dr_id))
+        s.commit()
+    # 重比（走 _upsert_comparison existing 分支）
+    CompareService(db_engine).process_pending()
+    with Session(db_engine) as s:
+        cmp = s.get(Comparison, cmp_id)
+        assert cmp.unresolved is False, (
+            "官方更正重比命中须重置 unresolved=False，否则该行永久卡死、永不再查官方金额")
+        assert cmp.corrected_at is not None  # 确认走了 existing 更新分支
+
