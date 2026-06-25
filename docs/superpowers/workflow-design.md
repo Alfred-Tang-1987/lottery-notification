@@ -23,7 +23,7 @@
 | implementor | modelHint \|\| sonnet | TDD 实现 + self-review | 每 task |
 | spec-reviewer | opus | 代码 vs spec 逐行比对 | 每 review round |
 | quality-reviewer | opus | 质量/架构/边界/类型 | 每 review round |
-| silent-failure-hunter | — | 静默失败/吞错/bad fallback | 每 review round |
+| silent-failure-hunter | sonnet | 静默失败/吞错/bad fallback | 每 review round |
 | simplify | — | 精简代码（可选，max 1） | review 全绿后 |
 | bootstrap | — | 读 config/plan/git log，返回结构化状态 | 启动 + resume |
 | commit | — | status check + test + git commit | review 全绿后 |
@@ -458,7 +458,7 @@ return {result: 'done', state}
 **runTask(plan, task) 控制流（要点）**：
 
 1. **implementor**（`model = task.model || 'sonnet'`）；`status='blocked'` → §2.3 升级链（sonnet→opus→halt，带上限）
-2. **review rounds（max 3）**：每轮 `spec ‖ quality ‖ hunter` 并行（同 tree snapshot）；收集各 `diagnostics.files_touched` → 振荡检测（§13g）；全绿 break，任一 ❌ → implementor 修复 → 下一轮；max 3 耗尽 → halt
+2. **review rounds（max 3）**：每轮 `spec ‖ quality ‖ hunter` 并行（同 tree snapshot）；收集各 `diagnostics.files_touched` → 振荡检测（§13g）；全绿 break，任一 ❌ → implementor 修复（`collectReviewFindings` 归一化三类 review 的不同 diagnostics key + `formatFindings` 序列化为可读反馈；`fetchedContext` 独立占位符传参考上下文，不混入 fixIssues）→ 下一轮；max 3 耗尽 → halt
 3. **simplify（max 1，§5.2）**：无条件触发一轮 review（不信任自报 `changed`）；该轮 ❌ → 标记 `simplify_failed`，**回退委托 commit subagent**（orchestrator 无 fs，commit subagent 在 commit 前按 simplify 的 `files_changed` 先 `git checkout` 回退，再走正常 commit）；simplify 视为 no-op，用 simplify 前的 review 全绿状态继续
 4. **commit**：status check → test → `git commit -m "feat(plan-X/T-Y): ..."`；返回 `commit_sha` → `state.task_status[task.id]='committed'`
 

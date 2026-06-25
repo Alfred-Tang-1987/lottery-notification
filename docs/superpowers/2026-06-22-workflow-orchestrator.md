@@ -8,6 +8,8 @@
 
 **Tech Stack:** JavaScript（ES module）、`node:test`（Node 18+ 内置，纯函数单测）、Claude Code `Workflow` 工具（编排 runtime）。
 
+> **演进记录**（2026-06-25）：[10 bug fix commits] 修复 review 反馈管道信息丢失（qualityReviewer 结构化 findings → `[object Object]`、hunter `silent_failures` 完全丢弃等）——详见 `docs/superpowers/workflows/lib.js` 新增 `collectReviewFindings`/`formatFindings`/`matchesPlanFilter` 及其测试。hunter 模型显式固定 `model:'sonnet'`。implementor prompt 新增 `{{fetchedContext}}` 独立占位符。
+
 **约束（来自 workflow-design.md §4.3）：** orchestrator JS 无 fs / 无 subprocess / 无 `Date.now`/`Math.random`。所有 IO 委托 subagent；时间戳由 subagent 调 `date` 命令获得。
 
 ---
