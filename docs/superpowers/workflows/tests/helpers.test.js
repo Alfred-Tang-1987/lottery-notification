@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, isQuotaError, errStr } from '../lib.js'
+import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, isQuotaError, errStr, matchesPlanFilter } from '../lib.js'
 
 const ok = { status: 'ok', diagnostics: { files_touched: ['a.py'] } }
 const ok2 = { status: 'ok', diagnostics: { files_touched: ['b.py'] } }
@@ -67,4 +67,25 @@ test('errStr extracts message safely', () => {
   assert.equal(errStr(undefined), '')
   assert.equal(errStr({}), '[object Object]')
   assert.equal(errStr(new Error('x'.repeat(300))).length, 200)
+})
+
+// —— matchesPlanFilter（Bug 10 修复）——
+test('matchesPlanFilter: no arg → all plans pass', () => {
+  assert.equal(matchesPlanFilter({ id: 'plan-01', seq: '01' }, undefined), true)
+  assert.equal(matchesPlanFilter({ id: 'plan-01', seq: '01' }, ''), true)
+})
+
+test('matchesPlanFilter: exact string match on id or seq', () => {
+  assert.equal(matchesPlanFilter({ id: 'plan-03', seq: '03' }, 'plan-03'), true)
+  assert.equal(matchesPlanFilter({ id: 'plan-03', seq: '03' }, '03'), true)
+})
+
+test('matchesPlanFilter: number 3 matches padded seq "03" and id "plan-03" (Bug 10)', () => {
+  assert.equal(matchesPlanFilter({ id: 'plan-03', seq: '03' }, 3), true)
+  assert.equal(matchesPlanFilter({ id: 'plan-03', seq: '03' }, '3'), true)
+})
+
+test('matchesPlanFilter: non-matching arg → false', () => {
+  assert.equal(matchesPlanFilter({ id: 'plan-01', seq: '01' }, '02'), false)
+  assert.equal(matchesPlanFilter({ id: 'plan-01', seq: '01' }, 5), false)
 })

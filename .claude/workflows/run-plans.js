@@ -88,6 +88,21 @@ function normalizeCompleted(ids) {
   })
 }
 
+// args.plan 与 plan.id/plan.seq 的宽松匹配（Bug 10）—— inline 自 lib.js
+// 容忍 string/number/padded-seq/"plan-" 前缀差异。
+function matchesPlanFilter(plan, planArg) {
+  if (!planArg) return true
+  const a = String(planArg)
+  if (a === plan.id || a === plan.seq) return true
+  const n = Number(a)
+  if (!Number.isNaN(n)) {
+    if (Number(plan.seq) === n) return true
+    const idNum = Number(String(plan.id).replace(/^plan-/i, ''))
+    if (!Number.isNaN(idNum) && idNum === n) return true
+  }
+  return false
+}
+
 // ===== 条件渲染 helpers（inline 自 lib.js；通用性：彩票特有内容靠 config 驱动，prompt 保持单一模板）=====
 // orchestrator 显式传空串（非 undefined），buildPrompt 才会把占位符替换为空而非残留 {{k}}。
 function formatReferencePaths(paths) {
@@ -577,7 +592,7 @@ async function runTask(plan, task) {
   // —— commit（§5：状态原子转换；simplify 回退委托此 agent）——
   let commit
   try {
-    commit = await agent(buildPrompt('commit', { taskId: task.id, planId: plan.id, planIdShort, taskTitle: task.title || task.id, testCommand: cfg.test_command, simplifyFailed: String(simplifyFailed), simplifyFiles: simplifyFiles.join(',') }), { schema: SCHEMAS.commit, label: `commit:${task.id}` })
+    commit = await agent(buildPrompt('commit', { taskId: task.id, planId: plan.id, planIdShort, taskTitle: task.title || task.id, testCommand: cfg.test_command, simplifyFailed: String(simplifyFailed), simplifyFiles: simplifyFiles.join(','), simplifyRevertNote: simplifyFailed ? `Simplify 回退：重跑 review 失败，还原 ${simplifyFiles.length} 个文件。` : '' }), { schema: SCHEMAS.commit, label: `commit:${task.id}` })
   } catch (e) {
     if (isQuotaError(e)) return { halted: true, reason: 'model_unavailable', diag: { model, error: errStr(e) } }
     throw e
@@ -612,10 +627,10 @@ const _rawCompleted = (Array.isArray(args.completed) && args.completed.length ? 
 state.completed = normalizeCompleted(_rawCompleted)
 
 for (const plan of boot.evidence.plans) {
-  if (args.plan && plan.id !== args.plan && plan.seq !== args.plan) continue
+  if (!matchesPlanFilter(plan, args.plan)) continue
   state.currentPlan = plan.id
   phase(`Plan ${plan.id}`)
-  const want = (args.tasks && args.tasks.length) ? new Set(args.tasks) : null
+  const want = (args.tasks && args.tasks.length) ? new Set(args.tasks.map(String)) : null
   const tasks = plan.tasks.filter(t => !want || want.has(t.id))
   for (const task of tasks) {
     const taskKey = `plan-${plan.seq}/${task.id}`  // plan-scoped：跨 plan 同名 task 不误跳过

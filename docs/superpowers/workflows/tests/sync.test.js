@@ -28,7 +28,7 @@ for (const role of ROLES) {
 }
 
 test('run-plans.js inlines the new conditional-render helpers', () => {
-  for (const fn of ['formatReferencePaths', 'languageChecklist', 'LANGUAGE_CHECKLISTS', 'gateCommands', 'collectReviewFindings', 'formatFindings']) {
+  for (const fn of ['formatReferencePaths', 'languageChecklist', 'LANGUAGE_CHECKLISTS', 'gateCommands', 'collectReviewFindings', 'formatFindings', 'matchesPlanFilter']) {
     assert.match(runSrc, new RegExp(`function ${fn}|const ${fn}`), `missing helper: ${fn}`)
   }
 })
@@ -48,6 +48,7 @@ test('run-plans.js orchestrator wires new placeholders + gate lint loop', () => 
   assert.match(runSrc, /gateCommands\(state\.config\)/)
   assert.match(runSrc, /gateCommands: JSON\.stringify\(cmds\)/)
   assert.match(runSrc, /fetchedContext:/)
+  assert.match(runSrc, /simplifyRevertNote:/)
 })
 
 test('no彩票硬编码残留在通用 prompt（bootstrap 中性化 + qualityReviewer 去 domain 纪律）', () => {

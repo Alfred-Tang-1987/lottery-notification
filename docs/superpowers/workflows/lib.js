@@ -122,6 +122,22 @@ export function normalizeCompleted(ids) {
   })
 }
 
+// args.plan 与 plan.id/plan.seq 的宽松匹配（Bug 10）。
+// 容忍 string/number/padded-seq/"plan-" 前缀差异。
+// `3`/`"3"`/`"03"`/`"plan-03"` 均匹配 seq="03", id="plan-03"。
+export function matchesPlanFilter(plan, planArg) {
+  if (!planArg) return true
+  const a = String(planArg)
+  if (a === plan.id || a === plan.seq) return true
+  const n = Number(a)
+  if (!Number.isNaN(n)) {
+    if (Number(plan.seq) === n) return true
+    const idNum = Number(String(plan.id).replace(/^plan-/i, ''))
+    if (!Number.isNaN(idNum) && idNum === n) return true
+  }
+  return false
+}
+
 // ===== 条件渲染 helpers（通用性：彩票特有内容靠 config 驱动，prompt 保持单一模板）=====
 // orchestrator 显式传空串（非 undefined），buildPrompt 才会把占位符替换为空而非残留 {{k}}。
 
