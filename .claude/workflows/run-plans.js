@@ -33,8 +33,41 @@ function allGreen(...reviews) { return reviews.every(r => r && r.status === 'ok'
 function unionFiles(...reviews) {
   const set = new Set(); for (const r of reviews) for (const f of (r?.diagnostics?.files_touched || [])) set.add(f); return [...set]
 }
+// 已被 collectReviewFindings 取代（orchestrator fix-round 用）；保留为通用工具 + 向后兼容。
 function issuesFromReviews(...reviews) {
   const out = []; for (const r of reviews) if (r && r.status === 'failed') out.push(...(r.diagnostics?.issues || [])); return out
+}
+
+// 收集三类 review 的发现并归一化为结构化数组（orchestrator fix-round 反馈管道）—— inline 自 lib.js
+// spec/quality 存 diagnostics.issues；hunter 存 diagnostics.silent_failures（不同 key！
+// 旧 issuesFromReviews 只读 issues → hunter 发现被完全丢弃，Bug 2）。
+// items 可能是 string 或 object → 统一归一化为 {source, severity?, title, file?, fix?}。
+function collectReviewFindings(spec, qual, hunt) {
+  const out = []
+  const push = (r, source, key) => {
+    if (!r || r.status !== 'failed') return
+    for (const it of (r.diagnostics?.[key] || [])) {
+      if (it && typeof it === 'object') out.push({ source, severity: it.severity, title: it.title || String(it), file: it.file, fix: it.fix })
+      else out.push({ source, title: String(it) })
+    }
+  }
+  push(spec, 'spec', 'issues')
+  push(qual, 'quality', 'issues')
+  push(hunt, 'hunter', 'silent_failures')
+  return out
+}
+
+// 把 collectReviewFindings 的结构化数组序列化为 implementor 可读的多行字符串 —— inline 自 lib.js
+// 自描述格式：[source|severity] title — fix: ... (file)。空数组 → 空串（implCtx 约定）。
+// 替代旧的 lossy .join('; ')（对象 toString → [object Object]，Bug 1）。
+function formatFindings(findings) {
+  if (!Array.isArray(findings) || findings.length === 0) return ''
+  return findings.map(f => {
+    const tag = f.severity ? `[${f.source}|${f.severity}]` : `[${f.source}]`
+    const fix = f.fix ? ` — fix: ${f.fix}` : ''
+    const file = f.file ? ` (${f.file})` : ''
+    return `${tag} ${f.title}${fix}${file}`
+  }).join('\n')
 }
 
 // 判断错误是否 model 限额耗尽（§2.4 双重检测的捕获路径）—— inline 自 lib.js
@@ -469,13 +502,20 @@ async function runTask(plan, task) {
     if (osc.oscillating) return { halted: true, reason: 'OSCILLATING', diag: osc }
     if (allGreen(spec, qual, hunt)) break
     if (round === 3) return { halted: true, reason: 'review max rounds', diag: { spec: spec.diagnostics, qual: qual.diagnostics, hunt: hunt.diagnostics } }
+    const findings = collectReviewFindings(spec, qual, hunt)
     try {
-      impl = await agent(buildPrompt('implementor', implCtx(issuesFromReviews(spec, qual, hunt).join('; '), `修复 review round ${round} 问题。`)), { schema: SCHEMAS.implementor, model, label: `impl:${task.id}:fix${round}` })
+      impl = await agent(buildPrompt('implementor', implCtx(formatFindings(findings), `修复 review round ${round} 问题（${findings.length} 项发现：spec/quality/hunter）。`)), { schema: SCHEMAS.implementor, model, label: `impl:${task.id}:fix${round}` })
     } catch (e) {
       if (isQuotaError(e)) return { halted: true, reason: 'model_unavailable', diag: { model, error: errStr(e) } }
       throw e
     }
     if (impl.status === 'model_unavailable') return { halted: true, reason: 'model_unavailable', diag: impl.diagnostics }
+    // Bug 4: fix-round implementor 返回 blocked/failed/needs_context 时不能静默忽略——
+    // 否则 orchestrator 在 stale code 上继续下一轮 review，必然重复发现同样问题 → 浪费轮次。
+    // 初始 dispatch 已有 opus 升级链 + context-fetch 路径；fix-round 内 halt 暴露问题而非静默循环。
+    if (impl.status === 'blocked' || impl.status === 'failed' || impl.status === 'needs_context') {
+      return { halted: true, reason: `implementor ${impl.status} in fix-round ${round}`, diag: impl.diagnostics }
+    }
     filesChanged = impl.evidence.files_changed || filesChanged
   }
 

@@ -60,10 +60,43 @@ export function unionFiles(...reviews) {
   return [...set]
 }
 
+// 已被 collectReviewFindings 取代（orchestrator fix-round 用）；保留为通用工具 + 向后兼容。
 export function issuesFromReviews(...reviews) {
   const out = []
   for (const r of reviews) if (r && r.status === 'failed') out.push(...(r.diagnostics?.issues || []))
   return out
+}
+
+// 收集三类 review 的发现并归一化为结构化数组（orchestrator fix-round 反馈管道）。
+// spec/quality 存 diagnostics.issues；hunter 存 diagnostics.silent_failures（不同 key！
+// 旧 issuesFromReviews 只读 issues → hunter 发现被完全丢弃，Bug 2）。
+// items 可能是 string 或 object → 统一归一化为 {source, severity?, title, file?, fix?}。
+export function collectReviewFindings(spec, qual, hunt) {
+  const out = []
+  const push = (r, source, key) => {
+    if (!r || r.status !== 'failed') return
+    for (const it of (r.diagnostics?.[key] || [])) {
+      if (it && typeof it === 'object') out.push({ source, severity: it.severity, title: it.title || String(it), file: it.file, fix: it.fix })
+      else out.push({ source, title: String(it) })
+    }
+  }
+  push(spec, 'spec', 'issues')
+  push(qual, 'quality', 'issues')
+  push(hunt, 'hunter', 'silent_failures')
+  return out
+}
+
+// 把 collectReviewFindings 的结构化数组序列化为 implementor 可读的多行字符串。
+// 自描述格式：[source|severity] title — fix: ... (file)。空数组 → 空串（implCtx 约定）。
+// 替代旧的 lossy .join('; ')（对象 toString → [object Object]，Bug 1）。
+export function formatFindings(findings) {
+  if (!Array.isArray(findings) || findings.length === 0) return ''
+  return findings.map(f => {
+    const tag = f.severity ? `[${f.source}|${f.severity}]` : `[${f.source}]`
+    const fix = f.fix ? ` — fix: ${f.fix}` : ''
+    const file = f.file ? ` (${f.file})` : ''
+    return `${tag} ${f.title}${fix}${file}`
+  }).join('\n')
 }
 
 // 判断错误是否 model 限额耗尽（§2.4 双重检测的捕获路径）
