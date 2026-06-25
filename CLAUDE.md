@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Plan 01（基础设施）+ 02（领域层）+ 03（仓储/核心闭环 T1–T7）+ 04（推送 T1–T3）已完成，215 tests green。** Plan 04 剩 T4+，Plan 05–06 待实现，plan 在 `docs/superpowers/plans/`。改代码前先读 spec + 对应 plan；实现通过 **workflow orchestrator**（见下）自动跑 plan。
 
+**Workflow orchestrator 修复**（2026-06-25）：修复了 10 个 CRITICAL/IMPORTANT bug——qualityReviewer 结构化 findings 被 `.join()` 序列化为 `[object Object]`、hunter `silent_failures` 完全丢弃、fix-round implementor 状态被忽略等。修复后的 review chain 基于 `collectReviewFindings` + `formatFindings` 传播完整的结构化反馈。
+
 ## 项目是什么
 
 "兑奖了吗？"——多用户中国彩票开奖**自动核对与通知**系统。覆盖福彩+体彩 7 大主流彩种。用户维护固定号码池，系统每期自动比对开奖结果并按用户配置的渠道/策略推送。部署在家庭 NAS（小圈子邀请制共享），架构预留大规模公开扩展。未来计划 iOS 原生 App（API-first 复用）。
@@ -122,6 +124,9 @@ uv run alembic revision --autogenerate -m "msg"              # 改 model 后生�
 # 领域层 purity 护栏
 uv run lint-imports                                          # app.domain 不得 import infra/adapters/api/services
 
+# workflow orchestrator 测试（修改 run-plans.js/lib.js 后必须跑）
+cd docs/superpowers/workflows && node --test 'tests/*.test.js'
+
 # 前端（web/，[Plan 06 后]）
 cd web && npm install && npm run dev                         # 开发（代理 /api → :8000）；npm run build → ../static
 
@@ -133,7 +138,7 @@ docker compose up -d --build
 
 ## workflow orchestrator（执行 plan）
 
-`.claude/workflows/run-plans.js` 自动执行 `docs/superpowers/plans/*.md`：每 task implementor(TDD RED→GREEN→REFACTOR) → review 三链并行(spec 逐行 ‖ quality 架构 ‖ silent-failure-hunter) → simplify → commit `feat(plan-X/T-Y)`，plan 级独立 gate（在 committed SHA 上重跑全量测试，不信 implementor 自报）。详见 `docs/superpowers/workflows/USAGE.md`。
+`.claude/workflows/run-plans.js` 自动执行 `docs/superpowers/plans/*.md`：每 task implementor(TDD RED→GREEN→REFACTOR) → review 三链并行(spec 逐行 ‖ quality 架构 ‖ silent-failure-hunter) → simplify → commit `feat(plan-X/T-Y)`，plan 级独立 gate（在 committed SHA 上重跑全量测试，不信 implementor 自报）。review 反馈管道：`collectReviewFindings` 归一化三类 review 的 diagnostics key（spec/quality 读 `issues`，hunter 读 `silent_failures`）+ `formatFindings` 序列化为自描述可读反馈。修复了 hunter findings 被丢弃、quality findings 变成 `[object Object]` 等 10 个 bug（2026-06-25）。详见 `docs/superpowers/workflows/USAGE.md`。
 
 **进度以 git 为单一事实源**——bootstrap 读 git log 的 `feat(plan-X/T-Y)` convention 跳过已完成 task。跨机器/跨 session 续跑无需 manifest 或 runId：clone + 跑全新 workflow 即从未完成的 task 继续。
 
@@ -174,6 +179,9 @@ Workflow({ scriptPath: '...', args: {} })                                       
 - `docs/reference/lottery-rules.md` — **7 大彩种规则权威参考**（号码/玩法/称呼/奖级/倍投/追加 + 来源）
 - `docs/superpowers/plans/` — implementation plan（6 份业务 plan：01 已完成，02–06 待实现）
 - `docs/superpowers/workflows/USAGE.md` — workflow orchestrator 使用指南（触发/参数/限额容错/resume/调试）
+- `docs/superpowers/workflows/lib.js` — workflow 纯函数真源（`collectReviewFindings`/`formatFindings`/`matchesPlanFilter` 等 helper + PROMPTS/SCHEMAS），`node:test` 单测
+- `docs/superpowers/workflows/tests/` — helper 单测 + sync 护栏（sync.test.js 强制 run-plans.js inline 副本与 lib.js 一致）
+- `docs/superpowers/workflow-design.md` — workflow orchestrator 设计文档
 - `docs/superpowers/prototypes/` — 页面 prototype（视觉基准，9 页）
 
 ## NAS 部署约束
