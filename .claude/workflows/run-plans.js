@@ -516,10 +516,13 @@ async function runTask(plan, task) {
     state.perTask[task.id].review_rounds = round
     const fc = filesChanged.join(',')
     const [spec, qual, hunt] = await parallel([
-      async () => { try { return await agent(buildPrompt('specReview', { taskId: task.id, specPath: cfg.spec_path, planFilePath: plan.file, filesChanged: fc, concernsHint, referencePaths: formatReferencePaths(cfg.reference_paths) }), { schema: SCHEMAS.specReview, model: 'opus', phase: `Plan ${plan.id}`, label: `spec:${task.id}:r${round}` }) } catch (e) { return { status: 'model_unavailable', diagnostics: { error: errStr(e) } } } },
-      async () => { try { return await agent(buildPrompt('qualityReviewer', { taskId: task.id, filesChanged: fc, languageChecklist: languageChecklist(cfg.language) }), { schema: SCHEMAS.qualityReviewer, model: 'opus', label: `qual:${task.id}:r${round}` }) } catch (e) { return { status: 'model_unavailable', diagnostics: { error: errStr(e) } } } },
-      async () => { try { return await agent(buildPrompt('hunter', { taskId: task.id, filesChanged: fc }), { schema: SCHEMAS.hunter, label: `hunt:${task.id}:r${round}` }) } catch (e) { return { status: 'model_unavailable', diagnostics: { error: errStr(e) } } } },
+      async () => { try { return await agent(buildPrompt('specReview', { taskId: task.id, specPath: cfg.spec_path, planFilePath: plan.file, filesChanged: fc, concernsHint, referencePaths: formatReferencePaths(cfg.reference_paths) }), { schema: SCHEMAS.specReview, model: 'opus', phase: `Plan ${plan.id}`, label: `spec:${task.id}:r${round}` }) } catch (e) { return { status: isQuotaError(e) ? 'model_unavailable' : 'agent_error', diagnostics: { error: errStr(e) } } } },
+      async () => { try { return await agent(buildPrompt('qualityReviewer', { taskId: task.id, filesChanged: fc, languageChecklist: languageChecklist(cfg.language) }), { schema: SCHEMAS.qualityReviewer, model: 'opus', label: `qual:${task.id}:r${round}` }) } catch (e) { return { status: isQuotaError(e) ? 'model_unavailable' : 'agent_error', diagnostics: { error: errStr(e) } } } },
+      async () => { try { return await agent(buildPrompt('hunter', { taskId: task.id, filesChanged: fc }), { schema: SCHEMAS.hunter, model: 'sonnet', label: `hunt:${task.id}:r${round}` }) } catch (e) { return { status: isQuotaError(e) ? 'model_unavailable' : 'agent_error', diagnostics: { error: errStr(e) } } } },
     ])
+    if (spec?.status === 'agent_error' || qual?.status === 'agent_error' || hunt?.status === 'agent_error') {
+      return { halted: true, reason: 'agent_error', diag: { spec: spec?.diagnostics, qual: qual?.diagnostics, hunt: hunt?.diagnostics } }
+    }
     if (spec?.status === 'model_unavailable' || qual?.status === 'model_unavailable' || hunt?.status === 'model_unavailable') {
       return { halted: true, reason: 'model_unavailable', diag: { spec: spec?.diagnostics, qual: qual?.diagnostics, hunt: hunt?.diagnostics } }
     }
@@ -557,10 +560,13 @@ async function runTask(plan, task) {
   if (simp.evidence.changed) {
     const fc = (simp.evidence.files_changed || []).join(',')
     const [spec2, qual2, hunt2] = await parallel([
-      async () => { try { return await agent(buildPrompt('specReview', { taskId: task.id, specPath: cfg.spec_path, planFilePath: plan.file, filesChanged: fc, concernsHint: '', referencePaths: formatReferencePaths(cfg.reference_paths) }), { schema: SCHEMAS.specReview, model: 'opus', label: `spec:${task.id}:simp` }) } catch (e) { return { status: 'model_unavailable', diagnostics: { error: errStr(e) } } } },
-      async () => { try { return await agent(buildPrompt('qualityReviewer', { taskId: task.id, filesChanged: fc, languageChecklist: languageChecklist(cfg.language) }), { schema: SCHEMAS.qualityReviewer, model: 'opus', label: `qual:${task.id}:simp` }) } catch (e) { return { status: 'model_unavailable', diagnostics: { error: errStr(e) } } } },
-      async () => { try { return await agent(buildPrompt('hunter', { taskId: task.id, filesChanged: fc }), { schema: SCHEMAS.hunter, label: `hunt:${task.id}:simp` }) } catch (e) { return { status: 'model_unavailable', diagnostics: { error: errStr(e) } } } },
+      async () => { try { return await agent(buildPrompt('specReview', { taskId: task.id, specPath: cfg.spec_path, planFilePath: plan.file, filesChanged: fc, concernsHint: '', referencePaths: formatReferencePaths(cfg.reference_paths) }), { schema: SCHEMAS.specReview, model: 'opus', label: `spec:${task.id}:simp` }) } catch (e) { return { status: isQuotaError(e) ? 'model_unavailable' : 'agent_error', diagnostics: { error: errStr(e) } } } },
+      async () => { try { return await agent(buildPrompt('qualityReviewer', { taskId: task.id, filesChanged: fc, languageChecklist: languageChecklist(cfg.language) }), { schema: SCHEMAS.qualityReviewer, model: 'opus', label: `qual:${task.id}:simp` }) } catch (e) { return { status: isQuotaError(e) ? 'model_unavailable' : 'agent_error', diagnostics: { error: errStr(e) } } } },
+      async () => { try { return await agent(buildPrompt('hunter', { taskId: task.id, filesChanged: fc }), { schema: SCHEMAS.hunter, model: 'sonnet', label: `hunt:${task.id}:simp` }) } catch (e) { return { status: isQuotaError(e) ? 'model_unavailable' : 'agent_error', diagnostics: { error: errStr(e) } } } },
     ])
+    if (spec2?.status === 'agent_error' || qual2?.status === 'agent_error' || hunt2?.status === 'agent_error') {
+      return { halted: true, reason: 'agent_error', diag: { spec2: spec2?.diagnostics, qual2: qual2?.diagnostics, hunt2: hunt2?.diagnostics } }
+    }
     if (spec2?.status === 'model_unavailable' || qual2?.status === 'model_unavailable' || hunt2?.status === 'model_unavailable') {
       return { halted: true, reason: 'model_unavailable', diag: { spec2: spec2?.diagnostics, qual2: qual2?.diagnostics, hunt2: hunt2?.diagnostics } }
     }
