@@ -429,7 +429,7 @@ async function halt(plan, task, r) {
 async function runTask(plan, task) {
   state.currentTask = task.id
   const cfg = state.config
-  const planIdShort = `plan-${plan.seq}`
+  const planIdShort = `plan-${String(plan.seq).padStart(2, '0')}`
   state.perTask[task.id] = { planId: plan.id, status: 'in_progress', model: task.model || 'sonnet', review_rounds: 0, files_touched_per_round: [], commit_sha: null, blocked_info: null }
   log(`▶ ${task.id} (${task.model || 'sonnet'}): 派发 implementor — TDD 可能含长命令(uv sync/build/全量测试)，正常耗时请等待；/workflows 可看实时工具调用`)
 
@@ -633,7 +633,7 @@ for (const plan of boot.evidence.plans) {
   const want = (args.tasks && args.tasks.length) ? new Set(args.tasks.map(String)) : null
   const tasks = plan.tasks.filter(t => !want || want.has(t.id))
   for (const task of tasks) {
-    const taskKey = `plan-${plan.seq}/${task.id}`  // plan-scoped：跨 plan 同名 task 不误跳过
+    const taskKey = `plan-${String(plan.seq).padStart(2, '0')}/${task.id}`  // plan-scoped：跨 plan 同名 task 不误跳过，seq 归一化为 2 位填充
     if (state.completed.includes(taskKey)) { log(`skip ${taskKey} (already committed)`); continue }
     let r
     try {
