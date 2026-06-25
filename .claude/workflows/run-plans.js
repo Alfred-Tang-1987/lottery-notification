@@ -201,8 +201,9 @@ RED FLAG: evidence 必须是真实读取结果，绝不编造。`,
 
   implementor: `You are the IMPLEMENTOR for {{taskId}} (plan {{planId}}). TDD strict (RED→GREEN→REFACTOR). {{retryNote}}
 
-Inputs: specPath={{specPath}} testCommand={{testCommand}} planFile={{planFilePath}} taskId={{taskId}} fixIssues={{fixIssues}}
+Inputs: specPath={{specPath}} testCommand={{testCommand}} planFile={{planFilePath}} taskId={{taskId}} fixIssues={{fixIssues}} fetchedContext={{fetchedContext}}
 {{referencePaths}}
+{{fetchedContext}}
 
 Steps:
 1. Read {{planFilePath}}, locate {{taskId}} section: files to create/modify, tests to write.
@@ -211,7 +212,7 @@ Steps:
 4. GREEN: minimal code to pass the test. Don't add features or refactor beyond the test.
 5. REFACTOR: clean up (dedupe, better names, extract helpers). Tests stay green.
 6. Self-review (see checklist below).
-7. Run {{testCommand}}; record pytest summary + exit code. If fixIssues non-empty, this round fixes them.
+7. Run {{testCommand}}; record pytest summary + exit code. If fixIssues non-empty, this round fixes them (review findings from spec/quality/hunter). If fetchedContext non-empty, it is REFERENCE MATERIAL to read — do NOT modify or "fix" it; use it to unblock.
 
 ## Good Tests
 - One behavior per test ("and" in the name → split it)
@@ -419,7 +420,7 @@ async function runTask(plan, task) {
 
   // —— implementor + BLOCKED 升级链（§2.3）——
   let model = task.model || 'sonnet'
-  const implCtx = (fix, note) => ({ planId: plan.id, taskId: task.id, planFilePath: plan.file, specPath: cfg.spec_path, testCommand: cfg.test_command, fixIssues: fix, retryNote: note, referencePaths: formatReferencePaths(cfg.reference_paths) })
+  const implCtx = (fix, note, ctx = '') => ({ planId: plan.id, taskId: task.id, planFilePath: plan.file, specPath: cfg.spec_path, testCommand: cfg.test_command, fixIssues: fix, retryNote: note, fetchedContext: ctx, referencePaths: formatReferencePaths(cfg.reference_paths) })
   let impl
   try {
     impl = await agent(buildPrompt('implementor', implCtx('', '')), { schema: SCHEMAS.implementor, model, label: `impl:${task.id}` })
@@ -454,13 +455,38 @@ async function runTask(plan, task) {
       throw e
     }
     try {
-      impl = await agent(buildPrompt('implementor', implCtx(ctxr.diagnostics?.context || '', `补充上下文后重试。context: ${ctxr.diagnostics?.context || ''}`)),
+      const fetchedCtx = ctxr.diagnostics?.context || ''
+      impl = await agent(buildPrompt('implementor', implCtx('', `补充上下文后重试。`, fetchedCtx)),
                          { schema: SCHEMAS.implementor, model, label: `impl:${task.id}:ctx` })
     } catch (e) {
       if (isQuotaError(e)) return { halted: true, reason: 'model_unavailable', diag: { model, error: errStr(e) } }
       throw e
     }
     if (impl.status === 'model_unavailable') return { halted: true, reason: 'model_unavailable', diag: impl.diagnostics }
+    // Bug 8: needs_context → blocked 时先升 opus 再 halt（mirror 初始路径 433-444）
+    if (impl.status === 'blocked') {
+      if (model === 'opus') return { halted: true, reason: 'opus BLOCKED after context-fetch', diag: impl.diagnostics }
+      model = 'opus'
+      try {
+        impl = await agent(buildPrompt('implementor', implCtx('', '上下文补充后 sonnet 仍 BLOCKED，升级 opus 重试。', fetchedCtx)), { schema: SCHEMAS.implementor, model: 'opus', label: `impl:${task.id}:ctx:opus` })
+      } catch (e) {
+        if (isQuotaError(e)) return { halted: true, reason: 'model_unavailable', diag: { model: 'opus', error: errStr(e) } }
+        throw e
+      }
+      if (impl.status === 'model_unavailable') return { halted: true, reason: 'model_unavailable', diag: impl.diagnostics }
+      if (impl.status === 'blocked') return { halted: true, reason: 'opus BLOCKED after context-fetch', diag: impl.diagnostics }
+    }
+    // Bug 9: needs_context → failed 时允许一次重试（mirror 初始路径 467-477），非直接 halt
+    if (impl.status === 'failed') {
+      try {
+        impl = await agent(buildPrompt('implementor', implCtx('', '上下文补充后仍 failed，重试一次。', fetchedCtx)), { schema: SCHEMAS.implementor, model, label: `impl:${task.id}:ctx:retry` })
+      } catch (e) {
+        if (isQuotaError(e)) return { halted: true, reason: 'model_unavailable', diag: { model, error: errStr(e) } }
+        throw e
+      }
+      if (impl.status === 'model_unavailable') return { halted: true, reason: 'model_unavailable', diag: impl.diagnostics }
+      if (impl.status !== 'ok' && impl.status !== 'done_with_concerns') return { halted: true, reason: `implementor ${impl.status} after context-fetch retry`, diag: impl.diagnostics }
+    }
     if (impl.status !== 'ok' && impl.status !== 'done_with_concerns') return { halted: true, reason: `implementor ${impl.status} after context-fetch`, diag: impl.diagnostics }
   }
   // —— failed: retry once → halt (§4.4) ——

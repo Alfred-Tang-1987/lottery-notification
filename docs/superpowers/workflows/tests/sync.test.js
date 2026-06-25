@@ -47,6 +47,7 @@ test('run-plans.js orchestrator wires new placeholders + gate lint loop', () => 
   assert.match(runSrc, /concernsHint/)
   assert.match(runSrc, /gateCommands\(state\.config\)/)
   assert.match(runSrc, /gateCommands: JSON\.stringify\(cmds\)/)
+  assert.match(runSrc, /fetchedContext:/)
 })
 
 test('no彩票硬编码残留在通用 prompt（bootstrap 中性化 + qualityReviewer 去 domain 纪律）', () => {

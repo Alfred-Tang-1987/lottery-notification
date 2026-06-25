@@ -239,8 +239,9 @@ RED FLAG: evidence 必须是真实读取结果，绝不编造。`,
 
   implementor: `You are the IMPLEMENTOR for {{taskId}} (plan {{planId}}). TDD strict (RED→GREEN→REFACTOR). {{retryNote}}
 
-Inputs: specPath={{specPath}} testCommand={{testCommand}} planFile={{planFilePath}} taskId={{taskId}} fixIssues={{fixIssues}}
+Inputs: specPath={{specPath}} testCommand={{testCommand}} planFile={{planFilePath}} taskId={{taskId}} fixIssues={{fixIssues}} fetchedContext={{fetchedContext}}
 {{referencePaths}}
+{{fetchedContext}}
 
 Steps:
 1. Read {{planFilePath}}, locate {{taskId}} section: files to create/modify, tests to write.
@@ -249,7 +250,7 @@ Steps:
 4. GREEN: minimal code to pass the test. Don't add features or refactor beyond the test.
 5. REFACTOR: clean up (dedupe, better names, extract helpers). Tests stay green.
 6. Self-review (see checklist below).
-7. Run {{testCommand}}; record pytest summary + exit code. If fixIssues non-empty, this round fixes them.
+7. Run {{testCommand}}; record pytest summary + exit code. If fixIssues non-empty, this round fixes them (review findings from spec/quality/hunter). If fetchedContext non-empty, it is REFERENCE MATERIAL to read — do NOT modify or "fix" it; use it to unblock.
 
 ## Good Tests
 - One behavior per test ("and" in the name → split it)
