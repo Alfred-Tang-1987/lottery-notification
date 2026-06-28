@@ -1,8 +1,9 @@
 from sqlmodel import Session, select
-from app.models import User, Ticket
+
+from app.models import Ticket, User
 
 # Updatable fields allowlist for TicketRepo.update (security: prevents user_id reassignment, etc.)
-_TICKET_UPDATABLE = {"label", "multiplier", "append", "enabled", "numbers_json", "tuo_json", "play_type", "cost"}
+_TICKET_UPDATABLE = {'label', 'multiplier', 'append', 'enabled', 'numbers_json', 'tuo_json', 'play_type', 'cost'}
 
 # Validation constraints mirroring SQLModel Field validators
 _MULTIPLIER_MIN = 1
@@ -12,12 +13,10 @@ _COST_MIN = 0
 
 def _validate_ticket_field(k: str, v):
     """Raise ValueError if value violates Ticket field constraints."""
-    if k == "multiplier":
-        if not isinstance(v, int) or not (_MULTIPLIER_MIN <= v <= _MULTIPLIER_MAX):
-            raise ValueError(f"multiplier must be between {_MULTIPLIER_MIN} and {_MULTIPLIER_MAX}, got {v}")
-    if k == "cost":
-        if not isinstance(v, int) or v < _COST_MIN:
-            raise ValueError(f"cost must be >= {_COST_MIN}, got {v}")
+    if k == 'multiplier' and (not isinstance(v, int) or not (_MULTIPLIER_MIN <= v <= _MULTIPLIER_MAX)):
+        raise ValueError(f'multiplier must be between {_MULTIPLIER_MIN} and {_MULTIPLIER_MAX}, got {v}')
+    if k == 'cost' and (not isinstance(v, int) or v < _COST_MIN):
+        raise ValueError(f'cost must be >= {_COST_MIN}, got {v}')
 
 
 class TicketRepo:
@@ -59,19 +58,13 @@ class TicketRepo:
 
     def get(self, ticket_id: int) -> Ticket | None:
         """IDOR-safe：仅返回属于本 user 的票。"""
-        return self._s.exec(
-            select(Ticket).where(Ticket.id == ticket_id, Ticket.user_id == self._uid)
-        ).first()
+        return self._s.exec(select(Ticket).where(Ticket.id == ticket_id, Ticket.user_id == self._uid)).first()
 
     def list_all(self) -> list[Ticket]:
-        return list(
-            self._s.exec(select(Ticket).where(Ticket.user_id == self._uid)).all()
-        )
+        return list(self._s.exec(select(Ticket).where(Ticket.user_id == self._uid)).all())
 
     def list_by_lottery(self, lottery_code: str, only_enabled=True) -> list[Ticket]:
-        stmt = select(Ticket).where(
-            Ticket.user_id == self._uid, Ticket.lottery_code == lottery_code
-        )
+        stmt = select(Ticket).where(Ticket.user_id == self._uid, Ticket.lottery_code == lottery_code)
         if only_enabled:
             stmt = stmt.where(Ticket.enabled == True)  # noqa: E712
         return list(self._s.exec(stmt).all())
@@ -108,11 +101,9 @@ class UserRepository:
         self._s = session
 
     def get_by_username(self, username: str) -> User | None:
-        return self._s.exec(
-            select(User).where(User.username == username)
-        ).first()
+        return self._s.exec(select(User).where(User.username == username)).first()
 
-    def create(self, *, username, password_hash, invite_code, role="user") -> User:
+    def create(self, *, username, password_hash, invite_code, role='user') -> User:
         u = User(
             username=username,
             password_hash=password_hash,

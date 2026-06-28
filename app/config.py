@@ -5,6 +5,7 @@ Spec §124 启动校验要求：JWT_SECRET / CRYPTO_KEY 必须在启动时验证
 （44 url-safe base64 字符，解码后 32 字节），并在 validate_startup() 中实例化
 CryptoService 端到端证明密钥可用，避免运行时首次加解密才崩。
 """
+
 import threading
 from typing import Literal
 
@@ -17,59 +18,59 @@ _FERNET_KEY_LENGTH = 44
 # JWT 用于 HMAC 签名，生产强度下限 32 字符。
 _JWT_SECRET_MIN = 32
 
-SmtpEncryption = Literal["SSL/TLS", "STARTTLS", "none"]
+SmtpEncryption = Literal['SSL/TLS', 'STARTTLS', 'none']
 
 
 def _validate_fernet_key(value: str, field_name: str) -> str:
     """校验 value 是真实可用的 Fernet key（构造 Fernet 实例，失败即 ValueError）。"""
     if not isinstance(value, str) or len(value) != _FERNET_KEY_LENGTH:
         raise ValueError(
-            f"{field_name} 必须是 {_FERNET_KEY_LENGTH} 字符的 url-safe base64 Fernet key"
-            f"（生成：python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\"）"
+            f'{field_name} 必须是 {_FERNET_KEY_LENGTH} 字符的 url-safe base64 Fernet key'
+            f'（生成：python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"）'
         )
     try:
         Fernet(value.encode())
-    except Exception as exc:  # noqa: BLE001 - 任意 Fernet 构造失败都视为配置错误
-        raise ValueError(f"{field_name} 不是有效的 Fernet key：{exc}") from exc
+    except Exception as exc:
+        raise ValueError(f'{field_name} 不是有效的 Fernet key：{exc}') from exc
     return value
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file='.env', extra='ignore')
 
     # JWT_SECRET：HMAC 签名密钥，生产下限 32 字符（spec §124）
     jwt_secret: str = Field(min_length=_JWT_SECRET_MIN)
     # CRYPTO_KEY_V1/V2：Fernet 多版本密钥。min_length 设为真实 Fernet 长度 44，
     # 并由 _validate_fernet_key 进一步校验可构造 Fernet 实例。
-    crypto_key_v1: str = Field(alias="CRYPTO_KEY_V1", min_length=_FERNET_KEY_LENGTH)
-    crypto_key_v2: str | None = Field(default=None, alias="CRYPTO_KEY_V2")
+    crypto_key_v1: str = Field(alias='CRYPTO_KEY_V1', min_length=_FERNET_KEY_LENGTH)
+    crypto_key_v2: str | None = Field(default=None, alias='CRYPTO_KEY_V2')
 
-    mxnzp_api_key: str = ""
-    juhe_api_key: str = ""
+    mxnzp_api_key: str = ''
+    juhe_api_key: str = ''
 
     smtp_host: str | None = None
     smtp_port: int = 465
-    smtp_encryption: SmtpEncryption = "SSL/TLS"
+    smtp_encryption: SmtpEncryption = 'SSL/TLS'
     smtp_user: str | None = None
     smtp_pass: str | None = None
     smtp_from: str | None = None
     admin_bark_key: str | None = None
 
-    database_url: str = "sqlite:///./data/lottery.db"
-    tz: str = "Asia/Shanghai"
-    cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
+    database_url: str = 'sqlite:///./data/lottery.db'
+    tz: str = 'Asia/Shanghai'
+    cors_origins: list[str] = Field(default_factory=lambda: ['http://localhost:5173'])
 
-    @field_validator("crypto_key_v1")
+    @field_validator('crypto_key_v1')
     @classmethod
     def _check_crypto_key_v1(cls, v: str) -> str:
-        return _validate_fernet_key(v, "CRYPTO_KEY_V1")
+        return _validate_fernet_key(v, 'CRYPTO_KEY_V1')
 
-    @field_validator("crypto_key_v2")
+    @field_validator('crypto_key_v2')
     @classmethod
     def _check_crypto_key_v2(cls, v: str | None) -> str | None:
         if v is None:
             return None
-        return _validate_fernet_key(v, "CRYPTO_KEY_V2")
+        return _validate_fernet_key(v, 'CRYPTO_KEY_V2')
 
     @property
     def crypto_keys(self) -> dict[int, str]:
@@ -88,9 +89,7 @@ class Settings(BaseSettings):
 
     def validate_email_bark_fallback(self) -> None:
         if self.email_enabled and not self.admin_bark_key:
-            raise ValueError(
-                "启用 email 渠道时必须配置 ADMIN_BARK_KEY（Bark 兜底告警，避免邮件循环依赖）"
-            )
+            raise ValueError('启用 email 渠道时必须配置 ADMIN_BARK_KEY（Bark 兜底告警，避免邮件循环依赖）')
 
 
 # ---------- 单例缓存（线程安全） ----------

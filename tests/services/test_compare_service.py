@@ -4,42 +4,64 @@
 被原子认领 → 取追投 tickets → 领域 compare() → 写 comparisons（唯一约束兜底）+
 中奖写 prize_claims(pending)。
 """
+
 import json
 from datetime import datetime
 
 from sqlmodel import Session, select
 
 from app.models import (
-    User, Ticket, DrawResult, PendingComparison, Comparison, PrizeClaim,
+    Comparison,
+    DrawResult,
+    PendingComparison,
+    PrizeClaim,
+    Ticket,
+    User,
 )
 from app.services.compare_service import CompareService
 
 
-def _make_user(session, username="u"):
-    u = User(username=username, password_hash="x", role="user", invite_code="C")
-    session.add(u); session.commit(); session.refresh(u)
+def _make_user(session, username='u'):
+    u = User(username=username, password_hash='x', role='user', invite_code='C')
+    session.add(u)
+    session.commit()
+    session.refresh(u)
     return u
 
 
-def _seed_draw(session, code="ssq", front=(1, 2, 3, 4, 5, 6), back=(7,)):
+def _seed_draw(session, code='ssq', front=(1, 2, 3, 4, 5, 6), back=(7,)):
     dr = DrawResult(
-        lottery_code=code, draw_no="062", draw_date=datetime.utcnow(),
-        numbers_json=json.dumps({"front": list(front), "back": list(back)}),
-        source="mxnzp", verified=True, version=1,
+        lottery_code=code,
+        draw_no='062',
+        draw_date=datetime.utcnow(),
+        numbers_json=json.dumps({'front': list(front), 'back': list(back)}),
+        source='mxnzp',
+        verified=True,
+        version=1,
     )
-    session.add(dr); session.commit(); session.refresh(dr)
+    session.add(dr)
+    session.commit()
+    session.refresh(dr)
     pc = PendingComparison(draw_result_id=dr.id)
-    session.add(pc); session.commit()
+    session.add(pc)
+    session.commit()
     return dr
 
 
 def _seed_ticket(session, user_id, front=(1, 2, 3, 4, 5, 6), back=(7,)):
     t = Ticket(
-        user_id=user_id, lottery_code="ssq", play_type="single",
-        numbers_json=json.dumps({"front": list(front), "back": list(back)}),
-        multiplier=1, append=False, cost=200, enabled=True,
+        user_id=user_id,
+        lottery_code='ssq',
+        play_type='single',
+        numbers_json=json.dumps({'front': list(front), 'back': list(back)}),
+        multiplier=1,
+        append=False,
+        cost=200,
+        enabled=True,
     )
-    session.add(t); session.commit(); session.refresh(t)
+    session.add(t)
+    session.commit()
+    session.refresh(t)
     return t
 
 
@@ -57,7 +79,7 @@ def test_compare_writes_comparison_first_prize(db_engine):
         assert cmp.is_win and cmp.prize_tier == 1
         # 一等奖应生成 prize_claims(pending)
         claim = s.exec(select(PrizeClaim)).first()
-        assert claim and claim.status == "pending"
+        assert claim and claim.status == 'pending'
 
 
 def test_compare_no_ticket_no_comparison(db_engine):
@@ -96,11 +118,18 @@ def test_compare_fixed_prize_applies_multiplier(db_engine):
         _seed_draw(s, front=(1, 2, 3, 4, 5, 6), back=(7,))
         # 5 红 + 1 蓝 → 三等奖；倍投 3 倍
         t = Ticket(
-            user_id=u.id, lottery_code="ssq", play_type="single",
-            numbers_json=json.dumps({"front": [1, 2, 3, 4, 5, 33], "back": [7]}),
-            multiplier=3, append=False, cost=600, enabled=True,
+            user_id=u.id,
+            lottery_code='ssq',
+            play_type='single',
+            numbers_json=json.dumps({'front': [1, 2, 3, 4, 5, 33], 'back': [7]}),
+            multiplier=3,
+            append=False,
+            cost=600,
+            enabled=True,
         )
-        s.add(t); s.commit(); s.refresh(t)
+        s.add(t)
+        s.commit()
+        s.refresh(t)
     svc = CompareService(db_engine)
     svc.process_pending()
     with Session(db_engine) as s:
@@ -118,11 +147,18 @@ def test_compare_float_prize_amount_stays_null_with_multiplier(db_engine):
         uid = u.id
         _seed_draw(s, front=(1, 2, 3, 4, 5, 6), back=(7,))
         # 一等奖（6红+1蓝，浮动），倍投 5 倍
-        s.add(Ticket(
-            user_id=uid, lottery_code="ssq", play_type="single",
-            numbers_json=json.dumps({"front": [1, 2, 3, 4, 5, 6], "back": [7]}),
-            multiplier=5, append=False, cost=1000, enabled=True,
-        ))
+        s.add(
+            Ticket(
+                user_id=uid,
+                lottery_code='ssq',
+                play_type='single',
+                numbers_json=json.dumps({'front': [1, 2, 3, 4, 5, 6], 'back': [7]}),
+                multiplier=5,
+                append=False,
+                cost=1000,
+                enabled=True,
+            )
+        )
         s.commit()
     svc = CompareService(db_engine)
     svc.process_pending()
@@ -144,19 +180,28 @@ def test_compare_isolates_bad_ticket_same_draw(db_engine, caplog):
     session 里被回滚丢失，且 _claim 已提交 processed_at → 该期永久无比对、中奖漏通知。
     """
     import logging
+
     with Session(db_engine) as s:
-        u1 = _make_user(s, "good"); u2 = _make_user(s, "bad")
+        u1 = _make_user(s, 'good')
+        u2 = _make_user(s, 'bad')
         _seed_draw(s)
         _seed_ticket(s, u1.id)  # 好注：6红+7蓝 → 一等奖
         # 坏注：numbers_json 损坏（§10「格式异常」，如 CSV 导入脏数据）
-        s.add(Ticket(
-            user_id=u2.id, lottery_code="ssq", play_type="single",
-            numbers_json="not-valid-json{", multiplier=1, append=False,
-            cost=200, enabled=True,
-        ))
+        s.add(
+            Ticket(
+                user_id=u2.id,
+                lottery_code='ssq',
+                play_type='single',
+                numbers_json='not-valid-json{',
+                multiplier=1,
+                append=False,
+                cost=200,
+                enabled=True,
+            )
+        )
         s.commit()
     svc = CompareService(db_engine)
-    with caplog.at_level(logging.WARNING, logger="app.services.compare_service"):
+    with caplog.at_level(logging.WARNING, logger='app.services.compare_service'):
         n = svc.process_pending()  # 不得抛异常
     assert n == 1  # 该期已处理（claim 成功 + 好注照常比对）
     with Session(db_engine) as s:
@@ -165,7 +210,7 @@ def test_compare_isolates_bad_ticket_same_draw(db_engine, caplog):
         assert len(cmps) == 1
         assert cmps[0].is_win and cmps[0].prize_tier == 1
     # 坏注被跳过并记日志（§10「记录错误日志」，非静默）
-    assert any("ticket" in rec.message.lower() for rec in caplog.records)
+    assert any('ticket' in rec.message.lower() for rec in caplog.records)
 
 
 def test_compare_isolates_bad_ticket_across_draws(db_engine):
@@ -180,21 +225,35 @@ def test_compare_isolates_bad_ticket_across_draws(db_engine):
     with Session(db_engine) as s:
         u = _make_user(s)
         # 期 A：坏注（numbers_json 损坏，§10「格式异常」）
-        _seed_draw(s, code="ssq", front=(1, 2, 3, 4, 5, 6), back=(7,))
-        s.add(Ticket(
-            user_id=u.id, lottery_code="ssq", play_type="single",
-            numbers_json="not-valid-json{",  # 稳定的坏注触发，不依赖 Phase 2
-            multiplier=1, append=False, cost=200, enabled=True,
-        ))
+        _seed_draw(s, code='ssq', front=(1, 2, 3, 4, 5, 6), back=(7,))
+        s.add(
+            Ticket(
+                user_id=u.id,
+                lottery_code='ssq',
+                play_type='single',
+                numbers_json='not-valid-json{',  # 稳定的坏注触发，不依赖 Phase 2
+                multiplier=1,
+                append=False,
+                cost=200,
+                enabled=True,
+            )
+        )
         s.commit()
         # 期 B：好注（中一等奖）。_seed_draw 写死 draw_no="062"，另起一期
         dr_b = DrawResult(
-            lottery_code="ssq", draw_no="063", draw_date=datetime.utcnow(),
-            numbers_json=json.dumps({"front": [1, 2, 3, 4, 5, 6], "back": [7]}),
-            source="mxnzp", verified=True, version=1,
+            lottery_code='ssq',
+            draw_no='063',
+            draw_date=datetime.utcnow(),
+            numbers_json=json.dumps({'front': [1, 2, 3, 4, 5, 6], 'back': [7]}),
+            source='mxnzp',
+            verified=True,
+            version=1,
         )
-        s.add(dr_b); s.commit(); s.refresh(dr_b)
-        s.add(PendingComparison(draw_result_id=dr_b.id)); s.commit()
+        s.add(dr_b)
+        s.commit()
+        s.refresh(dr_b)
+        s.add(PendingComparison(draw_result_id=dr_b.id))
+        s.commit()
         _seed_ticket(s, u.id)  # 好注，但挂在期 A 同彩种——下面手动改 draw_result 不需要
         s.commit()
     svc = CompareService(db_engine)
@@ -233,11 +292,18 @@ def test_compare_isolates_db_error_does_not_poison_session(db_engine, caplog):
         # 3 注：好#1（蓝7中一等）、坏#2（DB flush 错）、好#3（蓝7中一等）
         _seed_ticket(s, u.id, front=(1, 2, 3, 4, 5, 6), back=(7,))
         bad_t = Ticket(
-            user_id=u.id, lottery_code="ssq", play_type="single",
-            numbers_json=json.dumps({"front": [2, 3, 4, 5, 6, 7], "back": [8]}),
-            multiplier=1, append=False, cost=200, enabled=True,
+            user_id=u.id,
+            lottery_code='ssq',
+            play_type='single',
+            numbers_json=json.dumps({'front': [2, 3, 4, 5, 6, 7], 'back': [8]}),
+            multiplier=1,
+            append=False,
+            cost=200,
+            enabled=True,
         )
-        s.add(bad_t); s.commit(); s.refresh(bad_t)
+        s.add(bad_t)
+        s.commit()
+        s.refresh(bad_t)
         _seed_ticket(s, u.id, front=(1, 2, 3, 4, 5, 6), back=(7,))
         s.commit()
         bad_ticket_id = bad_t.id
@@ -247,36 +313,49 @@ def test_compare_isolates_db_error_does_not_poison_session(db_engine, caplog):
     # 与 JSONDecodeError 同路径）。复刻 _upsert_comparison else 分支但 hits_json=None 触发
     # NOT NULL，flush 抛 IntegrityError，session 进入 PendingRollback 态。
     real_upsert = CompareService._upsert_comparison
-    poisoned = {"called": False}
+    poisoned = {'called': False}
 
     def patched_upsert(self, session, *, user_id, draw_result_id, ticket_id, hit, multiplier=1):
         if ticket_id == bad_ticket_id:
-            poisoned["called"] = True
+            poisoned['called'] = True
             # 复刻真实 flush 时 DB 错：add 一个违反 NOT NULL 的行，flush 时抛
             cmp = Comparison(
-                user_id=user_id, draw_result_id=draw_result_id, ticket_id=ticket_id,
+                user_id=user_id,
+                draw_result_id=draw_result_id,
+                ticket_id=ticket_id,
                 hits_json=None,  # NOT NULL 违反 → flush 抛 IntegrityError（毒化 session）
-                prize_tier=hit.tier, prize_amount=None, is_win=hit.is_win,
+                prize_tier=hit.tier,
+                prize_amount=None,
+                is_win=hit.is_win,
             )
             session.add(cmp)
             session.flush()  # ← flush 时抛，session 进入 PendingRollback（C1 核心）
             return
-        return real_upsert(self, session, user_id=user_id, draw_result_id=draw_result_id,
-                           ticket_id=ticket_id, hit=hit, multiplier=multiplier)
+        return real_upsert(
+            self,
+            session,
+            user_id=user_id,
+            draw_result_id=draw_result_id,
+            ticket_id=ticket_id,
+            hit=hit,
+            multiplier=multiplier,
+        )
 
     svc = CompareService(db_engine)
-    with patch.object(CompareService, "_upsert_comparison", patched_upsert):
-        with caplog.at_level(logging.WARNING, logger="app.services.compare_service"):
-            svc.process_pending()  # 不得抛异常
+    with patch.object(CompareService, '_upsert_comparison', patched_upsert), caplog.at_level(
+        logging.WARNING, logger='app.services.compare_service'
+    ):
+        svc.process_pending()  # 不得抛异常
 
-    assert poisoned["called"], "测试前提：坏注#2 的 upsert 确被调用并注入了 flush 时 DB 错"
+    assert poisoned['called'], '测试前提：坏注#2 的 upsert 确被调用并注入了 flush 时 DB 错'
     with Session(db_engine) as s:
         cmps = s.exec(select(Comparison)).all()
         winning = [c for c in cmps if c.is_win and c.prize_tier == 1]
         # 两注好注的 comparison 必须都落库——DB 错只毒化坏注#2（被 savepoint 隔离），不波及好注
         assert len(winning) == 2, (
-            f"C1：flush 时 DB 错须用 savepoint 隔离到坏注#2，好注#1/#3 应存活，"
-            f"实际 {len(winning)} 行 winning（旧版 bare-except 无 savepoint 会全丢→0 行）")
+            f'C1：flush 时 DB 错须用 savepoint 隔离到坏注#2，好注#1/#3 应存活，'
+            f'实际 {len(winning)} 行 winning（旧版 bare-except 无 savepoint 会全丢→0 行）'
+        )
 
 
 def test_correction_resets_unresolved_so_row_reenters_refill(db_engine):
@@ -310,7 +389,5 @@ def test_correction_resets_unresolved_so_row_reenters_refill(db_engine):
     CompareService(db_engine).process_pending()
     with Session(db_engine) as s:
         cmp = s.get(Comparison, cmp_id)
-        assert cmp.unresolved is False, (
-            "官方更正重比命中须重置 unresolved=False，否则该行永久卡死、永不再查官方金额")
+        assert cmp.unresolved is False, '官方更正重比命中须重置 unresolved=False，否则该行永久卡死、永不再查官方金额'
         assert cmp.corrected_at is not None  # 确认走了 existing 更新分支
-

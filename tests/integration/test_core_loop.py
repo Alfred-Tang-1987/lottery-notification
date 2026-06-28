@@ -7,6 +7,7 @@ CompareService 无 pending 可认领 → 中奖静默漏比对）。
 双源 MagicMock 提供 DrawNumbers；grace_seconds=0 跳过 grace 睡眠；全程用真实
 SQLite engine + 真实 domain.compare，不 mock 领域层（spec §4：领域是核心）。
 """
+
 import json
 from datetime import date
 from unittest.mock import MagicMock
@@ -22,30 +23,44 @@ from app.services.fetch_service import FetchService
 def _dn(front, back):
     """构造双色球同期归一化开奖号码（两源一致）。"""
     return DrawNumbers(
-        lottery_code="ssq", draw_no="062", draw_date=date(2026, 6, 21),
-        front=tuple(front), back=tuple(back),
+        lottery_code='ssq',
+        draw_no='062',
+        draw_date=date(2026, 6, 21),
+        front=tuple(front),
+        back=tuple(back),
     )
 
 
 def _make_user_and_ticket(engine, ticket_front, ticket_back):
     """建用户 + 追投一注双色球（enabled），返回 (user_id, ticket_id)。"""
     with Session(engine) as s:
-        u = User(username="u", password_hash="x", role="user", invite_code="C")
-        s.add(u); s.commit(); s.refresh(u)
+        u = User(username='u', password_hash='x', role='user', invite_code='C')
+        s.add(u)
+        s.commit()
+        s.refresh(u)
         t = Ticket(
-            user_id=u.id, lottery_code="ssq", play_type="single",
-            numbers_json=json.dumps({"front": list(ticket_front), "back": list(ticket_back)}),
-            multiplier=1, append=False, cost=200, enabled=True,
+            user_id=u.id,
+            lottery_code='ssq',
+            play_type='single',
+            numbers_json=json.dumps({'front': list(ticket_front), 'back': list(ticket_back)}),
+            multiplier=1,
+            append=False,
+            cost=200,
+            enabled=True,
         )
-        s.add(t); s.commit(); s.refresh(t)
+        s.add(t)
+        s.commit()
+        s.refresh(t)
         return u.id, t.id
 
 
 def _fetch_sources(front, back):
     """双源 MagicMock，均返回给定号码（一致 → verified=true）。"""
-    primary = MagicMock(); primary.name = "mxnzp"
+    primary = MagicMock()
+    primary.name = 'mxnzp'
     primary.fetch.return_value = _dn(front, back)
-    backup = MagicMock(); backup.name = "juhe"
+    backup = MagicMock()
+    backup.name = 'juhe'
     backup.fetch.return_value = _dn(front, back)
     return primary, backup
 
@@ -59,7 +74,7 @@ def test_full_loop_win(db_engine):
     primary, backup = _fetch_sources([1, 2, 3, 4, 5, 6], [7])
     _make_user_and_ticket(db_engine, [1, 2, 3, 4, 5, 6], [7])
 
-    r = FetchService(primary, backup, db_engine, grace_seconds=0).fetch_and_store("ssq")
+    r = FetchService(primary, backup, db_engine, grace_seconds=0).fetch_and_store('ssq')
     assert r.stored and r.verified  # 双源一致 → verified
 
     CompareService(db_engine).process_pending()
@@ -69,7 +84,7 @@ def test_full_loop_win(db_engine):
         assert cmp is not None
         assert cmp.is_win and cmp.prize_tier == 1  # 双色球 6红+1蓝 = 一等奖
         claim = s.exec(select(PrizeClaim)).first()
-        assert claim is not None and claim.status == "pending"
+        assert claim is not None and claim.status == 'pending'
 
 
 def test_full_loop_lose(db_engine):
@@ -80,7 +95,7 @@ def test_full_loop_lose(db_engine):
     primary, backup = _fetch_sources([8, 9, 10, 11, 12, 13], [14])
     _make_user_and_ticket(db_engine, [1, 2, 3, 4, 5, 6], [7])
 
-    r = FetchService(primary, backup, db_engine, grace_seconds=0).fetch_and_store("ssq")
+    r = FetchService(primary, backup, db_engine, grace_seconds=0).fetch_and_store('ssq')
     assert r.stored and r.verified
 
     CompareService(db_engine).process_pending()

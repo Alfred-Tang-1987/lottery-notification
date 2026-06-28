@@ -6,6 +6,7 @@
   - PositionalCompare: 福彩3D/排列3/排列5（T7）
   - QxcHybridCompare: 七星彩（T8）
 """
+
 from app.domain.prize import HitResult, PrizeTier
 from app.domain.prize_tables import get_tiers
 
@@ -23,7 +24,7 @@ class CompareStrategy:
 
 def _eval_condition(cond: str, front_hit: int, back_hit: int) -> bool:
     """安全求值 condition 表达式（仅 front_hit/back_hit 变量 + 比较/逻辑运算）。"""
-    return bool(eval(cond, {"__builtins__": {}}, {"front_hit": front_hit, "back_hit": back_hit}))
+    return bool(eval(cond, {'__builtins__': {}}, {'front_hit': front_hit, 'back_hit': back_hit}))
 
 
 def _match_tier(lottery: str, front_hit: int, back_hit: int) -> PrizeTier | None:
@@ -61,9 +62,18 @@ class PositionalCompare(CompareStrategy):
     """
 
     @staticmethod
-    def compare(lottery, draw_front=None, draw_back=None, combo_front=None,
-                combo_back=None, *, append=False, draw=None, combo=None,
-                **_kw) -> HitResult:
+    def compare(
+        lottery,
+        draw_front=None,
+        draw_back=None,
+        combo_front=None,
+        combo_back=None,
+        *,
+        append=False,
+        draw=None,
+        combo=None,
+        **_kw,
+    ) -> HitResult:
         # 归一 draw / combo 来源
         # 位置形 compare(lottery, draw, combo)：第二 tuple 落在 draw_back，combo_front 缺省
         if combo_front is None and combo is None and isinstance(draw_back, tuple):
@@ -72,7 +82,7 @@ class PositionalCompare(CompareStrategy):
             d = tuple((draw if draw is not None else draw_front) or ())
             c = tuple((combo if combo is not None else combo_front) or ())
 
-        hit = sum(1 for a, b in zip(d, c) if a == b)
+        hit = sum(1 for a, b in zip(d, c, strict=False) if a == b)
         all_match = bool(d) and hit == len(d)
         if all_match:
             tier = _match_tier(lottery, front_hit=hit, back_hit=0)
@@ -96,11 +106,10 @@ class QxcHybridCompare(CompareStrategy):
     """
 
     @staticmethod
-    def compare(lottery, draw_front, draw_back, combo_front, combo_back, *,
-                append=False, **_kw) -> HitResult:
+    def compare(lottery, draw_front, draw_back, combo_front, combo_back, *, append=False, **_kw) -> HitResult:
         # 前区：首位起前缀连续命中位数
         front_hit = 0
-        for a, b in zip(draw_front, combo_front):
+        for a, b in zip(draw_front, combo_front, strict=False):
             if a == b:
                 front_hit += 1
             else:
@@ -117,13 +126,13 @@ class QxcHybridCompare(CompareStrategy):
 # 显式注册表（不用装饰器自动发现——可测、可预测）。
 # 新增彩种：在此登记 code → CompareStrategy；核心比对逻辑不动。
 REGISTRY: dict[str, type[CompareStrategy]] = {
-    "ssq": PartitionCompare,
-    "dlt": PartitionCompare,
-    "qlc": PartitionCompare,
-    "fc3d": PositionalCompare,
-    "pl3": PositionalCompare,
-    "pl5": PositionalCompare,
-    "qxc": QxcHybridCompare,
+    'ssq': PartitionCompare,
+    'dlt': PartitionCompare,
+    'qlc': PartitionCompare,
+    'fc3d': PositionalCompare,
+    'pl3': PositionalCompare,
+    'pl5': PositionalCompare,
+    'qxc': QxcHybridCompare,
 }
 
 
@@ -142,16 +151,22 @@ def compare(spec, *, draw_front, draw_back, entry) -> list[HitResult]:
     strategy = REGISTRY[spec.code]
     results: list[HitResult] = []
     for combo in expand(entry):
-        if spec.number_style == "positional":
+        if spec.number_style == 'positional':
             # 按位型：无后区，draw_front 即开奖序列，combo.front 即选号
             r = strategy.compare(
-                lottery=spec.code, draw=draw_front, combo=combo.front,
+                lottery=spec.code,
+                draw=draw_front,
+                combo=combo.front,
             )
         else:
             # partition / hybrid：前区 + 后区都参与
             r = strategy.compare(
-                lottery=spec.code, draw_front=draw_front, draw_back=draw_back,
-                combo_front=combo.front, combo_back=combo.back, append=entry.append,
+                lottery=spec.code,
+                draw_front=draw_front,
+                draw_back=draw_back,
+                combo_front=combo.front,
+                combo_back=combo.back,
+                append=entry.append,
             )
         results.append(r)
     return results

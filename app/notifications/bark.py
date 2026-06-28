@@ -1,6 +1,10 @@
 import httpx
+
 from app.notifications.base import (
-    NotifierChannel, NotificationPayload, SendResult, ChannelStatus,
+    ChannelStatus,
+    NotificationPayload,
+    NotifierChannel,
+    SendResult,
 )
 
 
@@ -11,7 +15,8 @@ class BarkChannel(NotifierChannel):
     成功判据 = HTTP 200 且响应体 code == 200：Bark 对 key 失效/参数错误常返回
     HTTP 200 + body {"code":400,...}，仅判 HTTP 状态会把失败推送静默判成功（spec §10）。
     """
-    type = "bark"
+
+    type = 'bark'
 
     def __init__(self, transport: httpx.BaseTransport | None = None):
         # transport 注入仅用于测试（MockTransport）；生产留空走默认 HTTP。
@@ -19,16 +24,16 @@ class BarkChannel(NotifierChannel):
 
     def send(self, payload: NotificationPayload, config: dict) -> SendResult:
         try:
-            url = config["url"].rstrip("/") + f"/{config['key']}"
-            r = self._client.post(url, json={"title": payload.title, "body": payload.body})
+            url = config['url'].rstrip('/') + f'/{config["key"]}'
+            r = self._client.post(url, json={'title': payload.title, 'body': payload.body})
             if r.status_code != 200:
-                return SendResult(ChannelStatus.FAILED, error=f"bark HTTP {r.status_code}")
+                return SendResult(ChannelStatus.FAILED, error=f'bark HTTP {r.status_code}')
             # Bark 业务码：200=成功，其余（400 等）=失败，须带原因便于日志/告警定位。
             body = r.json()
-            if body.get("code") != 200:
+            if body.get('code') != 200:
                 return SendResult(
                     ChannelStatus.FAILED,
-                    error=f"bark code {body.get('code')} msg={body.get('message', '')}",
+                    error=f'bark code {body.get("code")} msg={body.get("message", "")}',
                 )
             return SendResult(ChannelStatus.SENT)
         except Exception as e:

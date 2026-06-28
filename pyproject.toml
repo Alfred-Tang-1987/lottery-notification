@@ -37,10 +37,27 @@ build-backend = "hatchling.build"
 [dependency-groups]
 dev = [
     "pytest-cov>=7.1.0",
+    "ruff>=0.15.20",
 ]
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+# E501: line-length 由 formatter 管；RUF001/002/003: 中文全角标点误报（中文项目必须 ignore）；
+# B008: FastAPI Depends() 默认参数是官方推荐模式；B017: 测试里 pytest.raises(Exception) 测通用异常是惯例。
+ignore = ["E501", "RUF001", "RUF002", "RUF003", "B008", "B017"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.ruff.format]
+quote-style = "single"
 
 [tool.importlinter]
 root_packages = ["app"]
