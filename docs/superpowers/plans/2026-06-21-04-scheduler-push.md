@@ -241,9 +241,11 @@ Expected: 4 passed
 
 - [ ] **Step 8: Commit**
 
+> **提交约定（workflow 强制）**：本 task 由 workflow orchestrator 提交，消息格式**固定为 `feat(plan-04/T1): <taskTitle>`**——这是 bootstrap 扫 git log 识别"已完成 task"的唯一约定。**切勿照抄下面示意里的 `feat(notifications):` 等他类 scope**：那会让该 task 对 bootstrap 不可见 → 被判未完成 → 重跑 → OSCILLATING halt。示意仅供"要 add 哪些文件"参考，提交消息由 orchestrator 决定。
+
 ```bash
 git add app/notifications/ tests/notifications/
-git commit -m "feat(notifications): NotifierChannel 接口 + Bark/飞书/邮箱插件(MockTransport/smtplib mock 测试)"
+# 真实提交（orchestrator 执行）：git commit -m "feat(plan-04/T1): <Task 1 标题>"
 ```
 
 ---
@@ -327,9 +329,11 @@ Expected: 3 passed
 
 - [ ] **Step 5: Commit**
 
+> **提交约定（workflow 强制）**：消息格式固定为 `feat(plan-04/T2): <taskTitle>`，由 orchestrator 决定。**切勿照抄示意里的 `feat(notifications):` scope**（会令 bootstrap 漏认 → OSCILLATING）。
+
 ```bash
 git add app/notifications/templates.py tests/notifications/test_templates.py
-git commit -m "feat(notifications): 路径A即时简讯 + 路径B汇总模板（金额分→元，浮动待派奖）"
+# 真实提交（orchestrator 执行）：git commit -m "feat(plan-04/T2): <Task 2 标题>"
 ```
 
 ---
@@ -570,9 +574,11 @@ Expected: 3 passed
 
 - [ ] **Step 5: Commit**
 
+> **提交约定（workflow 强制）**：消息格式固定为 `feat(plan-04/T3): <taskTitle>`，由 orchestrator 决定。**切勿照抄示意里的 `feat(notifications):` scope**（会令 bootstrap 漏认 → OSCILLATING）。
+
 ```bash
 git add app/notifications/notifier.py tests/notifications/test_notifier.py
-git commit -m "feat(notifications): Notifier 路径A异步/路径B汇总/多渠道降级重试/DND顺延破例"
+# 真实提交（orchestrator 执行）：git commit -m "feat(plan-04/T3): <Task 3 标题>"
 ```
 
 ---
@@ -665,9 +671,11 @@ Expected: 1 passed
 
 - [ ] **Step 5: Commit**
 
+> **提交约定（workflow 强制）**：消息格式固定为 `feat(plan-04/T4): <taskTitle>`，由 orchestrator 决定。**切勿照抄示意里的 `feat(scheduler):` scope**（会令 bootstrap 漏认 → OSCILLATING）。
+
 ```bash
 git add app/scheduler/ tests/scheduler/
-git commit -m "feat(scheduler): build_scheduler jobstore共享engine + 全局CST + coalesce/max_instances"
+# 真实提交（orchestrator 执行）：git commit -m "feat(plan-04/T4): <Task 4 标题>"
 ```
 
 ---
@@ -823,9 +831,11 @@ Expected: 2 passed
 
 - [ ] **Step 5: Commit**
 
+> **提交约定（workflow 强制）**：消息格式固定为 `feat(plan-04/T5): <taskTitle>`，由 orchestrator 决定。**切勿照抄示意里的 `feat(scheduler):` scope**（会令 bootstrap 漏认 → OSCILLATING）。
+
 ```bash
 git add app/scheduler/jobs.py tests/scheduler/test_jobs.py
-git commit -m "feat(scheduler): 注册全部任务（路径A轮询/路径B汇总/浮奖回填/兑奖过期/周月报）"
+# 真实提交（orchestrator 执行）：git commit -m "feat(plan-04/T5): <Task 5 标题>"
 ```
 
 ---
@@ -911,9 +921,11 @@ Expected: 2 passed
 
 - [ ] **Step 5: Commit**
 
+> **提交约定（workflow 强制）**：消息格式固定为 `feat(plan-04/T6): <taskTitle>`，由 orchestrator 决定。**切勿照抄示意里的 `feat(scheduler):` scope**（会令 bootstrap 漏认 → OSCILLATING）。
+
 ```bash
 git add app/scheduler/backfill.py tests/scheduler/test_backfill.py
-git commit -m "feat(scheduler): 启动 backfill（补 outbox + 宕机遗漏抓取）"
+# 真实提交（orchestrator 执行）：git commit -m "feat(plan-04/T6): <Task 6 标题>"
 ```
 
 ---
@@ -1041,9 +1053,11 @@ Expected: Plan 01-04 全绿
 
 - [ ] **Step 5: Commit**
 
+> **提交约定（workflow 强制）**：消息格式固定为 `feat(plan-04/T7): <taskTitle>`，由 orchestrator 决定。**切勿照抄示意里无 scope 的 `feat:`（或任何他类 scope）**（会令 bootstrap 漏认 → OSCILLATING）。
+
 ```bash
 git add app/main.py tests/integration/test_scheduler_push.py
-git commit -m "feat: 应用启动接线 scheduler + 端到端调度推送集成测试"
+# 真实提交（orchestrator 执行）：git commit -m "feat(plan-04/T7): <Task 7 标题>"
 ```
 
 ---
