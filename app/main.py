@@ -1,24 +1,137 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-from app.config import get_settings
+from app.config import Settings, get_settings
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """启动：校验 + 种子幂等写入；关闭：无特殊清理。"""
+    """启动：校验 + 种子幂等写入 + 接线 scheduler（spec §4.3/§7.3）；关闭：停调度器。
+
+    scheduler 由 settings.scheduler_enabled 控制：生产默认开启；测试/排障可关。
+    启动时执行 run_startup_backfill（补 outbox + 宕机遗漏抓取，spec §7.3）。
+    """
+    settings = get_settings()
     validate_startup()
     from sqlmodel import Session
 
     from app.db.session import get_engine
     from app.seeds import seed_lottery_types
 
-    with Session(get_engine()) as s:
+    engine = get_engine()
+    with Session(engine) as s:
         seed_lottery_types(s)
+
+    if settings.scheduler_enabled:
+        from app.scheduler.backfill import run_startup_backfill
+
+        sched, deps = _build_scheduler_and_deps(engine, settings)
+        # 启动 backfill：补未处理 outbox + 宕机窗口遗漏抓取（spec §7.3）。
+        # 单彩种/单期故障已被 run_startup_backfill 内部 try/except 隔离，不会阻断启动。
+        try:
+            run_startup_backfill(deps)
+        except Exception:
+            logger.error('startup_backfill_failed', exc_info=True)
+        sched.start()
+        app.state.scheduler = sched
+        app.state.notifier = deps['notifier']
     yield
+    # 关闭：先停调度器（不再派发新 job），再释放渠道资源（httpx 连接池）。
+    sched = getattr(app.state, 'scheduler', None)
+    if sched is not None:
+        sched.shutdown(wait=False)
+        app.state.scheduler = None
+    notifier = getattr(app.state, 'notifier', None)
+    if notifier is not None:
+        notifier.close()
+        app.state.notifier = None
+
+
+def _amount_lookup_stub(lottery_code: str, draw_no: str, tier: int) -> int | None:
+    """官方浮动奖金查询占位（spec §7.1 浮动奖回填）。
+
+    MVP 返回 None：FloatRefillWorker 查不到金额即不回填、不补推（待 Plan 05/06 接真实
+    奖金接口）。真实实现接 MXNZP/聚合奖金接口后替换此函数。
+    """
+    return None
+
+
+def _build_scheduler_and_deps(engine: Engine, settings: Settings):
+    """构造 services + channels + notifier + scheduler + 注册全部任务（spec §4.3/§7.3）。
+
+    返回 (sched, deps)。纯构造 + 注册：不抓取、不 backfill、不 start，无网络副作用——
+    可单测断言服务类型与任务 id。run_startup_backfill / sched.start 由 lifespan 调用。
+
+    register_all_jobs 经进程内注册表按 engine 解析 services，job args 只携带可 pickle 的
+    engine——否则 SQLAlchemyJobStore 在 sched.start() 持久化时会 PicklingError
+    （services 持 httpx.Client/engine 不可 pickle）→ 调度器无法启动 → 中奖静默漏通知。
+    """
+    from apscheduler.schedulers.background import BackgroundScheduler
+
+    from app.adapters.juhe import JuheAdapter
+    from app.adapters.mxnzp import MxnzpAdapter
+    from app.infrastructure.crypto import CryptoService
+    from app.notifications.bark import BarkChannel
+    from app.notifications.email_channel import EmailChannel
+    from app.notifications.feishu import FeishuChannel
+    from app.notifications.notifier import Notifier
+    from app.scheduler.jobs import register_all_jobs
+    from app.scheduler.setup import build_scheduler
+    from app.services.compare_service import CompareService
+    from app.services.fetch_service import FetchService
+    from app.services.refill_service import FloatRefillWorker
+
+    crypto = CryptoService(settings.crypto_keys, settings.current_key_version)
+
+    channels = {
+        'bark': BarkChannel(),
+        'feishu': FeishuChannel(),
+    }
+    # 邮箱渠道仅当运维方已配置 SMTP 时启用（spec §8.1 系统统一发件）。
+    if settings.email_enabled:
+        channels['email'] = EmailChannel(
+            smtp_host=settings.smtp_host,
+            smtp_port=settings.smtp_port,
+            smtp_user=settings.smtp_user,
+            smtp_pass=settings.smtp_pass,
+            smtp_from=settings.smtp_from,
+        )
+    # admin Bark fallback：启用 email 时 Settings.validate_email_bark_fallback 已强制
+    # ADMIN_BARK_KEY 存在；未配 email 时 admin_bark_key 可选。
+    admin_bark_config = None
+    if settings.admin_bark_key:
+        admin_bark_config = {'key': settings.admin_bark_key, 'url': 'https://api.day.app'}
+
+    notifier = Notifier(
+        engine,
+        channels=channels,
+        crypto=crypto,
+        admin_bark_config=admin_bark_config,
+    )
+
+    fetch = FetchService(
+        MxnzpAdapter(settings.mxnzp_api_key),
+        JuheAdapter(settings.juhe_api_key),
+        engine,
+    )
+    compare = CompareService(engine)
+    refill = FloatRefillWorker(engine, amount_lookup=_amount_lookup_stub)
+    deps = {
+        'engine': engine,
+        'fetch_service': fetch,
+        'compare_service': compare,
+        'refill_worker': refill,
+        'notifier': notifier,
+    }
+    sched: BackgroundScheduler = build_scheduler(engine)
+    register_all_jobs(sched, deps)
+    return sched, deps
 
 
 def validate_startup() -> None:
