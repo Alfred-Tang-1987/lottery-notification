@@ -67,8 +67,11 @@ _EXPECTED_APSCHEDULER_JOB_COLS = {
     'id',
     'next_run_time',
     'job_state',
-    'created_at',
 }
+# apscheduler_jobs 不得含 created_at（或任何 TimestampMixin 列）：APScheduler
+# SQLAlchemyJobStore.insert 只写 (id, next_run_time, job_state)，NOT NULL 的 created_at
+# 会导致插入 IntegrityError → 调度器无法持久化任务 → 中奖静默漏通知（spec §4.3）。
+_FORBIDDEN_APSCHEDULER_JOB_COLS = {'created_at', 'updated_at'}
 
 
 def _cols(engine, table: str) -> set[str]:
@@ -108,6 +111,12 @@ def test_admin_audit_log_columns(db_engine):
 def test_apscheduler_job_columns(db_engine):
     assert _EXPECTED_APSCHEDULER_JOB_COLS.issubset(_cols(db_engine, 'apscheduler_jobs')), (
         f'apscheduler_jobs 缺列: {_EXPECTED_APSCHEDULER_JOB_COLS - _cols(db_engine, "apscheduler_jobs")}'
+    )
+    actual = _cols(db_engine, 'apscheduler_jobs')
+    forbidden_present = _FORBIDDEN_APSCHEDULER_JOB_COLS & actual
+    assert not forbidden_present, (
+        f'apscheduler_jobs 含禁止列 {forbidden_present}（APScheduler jobstore 不写这些列，'
+        f'NOT NULL 会致插入失败 → 调度器无法持久化任务）'
     )
 
 

@@ -8,10 +8,15 @@ from app.main import app, get_db_for_health, validate_startup
 
 @pytest.fixture(autouse=True)
 def mock_env(monkeypatch):
-    """所有 health 测试强制注入有效环境变量（真实 Fernet key），避免 lifespan 校验失败。"""
+    """所有 health 测试强制注入有效环境变量（真实 Fernet key），避免 lifespan 校验失败。
+
+    禁用 scheduler（SCHEDULER_ENABLED=false）：health 测试只验证 /health 端点，不应触发
+    lifespan 内的 run_startup_backfill（会真实抓取 MXNZP/聚合数据源，污染测试 + 可能挂起）。
+    """
     reset_settings_cache()
     monkeypatch.setenv('JWT_SECRET', 'x' * 32)
     monkeypatch.setenv('CRYPTO_KEY_V1', Fernet.generate_key().decode())
+    monkeypatch.setenv('SCHEDULER_ENABLED', 'false')
 
 
 def test_health_ok(db_engine):

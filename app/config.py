@@ -60,6 +60,10 @@ class Settings(BaseSettings):
     tz: str = 'Asia/Shanghai'
     cors_origins: list[str] = Field(default_factory=lambda: ['http://localhost:5173'])
 
+    # 调度器启动开关（spec §4.3）：生产默认开启；运维排障/迁移时可关。
+    # 测试通过 SCHEDULER_ENABLED=false 跳过 lifespan 内抓取/比对网络与后台线程。
+    scheduler_enabled: bool = Field(default=True, alias='SCHEDULER_ENABLED')
+
     @field_validator('crypto_key_v1')
     @classmethod
     def _check_crypto_key_v1(cls, v: str) -> str:
