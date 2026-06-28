@@ -137,6 +137,24 @@ export function haltLikelySource(reason) {
 }
 
 // 把 bootstrap 从 git log 解析的 completed id 归一化为 plan-scoped key "plan-{seq}/T-{id}"。
+// 提交约定单一事实源（emission ↔ recognition 对称）。
+// 任何 task 的 git 提交消息必须是 feat(plan-XX/TY): <title>——这是 bootstrap 扫 git log
+// 识别"已完成 task"的唯一约定。他类 scope（feat(scheduler)/feat(notifications)/无 scope）
+// bootstrap 不认 → task 被判未完成 → 重跑 → OSCILLATING halt。
+// （根因：plan 模板 Step 5/8 嵌入的 feat(scheduler) 等示意曾被 agent 照抄——见 commitConvention.test）
+// 与 normalizeCompleted 共享 plan-scoped key 格式，故 emission 一定可被 recognition 解出。
+export function commitSubject(seq, taskId, title) {
+  const planIdShort = `plan-${String(seq).padStart(2, '0')}`
+  return `feat(${planIdShort}/${taskId}): ${title}`
+}
+
+// 从 git 提交消息主体反向解出 plan-scoped task key（bootstrap recognition 侧）。
+// 只认 feat(plan-XX/TY): 前缀；其余一律 null（判不可见）。与 normalizeCompleted 归一化结果一致。
+export function extractTaskKey(subject) {
+  const m = String(subject).match(/^feat\(plan-(\d+)\/(T[\w-]+)\)\s*:/i)
+  return m ? `plan-${m[1]}/${m[2]}` : null
+}
+
 // 避免跨 plan 同名 task 误跳过：Plan 01/02 都有 T1-T10，若去 plan 前缀，Plan 02 的 T2 会被
 // Plan 01 的 T2 误 skip。bootstrap 返回格式不稳定（"01/T2" / "plan-01/T2" / 裸 "T2"）：
 // - 带前缀 → 归一化为 "plan-{seq}/T-{id}"
@@ -402,17 +420,24 @@ RED FLAG: changed 必须如实。orchestrator 不信任自报，会无条件重�
 
   commit: `You are COMMIT. Create one atomic commit for task {{taskId}}. {{simplifyRevertNote}}
 
-Inputs: taskId={{taskId}} planId={{planId}} testCommand={{testCommand}} simplifyFailed={{simplifyFailed}} simplifyFiles={{simplifyFiles}}
+Inputs: taskId={{taskId}} planId={{planId}} testCommand={{testCommand}} simplifyFailed={{simplifyFailed}} simplifyFiles={{simplifyFiles}} commitMsg={{commitMsg}}
+
+## 提交约定（HARD REQUIREMENT — 违反会导致 OSCILLATING halt）
+git 提交消息**必须**严格等于下面这条（orchestrator 已按 feat(plan-XX/TY): title 格式预计算好，原样使用，不要改写 scope、不要自拟标题）：
+  {{commitMsg}}
+理由：bootstrap 扫 git log 用约定 feat(plan-XX/TY): 识别"已完成 task"。任何他类 scope 都会让该 task 对 bootstrap 不可见 → 被判未完成 → 重跑 → OSCILLATING halt。
+**严禁照抄 plan 文件里 Step 5/8 的示意提交消息**（如 feat(scheduler): ... / feat(notifications): ... / 无 scope 的 feat: ...）——那些只是写法的示意，不是真实提交命令。本 task 唯一合法的提交消息就是上面的 {{commitMsg}}。
 
 Steps:
 1. If simplifyFailed=true: first git checkout -- each file in simplifyFiles (revert bad simplify), then proceed.
 2. git status --porcelain → see staged/unstaged.
 3. Run {{testCommand}} on current tree; confirm exit 0. If fail → status=failed (do NOT commit).
-4. git add -A; git commit -m "feat({{planIdShort}}/{{taskId}}): {{taskTitle}}" (planIdShort = plan-01 etc).
-5. git rev-parse HEAD → commit_sha.
+4. git add -A; git commit -m "{{commitMsg}}"。
+5. **强制校验 + 纠偏**：git log -1 --format=%s 取 HEAD 主体，与 {{commitMsg}} 比对。若不符（任何原因——比如实现 agent 之前已用错误 scope 提交过、或 HEAD 已存在但消息不对）：git commit --amend -m "{{commitMsg}}" 纠正。这是确定性的：无论谁提交、提交了什么，最终 HEAD 消息必为 {{commitMsg}}。
+6. git rev-parse HEAD → commit_sha。
 
 Return {status (ok|failed), evidence:{commit_sha, committed_files:[...], tests_at_commit}, summary}.
-RED FLAG: tests exit != 0 时绝不 commit（status=failed）。commit_sha 必须真实。若遇到 model 限额耗尽（quota/rate-limit/429 错误），返回 status:'model_unavailable'（非 failed），让 orchestrator halt 并保存进度。`,
+RED FLAG: tests exit != 0 时绝不 commit（status=failed）。commit_sha 必须真实。HEAD 消息必须等于 {{commitMsg}}（步骤 5 校验，不符必 amend）。若遇到 model 限额耗尽（quota/rate-limit/429 错误），返回 status:'model_unavailable'（非 failed），让 orchestrator halt 并保存进度。`,
 
   contextFetcher: `You are CONTEXT-FETCHER. The implementor requested context (NEEDS_CONTEXT). Find and return it. Read-only.
 

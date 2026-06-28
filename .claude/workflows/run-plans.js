@@ -121,6 +121,19 @@ async function dispatchImpl(prompt, opts, model) {
   return impl
 }
 
+// 提交约定单一事实源（emission ↔ recognition 对称）（inline 自 lib.js）。
+// feat(plan-XX/TY): 是 bootstrap 识别已完成 task 的唯一约定；他类 scope 会令 task 不可见 → 重跑 → OSCILLATING。
+function commitSubject(seq, taskId, title) {
+  const planIdShort = `plan-${String(seq).padStart(2, '0')}`
+  return `feat(${planIdShort}/${taskId}): ${title}`
+}
+
+// 从 git 提交消息主体反向解出 plan-scoped task key（bootstrap recognition 侧）（inline 自 lib.js）。
+function extractTaskKey(subject) {
+  const m = String(subject).match(/^feat\(plan-(\d+)\/(T[\w-]+)\)\s*:/i)
+  return m ? `plan-${m[1]}/${m[2]}` : null
+}
+
 // 把 completed id 归一化为 plan-scoped key "plan-{seq}/T-{id}"（inline 自 lib.js）。
 // 避免跨 plan 同名 task 误跳过：去 plan 前缀会让 Plan 02 的 T2 被 Plan 01 的 T2 误 skip。
 function normalizeCompleted(ids) {
@@ -379,17 +392,24 @@ RED FLAG: changed 必须如实。orchestrator 不信任自报，会无条件重�
 
   commit: `You are COMMIT. Create one atomic commit for task {{taskId}}. {{simplifyRevertNote}}
 
-Inputs: taskId={{taskId}} planId={{planId}} testCommand={{testCommand}} simplifyFailed={{simplifyFailed}} simplifyFiles={{simplifyFiles}}
+Inputs: taskId={{taskId}} planId={{planId}} testCommand={{testCommand}} simplifyFailed={{simplifyFailed}} simplifyFiles={{simplifyFiles}} commitMsg={{commitMsg}}
+
+## 提交约定（HARD REQUIREMENT — 违反会导致 OSCILLATING halt）
+git 提交消息**必须**严格等于下面这条（orchestrator 已按 feat(plan-XX/TY): title 格式预计算好，原样使用，不要改写 scope、不要自拟标题）：
+  {{commitMsg}}
+理由：bootstrap 扫 git log 用约定 feat(plan-XX/TY): 识别"已完成 task"。任何他类 scope 都会让该 task 对 bootstrap 不可见 → 被判未完成 → 重跑 → OSCILLATING halt。
+**严禁照抄 plan 文件里 Step 5/8 的示意提交消息**（如 feat(scheduler): ... / feat(notifications): ... / 无 scope 的 feat: ...）——那些只是写法的示意，不是真实提交命令。本 task 唯一合法的提交消息就是上面的 {{commitMsg}}。
 
 Steps:
 1. If simplifyFailed=true: first git checkout -- each file in simplifyFiles (revert bad simplify), then proceed.
 2. git status --porcelain → see staged/unstaged.
 3. Run {{testCommand}} on current tree; confirm exit 0. If fail → status=failed (do NOT commit).
-4. git add -A; git commit -m "feat({{planIdShort}}/{{taskId}}): {{taskTitle}}" (planIdShort = plan-01 etc).
-5. git rev-parse HEAD → commit_sha.
+4. git add -A; git commit -m "{{commitMsg}}"。
+5. **强制校验 + 纠偏**：git log -1 --format=%s 取 HEAD 主体，与 {{commitMsg}} 比对。若不符（任何原因——比如实现 agent 之前已用错误 scope 提交过、或 HEAD 已存在但消息不对）：git commit --amend -m "{{commitMsg}}" 纠正。这是确定性的：无论谁提交、提交了什么，最终 HEAD 消息必为 {{commitMsg}}。
+6. git rev-parse HEAD → commit_sha。
 
 Return {status (ok|failed), evidence:{commit_sha, committed_files:[...], tests_at_commit}, summary}.
-RED FLAG: tests exit != 0 时绝不 commit（status=failed）。commit_sha 必须真实。若遇到 model 限额耗尽（quota/rate-limit/429 错误），返回 status:'model_unavailable'（非 failed），让 orchestrator halt 并保存进度。`,
+RED FLAG: tests exit != 0 时绝不 commit（status=failed）。commit_sha 必须真实。HEAD 消息必须等于 {{commitMsg}}（步骤 5 校验，不符必 amend）。若遇到 model 限额耗尽（quota/rate-limit/429 错误），返回 status:'model_unavailable'（非 failed），让 orchestrator halt 并保存进度。`,
 
   contextFetcher: `You are CONTEXT-FETCHER. The implementor requested context (NEEDS_CONTEXT). Find and return it. Read-only.
 
@@ -604,7 +624,7 @@ async function runTask(plan, task) {
 
   // —— commit（§5：状态原子转换；simplify 回退委托此 agent）——
   let commit
-  commit = await dispatchImpl(buildPrompt('commit', { taskId: task.id, planId: plan.id, planIdShort, taskTitle: task.title || task.id, testCommand: cfg.test_command, simplifyFailed: String(simplifyFailed), simplifyFiles: simplifyFiles.join(','), simplifyRevertNote: simplifyFailed ? `Simplify 回退：重跑 review 失败，还原 ${simplifyFiles.length} 个文件。` : '' }), { schema: SCHEMAS.commit, label: `commit:${task.id}` }, model)
+  commit = await dispatchImpl(buildPrompt('commit', { taskId: task.id, planId: plan.id, planIdShort, taskTitle: task.title || task.id, commitMsg: commitSubject(plan.seq, task.id, task.title || task.id), testCommand: cfg.test_command, simplifyFailed: String(simplifyFailed), simplifyFiles: simplifyFiles.join(','), simplifyRevertNote: simplifyFailed ? `Simplify 回退：重跑 review 失败，还原 ${simplifyFiles.length} 个文件。` : '' }), { schema: SCHEMAS.commit, label: `commit:${task.id}` }, model)
   if (commit.halted) return commit
   if (commit.status !== 'ok') return { halted: true, reason: 'commit failed', diag: commit.diagnostics }
   state.perTask[task.id].status = 'committed'
