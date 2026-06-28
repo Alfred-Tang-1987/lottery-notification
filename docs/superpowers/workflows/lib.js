@@ -110,6 +110,21 @@ export function errStr(e) {
   return String(e?.message || e || '').slice(0, 200)
 }
 
+// 把 agent() 抛出的异常归类为 review 语义 status：限额→model_unavailable，其余→agent_error。
+// 封装 review catch 里重复的三元判断（safeAgent 用）。
+export function classifyThrown(e) {
+  return isQuotaError(e) ? 'model_unavailable' : 'agent_error'
+}
+
+// 扫描三类 review 的 status，返回应 halt 的 reason（agent_error 优先于 model_unavailable，全 ok→null）。
+// 封装 review 后重复的优先级检查链（orchestrator 据此构造 halt 返回值）。
+export function reviewHaltReason(s, q, h) {
+  const statuses = [s?.status, q?.status, h?.status]
+  if (statuses.includes('agent_error')) return 'agent_error'
+  if (statuses.includes('model_unavailable')) return 'model_unavailable'
+  return null
+}
+
 // 把 bootstrap 从 git log 解析的 completed id 归一化为 plan-scoped key "plan-{seq}/T-{id}"。
 // 避免跨 plan 同名 task 误跳过：Plan 01/02 都有 T1-T10，若去 plan 前缀，Plan 02 的 T2 会被
 // Plan 01 的 T2 误 skip。bootstrap 返回格式不稳定（"01/T2" / "plan-01/T2" / 裸 "T2"）：

@@ -78,6 +78,37 @@ function isQuotaError(e) {
 function errStr(e) {
   return String(e?.message || e || '').slice(0, 200)
 }
+// 把 agent() 抛出的异常归类为 review 语义 status —— inline 自 lib.js
+function classifyThrown(e) {
+  return isQuotaError(e) ? 'model_unavailable' : 'agent_error'
+}
+// 扫描三类 review 的 status，返回应 halt 的 reason（agent_error 优先于 model_unavailable，全 ok→null）—— inline 自 lib.js
+function reviewHaltReason(s, q, h) {
+  const statuses = [s?.status, q?.status, h?.status]
+  if (statuses.includes('agent_error')) return 'agent_error'
+  if (statuses.includes('model_unavailable')) return 'model_unavailable'
+  return null
+}
+
+// ===== runtime helper（调 agent()，故留此文件不进 lib.js；决策逻辑走上面的纯函数）=====
+// review agent 的统一派发：异常归类为 model_unavailable/agent_error sentinel（绕过 schema，orchestrator 显式判断）。
+async function safeAgent(prompt, opts) {
+  try { return await agent(prompt, opts) }
+  catch (e) { return { status: classifyThrown(e), diagnostics: { error: errStr(e) } } }
+}
+// implementor/commit/bootstrap/gate 等带 status 的 agent 统一派发：
+// catch quota→halt；agent 自报 model_unavailable→halt；否则返回 impl 供调用方判断 blocked/failed/needs_context。
+// 返回 {halted:true, reason, diag} 或 impl（非 halted）。model 仅用于 halt 诊断。
+async function dispatchImpl(prompt, opts, model) {
+  let impl
+  try { impl = await agent(prompt, opts) }
+  catch (e) {
+    if (isQuotaError(e)) return { halted: true, reason: 'model_unavailable', diag: { model, error: errStr(e) } }
+    throw e
+  }
+  if (impl?.status === 'model_unavailable') return { halted: true, reason: 'model_unavailable', diag: impl.diagnostics }
+  return impl
+}
 
 // 把 completed id 归一化为 plan-scoped key "plan-{seq}/T-{id}"（inline 自 lib.js）。
 // 避免跨 plan 同名 task 误跳过：去 plan 前缀会让 Plan 02 的 T2 被 Plan 01 的 T2 误 skip。
@@ -437,83 +468,48 @@ async function runTask(plan, task) {
   let model = task.model || 'sonnet'
   const implCtx = (fix, note, ctx = '') => ({ planId: plan.id, taskId: task.id, planFilePath: plan.file, specPath: cfg.spec_path, testCommand: cfg.test_command, fixIssues: fix, retryNote: note, fetchedContext: ctx, referencePaths: formatReferencePaths(cfg.reference_paths) })
   let impl
-  try {
-    impl = await agent(buildPrompt('implementor', implCtx('', '')), { schema: SCHEMAS.implementor, model, label: `impl:${task.id}` })
-  } catch (e) {
-    if (isQuotaError(e)) return { halted: true, reason: 'model_unavailable', diag: { model, error: errStr(e) } }
-    throw e
-  }
-  if (impl.status === 'model_unavailable') return { halted: true, reason: 'model_unavailable', diag: impl.diagnostics }
+  impl = await dispatchImpl(buildPrompt('implementor', implCtx('', '')), { schema: SCHEMAS.implementor, model, label: `impl:${task.id}` }, model)
+  if (impl.halted) return impl
+  // —— blocked 升级链：sonnet→opus→halt（§2.3）——
   if (impl.status === 'blocked') {
     if (model === 'opus') return { halted: true, reason: 'opus BLOCKED', diag: impl.diagnostics }
     model = 'opus'
-    try {
-      impl = await agent(buildPrompt('implementor', implCtx('', '上一轮 sonnet BLOCKED，升级 opus 重试。')), { schema: SCHEMAS.implementor, model: 'opus', label: `impl:${task.id}:opus` })
-    } catch (e) {
-      if (isQuotaError(e)) return { halted: true, reason: 'model_unavailable', diag: { model: 'opus', error: errStr(e) } }
-      throw e
-    }
-    if (impl.status === 'model_unavailable') return { halted: true, reason: 'model_unavailable', diag: impl.diagnostics }
+    impl = await dispatchImpl(buildPrompt('implementor', implCtx('', '上一轮 sonnet BLOCKED，升级 opus 重试。')), { schema: SCHEMAS.implementor, model: 'opus', label: `impl:${task.id}:opus` }, 'opus')
+    if (impl.halted) return impl
     if (impl.status === 'blocked') return { halted: true, reason: 'opus BLOCKED', diag: impl.diagnostics }
   }
   // —— needs_context: dispatch contextFetcher, retry implementor with context (§8.1) ——
   if (impl.status === 'needs_context') {
     let ctxr
-    try {
-      ctxr = await agent(buildPrompt('contextFetcher', {
-        needType: impl.diagnostics?.blocked_category || 'file',
-        query: impl.diagnostics?.last_error || impl.diagnostics?.suggested_fix || '',
-        specPath: cfg.spec_path, workdir: '.',
-      }), { schema: SCHEMAS.contextFetcher, label: `ctx:${task.id}` })
-    } catch (e) {
-      if (isQuotaError(e)) return { halted: true, reason: 'model_unavailable', diag: { model, error: errStr(e) } }
-      throw e
-    }
-    try {
-      const fetchedCtx = ctxr.diagnostics?.context || ''
-      impl = await agent(buildPrompt('implementor', implCtx('', `补充上下文后重试。`, fetchedCtx)),
-                         { schema: SCHEMAS.implementor, model, label: `impl:${task.id}:ctx` })
-    } catch (e) {
-      if (isQuotaError(e)) return { halted: true, reason: 'model_unavailable', diag: { model, error: errStr(e) } }
-      throw e
-    }
-    if (impl.status === 'model_unavailable') return { halted: true, reason: 'model_unavailable', diag: impl.diagnostics }
-    // Bug 8: needs_context → blocked 时先升 opus 再 halt（mirror 初始路径 433-444）
+    ctxr = await dispatchImpl(buildPrompt('contextFetcher', {
+      needType: impl.diagnostics?.blocked_category || 'file',
+      query: impl.diagnostics?.last_error || impl.diagnostics?.suggested_fix || '',
+      specPath: cfg.spec_path, workdir: '.',
+    }), { schema: SCHEMAS.contextFetcher, label: `ctx:${task.id}` }, model)
+    if (ctxr.halted) return ctxr
+    const fetchedCtx = ctxr.diagnostics?.context || ''
+    impl = await dispatchImpl(buildPrompt('implementor', implCtx('', `补充上下文后重试。`, fetchedCtx)), { schema: SCHEMAS.implementor, model, label: `impl:${task.id}:ctx` }, model)
+    if (impl.halted) return impl
+    // Bug 8: needs_context → blocked 时先升 opus 再 halt（mirror 初始 blocked 升级链）
     if (impl.status === 'blocked') {
       if (model === 'opus') return { halted: true, reason: 'opus BLOCKED after context-fetch', diag: impl.diagnostics }
       model = 'opus'
-      try {
-        impl = await agent(buildPrompt('implementor', implCtx('', '上下文补充后 sonnet 仍 BLOCKED，升级 opus 重试。', fetchedCtx)), { schema: SCHEMAS.implementor, model: 'opus', label: `impl:${task.id}:ctx:opus` })
-      } catch (e) {
-        if (isQuotaError(e)) return { halted: true, reason: 'model_unavailable', diag: { model: 'opus', error: errStr(e) } }
-        throw e
-      }
-      if (impl.status === 'model_unavailable') return { halted: true, reason: 'model_unavailable', diag: impl.diagnostics }
+      impl = await dispatchImpl(buildPrompt('implementor', implCtx('', '上下文补充后 sonnet 仍 BLOCKED，升级 opus 重试。', fetchedCtx)), { schema: SCHEMAS.implementor, model: 'opus', label: `impl:${task.id}:ctx:opus` }, 'opus')
+      if (impl.halted) return impl
       if (impl.status === 'blocked') return { halted: true, reason: 'opus BLOCKED after context-fetch', diag: impl.diagnostics }
     }
-    // Bug 9: needs_context → failed 时允许一次重试（mirror 初始路径 467-477），非直接 halt
+    // Bug 9: needs_context → failed 时允许一次重试（mirror 初始 failed 路径），非直接 halt
     if (impl.status === 'failed') {
-      try {
-        impl = await agent(buildPrompt('implementor', implCtx('', '上下文补充后仍 failed，重试一次。', fetchedCtx)), { schema: SCHEMAS.implementor, model, label: `impl:${task.id}:ctx:retry` })
-      } catch (e) {
-        if (isQuotaError(e)) return { halted: true, reason: 'model_unavailable', diag: { model, error: errStr(e) } }
-        throw e
-      }
-      if (impl.status === 'model_unavailable') return { halted: true, reason: 'model_unavailable', diag: impl.diagnostics }
+      impl = await dispatchImpl(buildPrompt('implementor', implCtx('', '上下文补充后仍 failed，重试一次。', fetchedCtx)), { schema: SCHEMAS.implementor, model, label: `impl:${task.id}:ctx:retry` }, model)
+      if (impl.halted) return impl
       if (impl.status !== 'ok' && impl.status !== 'done_with_concerns') return { halted: true, reason: `implementor ${impl.status} after context-fetch retry`, diag: impl.diagnostics }
     }
     if (impl.status !== 'ok' && impl.status !== 'done_with_concerns') return { halted: true, reason: `implementor ${impl.status} after context-fetch`, diag: impl.diagnostics }
   }
   // —— failed: retry once → halt (§4.4) ——
   if (impl.status === 'failed') {
-    try {
-      impl = await agent(buildPrompt('implementor', implCtx('', '上次 failed，重试一次。')),
-                         { schema: SCHEMAS.implementor, model, label: `impl:${task.id}:retry` })
-    } catch (e) {
-      if (isQuotaError(e)) return { halted: true, reason: 'model_unavailable', diag: { model, error: errStr(e) } }
-      throw e
-    }
-    if (impl.status === 'model_unavailable') return { halted: true, reason: 'model_unavailable', diag: impl.diagnostics }
+    impl = await dispatchImpl(buildPrompt('implementor', implCtx('', '上次 failed，重试一次。')), { schema: SCHEMAS.implementor, model, label: `impl:${task.id}:retry` }, model)
+    if (impl.halted) return impl
     if (impl.status !== 'ok' && impl.status !== 'done_with_concerns') return { halted: true, reason: `implementor ${impl.status} after retry`, diag: impl.diagnostics }
   }
   // done_with_concerns: 记录疑虑，继续进 review（不 halt）；轻量透传给 specReview 作 focusHint。
@@ -531,15 +527,13 @@ async function runTask(plan, task) {
     state.perTask[task.id].review_rounds = round
     const fc = filesChanged.join(',')
     const [spec, qual, hunt] = await parallel([
-      async () => { try { return await agent(buildPrompt('specReview', { taskId: task.id, specPath: cfg.spec_path, planFilePath: plan.file, filesChanged: fc, concernsHint, referencePaths: formatReferencePaths(cfg.reference_paths) }), { schema: SCHEMAS.specReview, model: 'opus', phase: `Plan ${plan.id}`, label: `spec:${task.id}:r${round}` }) } catch (e) { return { status: isQuotaError(e) ? 'model_unavailable' : 'agent_error', diagnostics: { error: errStr(e) } } } },
-      async () => { try { return await agent(buildPrompt('qualityReviewer', { taskId: task.id, filesChanged: fc, languageChecklist: languageChecklist(cfg.language) }), { schema: SCHEMAS.qualityReviewer, model: 'opus', label: `qual:${task.id}:r${round}` }) } catch (e) { return { status: isQuotaError(e) ? 'model_unavailable' : 'agent_error', diagnostics: { error: errStr(e) } } } },
-      async () => { try { return await agent(buildPrompt('hunter', { taskId: task.id, filesChanged: fc }), { schema: SCHEMAS.hunter, model: 'sonnet', label: `hunt:${task.id}:r${round}` }) } catch (e) { return { status: isQuotaError(e) ? 'model_unavailable' : 'agent_error', diagnostics: { error: errStr(e) } } } },
+      async () => safeAgent(buildPrompt('specReview', { taskId: task.id, specPath: cfg.spec_path, planFilePath: plan.file, filesChanged: fc, concernsHint, referencePaths: formatReferencePaths(cfg.reference_paths) }), { schema: SCHEMAS.specReview, model: 'opus', phase: `Plan ${plan.id}`, label: `spec:${task.id}:r${round}` }),
+      async () => safeAgent(buildPrompt('qualityReviewer', { taskId: task.id, filesChanged: fc, languageChecklist: languageChecklist(cfg.language) }), { schema: SCHEMAS.qualityReviewer, model: 'opus', label: `qual:${task.id}:r${round}` }),
+      async () => safeAgent(buildPrompt('hunter', { taskId: task.id, filesChanged: fc }), { schema: SCHEMAS.hunter, model: 'sonnet', label: `hunt:${task.id}:r${round}` }),
     ])
-    if (spec?.status === 'agent_error' || qual?.status === 'agent_error' || hunt?.status === 'agent_error') {
-      return { halted: true, reason: 'agent_error', diag: { spec: spec?.diagnostics, qual: qual?.diagnostics, hunt: hunt?.diagnostics } }
-    }
-    if (spec?.status === 'model_unavailable' || qual?.status === 'model_unavailable' || hunt?.status === 'model_unavailable') {
-      return { halted: true, reason: 'model_unavailable', diag: { spec: spec?.diagnostics, qual: qual?.diagnostics, hunt: hunt?.diagnostics } }
+    const reviewReason = reviewHaltReason(spec, qual, hunt)
+    if (reviewReason) {
+      return { halted: true, reason: reviewReason, diag: { spec: spec?.diagnostics, qual: qual?.diagnostics, hunt: hunt?.diagnostics } }
     }
     state.perTask[task.id].files_touched_per_round.push(unionFiles(spec, qual, hunt))
     const osc = detectOscillation(state.perTask[task.id].files_touched_per_round)
@@ -547,13 +541,8 @@ async function runTask(plan, task) {
     if (allGreen(spec, qual, hunt)) break
     if (round === 3) return { halted: true, reason: 'review max rounds', diag: { spec: spec.diagnostics, qual: qual.diagnostics, hunt: hunt.diagnostics } }
     const findings = collectReviewFindings(spec, qual, hunt)
-    try {
-      impl = await agent(buildPrompt('implementor', implCtx(formatFindings(findings), `修复 review round ${round} 问题（${findings.length} 项发现：spec/quality/hunter）。`)), { schema: SCHEMAS.implementor, model, label: `impl:${task.id}:fix${round}` })
-    } catch (e) {
-      if (isQuotaError(e)) return { halted: true, reason: 'model_unavailable', diag: { model, error: errStr(e) } }
-      throw e
-    }
-    if (impl.status === 'model_unavailable') return { halted: true, reason: 'model_unavailable', diag: impl.diagnostics }
+    impl = await dispatchImpl(buildPrompt('implementor', implCtx(formatFindings(findings), `修复 review round ${round} 问题（${findings.length} 项发现：spec/quality/hunter）。`)), { schema: SCHEMAS.implementor, model, label: `impl:${task.id}:fix${round}` }, model)
+    if (impl.halted) return impl
     // Bug 4: fix-round implementor 返回 blocked/failed/needs_context 时不能静默忽略——
     // 否则 orchestrator 在 stale code 上继续下一轮 review，必然重复发现同样问题 → 浪费轮次。
     // 初始 dispatch 已有 opus 升级链 + context-fetch 路径；fix-round 内 halt 暴露问题而非静默循环。
@@ -566,24 +555,18 @@ async function runTask(plan, task) {
   // —— simplify（max 1，§5.2：无条件重跑 review；失败则回退）——
   let simplifyFailed = false, simplifyFiles = []
   let simp
-  try {
-    simp = await agent(buildPrompt('simplify', { taskId: task.id, filesChanged: filesChanged.join(','), simplifyFailed: 'false' }), { schema: SCHEMAS.simplify, label: `simp:${task.id}` })
-  } catch (e) {
-    if (isQuotaError(e)) return { halted: true, reason: 'model_unavailable', diag: { model, error: errStr(e) } }
-    throw e
-  }
+  simp = await dispatchImpl(buildPrompt('simplify', { taskId: task.id, filesChanged: filesChanged.join(','), simplifyFailed: 'false' }), { schema: SCHEMAS.simplify, label: `simp:${task.id}` }, model)
+  if (simp.halted) return simp
   if (simp.evidence.changed) {
     const fc = (simp.evidence.files_changed || []).join(',')
     const [spec2, qual2, hunt2] = await parallel([
-      async () => { try { return await agent(buildPrompt('specReview', { taskId: task.id, specPath: cfg.spec_path, planFilePath: plan.file, filesChanged: fc, concernsHint: '', referencePaths: formatReferencePaths(cfg.reference_paths) }), { schema: SCHEMAS.specReview, model: 'opus', label: `spec:${task.id}:simp` }) } catch (e) { return { status: isQuotaError(e) ? 'model_unavailable' : 'agent_error', diagnostics: { error: errStr(e) } } } },
-      async () => { try { return await agent(buildPrompt('qualityReviewer', { taskId: task.id, filesChanged: fc, languageChecklist: languageChecklist(cfg.language) }), { schema: SCHEMAS.qualityReviewer, model: 'opus', label: `qual:${task.id}:simp` }) } catch (e) { return { status: isQuotaError(e) ? 'model_unavailable' : 'agent_error', diagnostics: { error: errStr(e) } } } },
-      async () => { try { return await agent(buildPrompt('hunter', { taskId: task.id, filesChanged: fc }), { schema: SCHEMAS.hunter, model: 'sonnet', label: `hunt:${task.id}:simp` }) } catch (e) { return { status: isQuotaError(e) ? 'model_unavailable' : 'agent_error', diagnostics: { error: errStr(e) } } } },
+      async () => safeAgent(buildPrompt('specReview', { taskId: task.id, specPath: cfg.spec_path, planFilePath: plan.file, filesChanged: fc, concernsHint: '', referencePaths: formatReferencePaths(cfg.reference_paths) }), { schema: SCHEMAS.specReview, model: 'opus', label: `spec:${task.id}:simp` }),
+      async () => safeAgent(buildPrompt('qualityReviewer', { taskId: task.id, filesChanged: fc, languageChecklist: languageChecklist(cfg.language) }), { schema: SCHEMAS.qualityReviewer, model: 'opus', label: `qual:${task.id}:simp` }),
+      async () => safeAgent(buildPrompt('hunter', { taskId: task.id, filesChanged: fc }), { schema: SCHEMAS.hunter, model: 'sonnet', label: `hunt:${task.id}:simp` }),
     ])
-    if (spec2?.status === 'agent_error' || qual2?.status === 'agent_error' || hunt2?.status === 'agent_error') {
-      return { halted: true, reason: 'agent_error', diag: { spec2: spec2?.diagnostics, qual2: qual2?.diagnostics, hunt2: hunt2?.diagnostics } }
-    }
-    if (spec2?.status === 'model_unavailable' || qual2?.status === 'model_unavailable' || hunt2?.status === 'model_unavailable') {
-      return { halted: true, reason: 'model_unavailable', diag: { spec2: spec2?.diagnostics, qual2: qual2?.diagnostics, hunt2: hunt2?.diagnostics } }
+    const simpReviewReason = reviewHaltReason(spec2, qual2, hunt2)
+    if (simpReviewReason) {
+      return { halted: true, reason: simpReviewReason, diag: { spec2: spec2?.diagnostics, qual2: qual2?.diagnostics, hunt2: hunt2?.diagnostics } }
     }
     if (!allGreen(spec2, qual2, hunt2)) { simplifyFailed = true; simplifyFiles = simp.evidence.files_changed || [] }
   }
@@ -591,13 +574,8 @@ async function runTask(plan, task) {
 
   // —— commit（§5：状态原子转换；simplify 回退委托此 agent）——
   let commit
-  try {
-    commit = await agent(buildPrompt('commit', { taskId: task.id, planId: plan.id, planIdShort, taskTitle: task.title || task.id, testCommand: cfg.test_command, simplifyFailed: String(simplifyFailed), simplifyFiles: simplifyFiles.join(','), simplifyRevertNote: simplifyFailed ? `Simplify 回退：重跑 review 失败，还原 ${simplifyFiles.length} 个文件。` : '' }), { schema: SCHEMAS.commit, label: `commit:${task.id}` })
-  } catch (e) {
-    if (isQuotaError(e)) return { halted: true, reason: 'model_unavailable', diag: { model, error: errStr(e) } }
-    throw e
-  }
-  if (commit.status === 'model_unavailable') return { halted: true, reason: 'model_unavailable', diag: commit.diagnostics }
+  commit = await dispatchImpl(buildPrompt('commit', { taskId: task.id, planId: plan.id, planIdShort, taskTitle: task.title || task.id, testCommand: cfg.test_command, simplifyFailed: String(simplifyFailed), simplifyFiles: simplifyFiles.join(','), simplifyRevertNote: simplifyFailed ? `Simplify 回退：重跑 review 失败，还原 ${simplifyFiles.length} 个文件。` : '' }), { schema: SCHEMAS.commit, label: `commit:${task.id}` }, model)
+  if (commit.halted) return commit
   if (commit.status !== 'ok') return { halted: true, reason: 'commit failed', diag: commit.diagnostics }
   state.perTask[task.id].status = 'committed'
   state.perTask[task.id].commit_sha = commit.evidence.commit_sha
@@ -611,11 +589,12 @@ const tsAgent = await agent('Run `date -u +%Y%m%dT%H%M%SZ` and return ONLY the t
 state.runTs = typeof tsAgent === 'string' ? tsAgent.trim() : String(tsAgent)
 let boot
 try {
-  boot = await agent(buildPrompt('bootstrap', { configPath: args.configPath, plansDir: args.plansDir, runTs: state.runTs }), { schema: SCHEMAS.bootstrap, label: 'bootstrap' })
+  boot = await dispatchImpl(buildPrompt('bootstrap', { configPath: args.configPath, plansDir: args.plansDir, runTs: state.runTs }), { schema: SCHEMAS.bootstrap, label: 'bootstrap' }, 'sonnet')
 } catch (e) {
-  if (isQuotaError(e)) { await halt(null, null, { reason: 'model_unavailable', diag: { model: 'sonnet', error: errStr(e) } }); return { result: 'halted', reason: 'model_unavailable' } }
-  throw e
+  // dispatchImpl 仅吞 quota 错（→halted）；其余非 quota 错抛出，此处兜底 halt
+  await halt(null, null, { reason: 'model_unavailable', diag: { model: 'sonnet', error: errStr(e) } }); return { result: 'halted', reason: 'model_unavailable' }
 }
+if (boot.halted) { await halt(null, null, { reason: 'model_unavailable', diag: boot.diag }); return { result: 'halted', reason: 'model_unavailable' } }
 if (boot.status !== 'ok') { await halt(null, null, { reason: `bootstrap ${boot.status}`, diag: boot.diagnostics }); return { result: 'halted', reason: `bootstrap ${boot.status}` } }
 state.config = boot.evidence.config
 // plan-scoped completed：bootstrap 从 git log 解析的 id（"01/T1" / "plan-01/T1" / 裸 "T1"）
@@ -641,7 +620,7 @@ for (const plan of boot.evidence.plans) {
     } catch (e) {
       // §2.4：uncaught error 视同 model_unavailable——本环境 agent 抛错（含 429 落 router stderr、不在 Error.message）≈ model 不可用。
       // halt + 保存进度（finalReportWithFallback 依次试 opus/sonnet/haiku），等用户指令 resume，不降级继续开发。
-      r = { halted: true, reason: 'model_unavailable', diag: { error: errStr(e) } }
+      r = { halted: true, reason: 'model_unavailable', diag: { model: task.model || 'sonnet', error: errStr(e) } }
     }
     if (r.halted) { await halt(plan, { id: task.id }, r); return { result: 'halted', reason: r.reason } }
   }
@@ -651,12 +630,12 @@ for (const plan of boot.evidence.plans) {
     const cmds = gateCommands(state.config)
     let gate
     try {
-      gate = await agent(buildPrompt('gate', { sha: lastSha, gateCommands: JSON.stringify(cmds) }), { schema: SCHEMAS.gate, label: `gate:${plan.id}`, phase: `Plan ${plan.id}` })
+      gate = await dispatchImpl(buildPrompt('gate', { sha: lastSha, gateCommands: JSON.stringify(cmds) }), { schema: SCHEMAS.gate, label: `gate:${plan.id}`, phase: `Plan ${plan.id}` }, 'sonnet')
     } catch (e) {
-      if (isQuotaError(e)) { await halt(plan, null, { reason: 'model_unavailable', diag: { model: 'sonnet', error: errStr(e) } }); return { result: 'halted', reason: 'model_unavailable' } }
-      throw e
+      // dispatchImpl 仅吞 quota 错（→halted）；其余非 quota 错抛出，此处兜底 halt
+      await halt(plan, null, { reason: 'model_unavailable', diag: { model: 'sonnet', error: errStr(e) } }); return { result: 'halted', reason: 'model_unavailable' }
     }
-    if (gate.status === 'model_unavailable') { await halt(plan, null, { reason: 'model_unavailable', diag: gate.diagnostics }); return { result: 'halted', reason: 'model_unavailable' } }
+    if (gate.halted) { await halt(plan, null, { reason: 'model_unavailable', diag: gate.diag }); return { result: 'halted', reason: 'model_unavailable' } }
     if (gate.status !== 'ok') {
       await halt(plan, null, { reason: 'plan gate failed', diag: { sha: lastSha, tests_exit_code: gate.evidence?.tests_exit_code, summary: gate.evidence?.pytest_summary, lint_results: gate.evidence?.lint_results } })
       return { result: 'halted', reason: 'plan gate failed' }

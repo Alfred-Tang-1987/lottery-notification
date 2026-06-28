@@ -28,7 +28,7 @@ for (const role of ROLES) {
 }
 
 test('run-plans.js inlines the new conditional-render helpers', () => {
-  for (const fn of ['formatReferencePaths', 'languageChecklist', 'LANGUAGE_CHECKLISTS', 'gateCommands', 'collectReviewFindings', 'formatFindings', 'matchesPlanFilter']) {
+  for (const fn of ['formatReferencePaths', 'languageChecklist', 'LANGUAGE_CHECKLISTS', 'gateCommands', 'collectReviewFindings', 'formatFindings', 'matchesPlanFilter', 'classifyThrown', 'reviewHaltReason']) {
     assert.match(runSrc, new RegExp(`function ${fn}|const ${fn}`), `missing helper: ${fn}`)
   }
 })

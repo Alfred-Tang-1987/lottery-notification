@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, isQuotaError, errStr, matchesPlanFilter } from '../lib.js'
+import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, isQuotaError, errStr, matchesPlanFilter, classifyThrown, reviewHaltReason } from '../lib.js'
 
 const ok = { status: 'ok', diagnostics: { files_touched: ['a.py'] } }
 const ok2 = { status: 'ok', diagnostics: { files_touched: ['b.py'] } }
@@ -88,4 +88,28 @@ test('matchesPlanFilter: number 3 matches padded seq "03" and id "plan-03" (Bug 
 test('matchesPlanFilter: non-matching arg → false', () => {
   assert.equal(matchesPlanFilter({ id: 'plan-01', seq: '01' }, '02'), false)
   assert.equal(matchesPlanFilter({ id: 'plan-01', seq: '01' }, 5), false)
+})
+
+// —— classifyThrown（review catch 归类）——
+test('classifyThrown: quota keywords → model_unavailable, 其余 → agent_error', () => {
+  assert.equal(classifyThrown(new Error('quota exhausted')), 'model_unavailable')
+  assert.equal(classifyThrown(new Error('429 too many requests')), 'model_unavailable')
+  assert.equal(classifyThrown(new Error('rate limited')), 'model_unavailable')
+  assert.equal(classifyThrown(new Error('syntax error')), 'agent_error')
+  assert.equal(classifyThrown(new Error('network timeout')), 'agent_error')
+})
+
+// —— reviewHaltReason（review 后优先级检查；复用顶部 ok fixture）——
+test('reviewHaltReason: 全 ok → null', () => {
+  assert.equal(reviewHaltReason(ok, ok, ok), null)
+})
+
+test('reviewHaltReason: agent_error 优先于 model_unavailable', () => {
+  assert.equal(reviewHaltReason({ status: 'agent_error' }, { status: 'model_unavailable' }, ok), 'agent_error')
+  assert.equal(reviewHaltReason(ok, { status: 'agent_error' }, { status: 'model_unavailable' }), 'agent_error')
+})
+
+test('reviewHaltReason: 仅 model_unavailable → model_unavailable', () => {
+  assert.equal(reviewHaltReason({ status: 'model_unavailable' }, ok, ok), 'model_unavailable')
+  assert.equal(reviewHaltReason(ok, ok, { status: 'model_unavailable' }), 'model_unavailable')
 })
