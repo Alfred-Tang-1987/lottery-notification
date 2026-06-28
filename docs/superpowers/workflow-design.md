@@ -168,6 +168,8 @@ orchestrator 是 JS sandbox：**无 fs、无 subprocess、无 Date.now/Math.rand
 | agent() 上限 min(16,cpu-2) | serial task → 同时仅 1 task in flight；每 task 最多 implementor + 3 review 并行 + simplify + commit ≈ 6 agent，远低于上限 |
 | 无持久化 | 状态靠 git log + run manifest（subagent 写盘，§6/§9） |
 
+**代码分层（实现约束）**：纯函数/SCHEMAS/PROMPTS 的真源是 `docs/superpowers/workflows/lib.js`（ES module，`node --test` 单测）；`run-plans.js` inline 复制它们（runtime 禁模块 import），`sync.test.js` 守护字节一致。**纯决策**（如 `collectReviewFindings`/`classifyThrown`/`reviewHaltReason`，不调 `agent()`）进 lib.js 可测；**runtime 胶水**（`safeAgent`/`dispatchImpl`，调 `agent()`）只能留 run-plans.js（lib.js 是纯模块不能调 runtime 全局）。`agent_error` 是 orchestrator-internal sentinel（catch 块构造、绕过 schema 校验），不入 review schema enum。
+
 ### 4.4 orchestrator 状态管理
 
 orchestrator 维护 in-memory 状态（JS 变量），从 agent 返回值更新，据此做路由：

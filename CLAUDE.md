@@ -8,6 +8,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Workflow orchestrator 修复**（2026-06-25）：修复了 10 个 CRITICAL/IMPORTANT bug——qualityReviewer 结构化 findings 被 `.join()` 序列化为 `[object Object]`、hunter `silent_failures` 完全丢弃、fix-round implementor 状态被忽略等。修复后的 review chain 基于 `collectReviewFindings` + `formatFindings` 传播完整的结构化反馈。
 
+**Workflow orchestrator 去重重构**（2026-06-28）：runTask 178→126 行。抽 `dispatchImpl`/`safeAgent` 统一重复的 try/catch+quota 处理，纯决策（`classifyThrown`/`reviewHaltReason`）进 lib.js 可 node:test 测，runtime 胶水留 run-plans.js。分层原则：**改 lib.js 的纯函数/helper 必须同步 inline 副本到 run-plans.js**（sync.test 守护）；runtime 胶水（调 `agent()`）只在 run-plans.js。
+
 ## 项目是什么
 
 "兑奖了吗？"——多用户中国彩票开奖**自动核对与通知**系统。覆盖福彩+体彩 7 大主流彩种。用户维护固定号码池，系统每期自动比对开奖结果并按用户配置的渠道/策略推送。部署在家庭 NAS（小圈子邀请制共享），架构预留大规模公开扩展。未来计划 iOS 原生 App（API-first 复用）。
