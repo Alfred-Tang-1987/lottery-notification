@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, isQuotaError, errStr, matchesPlanFilter, classifyThrown, reviewHaltReason } from '../lib.js'
+import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, isQuotaError, errStr, matchesPlanFilter, classifyThrown, reviewHaltReason, haltLikelySource } from '../lib.js'
 
 const ok = { status: 'ok', diagnostics: { files_touched: ['a.py'] } }
 const ok2 = { status: 'ok', diagnostics: { files_touched: ['b.py'] } }
@@ -112,4 +112,28 @@ test('reviewHaltReason: agent_error 优先于 model_unavailable', () => {
 test('reviewHaltReason: 仅 model_unavailable → model_unavailable', () => {
   assert.equal(reviewHaltReason({ status: 'model_unavailable' }, ok, ok), 'model_unavailable')
   assert.equal(reviewHaltReason(ok, ok, { status: 'model_unavailable' }), 'model_unavailable')
+})
+
+// —— haltLikelySource（halt reason → 工作树脏状态来源语义）——
+test('haltLikelySource: implementor 路径 → implementor changes', () => {
+  assert.equal(haltLikelySource('review max rounds'), 'implementor changes')
+  assert.equal(haltLikelySource('OSCILLATING'), 'implementor changes')
+  assert.equal(haltLikelySource('implementor blocked in fix-round 2'), 'implementor changes')
+  assert.equal(haltLikelySource('commit failed'), 'implementor changes')
+  assert.equal(haltLikelySource('opus BLOCKED after context-fetch'), 'implementor changes')
+  assert.equal(haltLikelySource('model_unavailable'), 'implementor changes')
+})
+
+test('haltLikelySource: gate 路径 → gate restored（已 checkout 回原 HEAD）', () => {
+  assert.equal(haltLikelySource('plan gate failed'), 'gate restored')
+})
+
+test('haltLikelySource: bootstrap 路径 → bootstrap frontmatter', () => {
+  assert.equal(haltLikelySource('bootstrap failed'), 'bootstrap frontmatter')
+  assert.equal(haltLikelySource('bootstrap blocked'), 'bootstrap frontmatter')
+})
+
+test('haltLikelySource: 未知 reason → unknown', () => {
+  assert.equal(haltLikelySource('some novel reason'), 'unknown')
+  assert.equal(haltLikelySource(''), 'unknown')
 })

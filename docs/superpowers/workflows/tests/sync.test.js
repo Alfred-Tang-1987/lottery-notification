@@ -28,7 +28,7 @@ for (const role of ROLES) {
 }
 
 test('run-plans.js inlines the new conditional-render helpers', () => {
-  for (const fn of ['formatReferencePaths', 'languageChecklist', 'LANGUAGE_CHECKLISTS', 'gateCommands', 'collectReviewFindings', 'formatFindings', 'matchesPlanFilter', 'classifyThrown', 'reviewHaltReason']) {
+  for (const fn of ['formatReferencePaths', 'languageChecklist', 'LANGUAGE_CHECKLISTS', 'gateCommands', 'collectReviewFindings', 'formatFindings', 'matchesPlanFilter', 'classifyThrown', 'reviewHaltReason', 'haltLikelySource']) {
     assert.match(runSrc, new RegExp(`function ${fn}|const ${fn}`), `missing helper: ${fn}`)
   }
 })
@@ -49,6 +49,15 @@ test('run-plans.js orchestrator wires new placeholders + gate lint loop', () => 
   assert.match(runSrc, /gateCommands: JSON\.stringify\(cmds\)/)
   assert.match(runSrc, /fetchedContext:/)
   assert.match(runSrc, /simplifyRevertNote:/)
+})
+
+test('finalReport prompt 探查工作树脏状态（halt 时记录，防回归）', () => {
+  // 两副本（lib.js + run-plans.js）的 finalReport prompt 都应含 git status 探查 + likely_source
+  for (const src of [libSrc, runSrc]) {
+    const p = promptBody(src, 'finalReport')
+    assert.match(p, /git status --porcelain/, 'finalReport 须探查工作树脏状态')
+    assert.match(p, /likely_source/, 'finalReport blocked.md 须含 likely_source 语义提示')
+  }
 })
 
 test('no彩票硬编码残留在通用 prompt（bootstrap 中性化 + qualityReviewer 去 domain 纪律）', () => {
