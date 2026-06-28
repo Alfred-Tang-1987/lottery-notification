@@ -13,6 +13,8 @@
 > **演进记录**（2026-06-28）：[去重重构] runTask 178→126 行。新增纯决策函数 `classifyThrown`/`reviewHaltReason`（进 lib.js，node:test 覆盖）+ runtime 胶水 `safeAgent`/`dispatchImpl`（留 run-plans.js，统一 10 处 implementor 派发 + 6 处 review lambda 的 try/catch）。分层原则：纯决策进 lib.js 可测，runtime 胶水（调 `agent()`）留 run-plans.js（lib.js 是纯模块不能调 runtime 全局）。`agent_error` 文档化为 orchestrator-internal sentinel（不入 schema enum）。
 >
 > **演进记录**（2026-06-28）：[halt 工作树脏状态] `halt()` 填 `blocked_info.likely_source`（`haltLikelySource(reason)` 纯函数，基于 reason 的确定性来源映射，非 dirty 推断）。finalReport prompt halt 时跑 `git status --porcelain` + `git diff --stat`（ground truth，best-effort），写 `blocked.md` Working Tree 段 + 接手指引。likely_source（语义线索）+ git status（真实状态）并存。
+>
+> **演进记录**（2026-06-28）：[blockedInfo 独立占位符] `halt()` 把当前 halted task 的 `blocked_info` 作为独立 `blockedInfo` 占位符传给 finalReport（done 模式传空串）。finalReport 写 `blocked.md` 直接渲染 blockedInfo 各字段，无需从整个 stateJson 里查找提取——降低 agent 认知负担 + 防 likely_source 等新字段遗漏。manifest.json 仍用 stateJson（需全部 per_task）。
 
 **约束（来自 workflow-design.md §4.3）：** orchestrator JS 无 fs / 无 subprocess / 无 `Date.now`/`Math.random`。所有 IO 委托 subagent；时间戳由 subagent 调 `date` 命令获得。
 
