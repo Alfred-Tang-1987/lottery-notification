@@ -16,6 +16,8 @@ test('evidence-bearing roles require evidence field', () => {
 test('review schemas require status enum', () => {
   for (const r of ['specReview', 'qualityReviewer', 'hunter']) {
     const s = SCHEMAS[r].properties.status
+    // 故意不含 'agent_error'：它是 orchestrator-internal sentinel（safeAgent catch 构造，
+    // 绕过 schema 校验），orchestrator 用 reviewHaltReason() 显式判断。入 enum 反而放宽约束。
     assert.deepEqual(s.enum.sort(), ['failed', 'model_unavailable', 'ok'])
   }
 })

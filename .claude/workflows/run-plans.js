@@ -1,6 +1,8 @@
 // workflow orchestrator —— 多 plan 自动执行（workflow-design.md §4/§5/§13）
 // 纯函数/SCHEMAS/PROMPTS inline 自 docs/superpowers/workflows/lib.js —— 改 lib 必须同步改这里。
 // 顶层 await = Workflow 入口；agent/parallel/phase/log/args/budget 为 Workflow runtime 注入的全局。
+// 分层：纯决策（classifyThrown/reviewHaltReason/collectReviewFindings 等）进 lib.js 可 node:test 测；
+//   runtime 胶水（safeAgent/dispatchImpl，调 agent()）只能留此文件（lib.js 是纯模块不能调 runtime 全局）。
 
 export const meta = {
   name: 'run-plans',
@@ -175,6 +177,9 @@ function gateCommands(config) {
 }
 
 // ===== SCHEMAS（inline 自 lib.js Task 5，去 export）=====
+// 注意：'agent_error' 是 orchestrator-internal sentinel，由 safeAgent 的 catch 块构造、
+// 绕过 schema 校验（agent() 抛错时不走 schema），故不入下方 status enum。
+// orchestrator 用 reviewHaltReason() 显式判断 agent_error/model_unavailable。入 enum 反而放宽约束。
 function reviewSchema() {
   return { type: 'object', required: ['status'], additionalProperties: true,
     properties: {
@@ -457,6 +462,17 @@ async function halt(plan, task, r) {
 }
 
 // ===== runTask（§13a：implementor + 升级链 + review rounds + simplify + commit）=====
+// 状态机（halt reason 枚举见各分支）：
+//   IMPL(初始) ──blocked──→ 升级 opus ──blocked──→ halt 'opus BLOCKED'
+//              └─needs_context──→ CTX(contextFetcher) ──→ IMPL(ctx) ──blocked──→ 升级 opus ─→ halt 'opus BLOCKED after context-fetch'
+//                                                       └─failed──→ retry ─→ halt 'implementor X after context-fetch retry'
+//              └─failed──→ retry once ─→ halt 'implementor X after retry'
+//              └─ok/done_with_concerns──→ REVIEW rounds(spec‖qual‖hunt 并行)
+//   REVIEW ──全绿──→ SIMPLIFY ──changed──→ re-review ──失败──→ simplifyFailed(commit 回退)
+//         └─任一❌──→ IMPL(fix-round) ──blocked/failed/needs_context──→ halt 'implementor X in fix-round N'
+//         └─max 3 轮──→ halt 'review max rounds'；振荡──→ halt 'OSCILLATING'
+//   SIMPLIFY ──→ COMMIT ──非 ok──→ halt 'commit failed'
+// 任一 agent 限额/异常──→ halt 'model_unavailable' / 'agent_error'（reviewHaltReason 判定）
 async function runTask(plan, task) {
   state.currentTask = task.id
   const cfg = state.config

@@ -242,6 +242,9 @@ export const SCHEMAS = {
     properties: { evidence: { type: 'object', properties: { manifest_path: { type: 'string' } } }, summary: { type: 'string' } } },
 }
 
+// 注意：'agent_error' 是 orchestrator-internal sentinel，由 safeAgent 的 catch 块构造、
+// 绕过 schema 校验（agent() 抛错时不走 schema），故不入下方 status enum。
+// orchestrator 用 reviewHaltReason() 显式判断 agent_error/model_unavailable。入 enum 反而放宽约束。
 function reviewSchema() {
   return { type: 'object', required: ['status'], additionalProperties: true,
     properties: {
