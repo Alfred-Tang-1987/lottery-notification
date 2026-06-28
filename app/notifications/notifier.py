@@ -83,6 +83,10 @@ class Notifier:
             return self._dnd_start <= h < self._dnd_end
         return h >= self._dnd_start or h < self._dnd_end
 
+    def is_dnd_active(self) -> bool:
+        """供调度器判断是否处于 DND 时段，以便登记顺延任务。"""
+        return self._in_dnd()
+
     def notify_path_a(
         self, *, comparison_id: int, lottery_name: str, draw_no: str, tier: int, amount: int | None
     ) -> None:
@@ -123,6 +127,7 @@ class Notifier:
             # 先写 pending log（无 sent_at）
             log = NotificationLog(
                 user_id=user_id,
+                comparison_id=comparison_id,
                 type=payload.title,
                 payload=payload.body,
                 status='pending',
@@ -313,14 +318,52 @@ class Notifier:
                 result.error,
             )
 
+    def notify_period_summary(self, *, user_id: int, start_date_str: str, end_date_str: str, period_label: str) -> int:
+        """周/月报通用入口：汇总 [start_date, end_date] 区间的比对结果。
+
+        区间无活动则静默跳过（不推空消息）。DND 检查由调用方负责。
+        """
+        with Session(self._engine) as s:
+            wins, loses, details = self._collect_user_results_range(s, user_id, start_date_str, end_date_str)
+            if wins == 0 and loses == 0:
+                return 0
+            payload = build_path_b(
+                date_str=period_label,
+                total=wins + loses,
+                wins=wins,
+                win_details=details,
+                loses=loses,
+            )
+            channels_data = self._load_channels(s, user_id)
+            log = NotificationLog(
+                user_id=user_id,
+                type=payload.title,
+                payload=payload.body,
+                status='pending',
+                error=None,
+                sent_at=None,
+            )
+            s.add(log)
+            s.commit()
+            log_id = log.id
+
+        result = self._send_to_user_channels(user_id, channels_data, payload, force=False)
+        self._update_log_status(log_id, result)
+        return 1
+
     def _collect_user_results(self, session, user_id, date_str):
         """汇总该用户当日比对结果（仅含追投彩种）。
 
         spec §7.4/§8.2: 推送范围 = 该用户号码池里有启用注的彩种。
         """
+        return self._collect_user_results_range(session, user_id, date_str, date_str)
+
+    def _collect_user_results_range(self, session, user_id, start_date_str, end_date_str):
+        """汇总该用户指定日期区间 [start, end] 的比对结果（仅含追投彩种）。"""
         from datetime import date as _date
 
-        d = _date.fromisoformat(date_str)
+        start = _date.fromisoformat(start_date_str)
+        end = _date.fromisoformat(end_date_str)
         # 该用户追投的彩种（有启用 ticket 的 lottery_code）
         tracked_codes = {
             t.lottery_code
@@ -349,7 +392,10 @@ class Notifier:
         lottery_names = {lt.code: lt.name for lt in session.exec(select(LotteryType)).all()}
         for c in cmps:
             dr = session.get(DrawResult, c.draw_result_id)
-            if dr is None or dr.draw_date.date() != d:
+            if dr is None:
+                continue
+            d = dr.draw_date.date()
+            if d < start or d > end:
                 continue
             if dr.lottery_code not in tracked_codes:
                 continue  # 未追投，不推

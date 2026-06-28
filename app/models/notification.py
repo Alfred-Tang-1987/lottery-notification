@@ -28,6 +28,9 @@ class NotificationLog(TimestampMixin, table=True):
     __tablename__ = 'notification_logs'
     id: int | None = Field(default=None, primary_key=True)
     user_id: int = Field(foreign_key='users.id', index=True)
+    comparison_id: int | None = Field(
+        default=None, foreign_key='comparisons.id', index=True
+    )  # 路径A大奖推送关联的 comparison，用于去重
     type: str = Field(max_length=16)
     payload: str
     status: str = Field(max_length=16)  # sent | failed | pending
