@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime, timedelta
-from typing import TypedDict
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -11,6 +10,7 @@ from sqlmodel import Session, select
 
 from app.models import Comparison, DrawResult, NotificationLog, PrizeClaim, User
 from app.notifications.notifier import Notifier
+from app.scheduler import _JobDeps
 from app.services.compare_service import CompareService
 from app.services.fetch_service import FetchService
 from app.services.refill_service import FloatRefillWorker
@@ -18,14 +18,6 @@ from app.services.refill_service import FloatRefillWorker
 _CST = ZoneInfo('Asia/Shanghai')
 
 logger = logging.getLogger(__name__)
-
-
-class _JobDeps(TypedDict):
-    engine: Engine
-    fetch_service: FetchService
-    compare_service: CompareService
-    refill_worker: FloatRefillWorker
-    notifier: Notifier
 
 
 def register_all_jobs(sched: BackgroundScheduler, deps: _JobDeps) -> None:
