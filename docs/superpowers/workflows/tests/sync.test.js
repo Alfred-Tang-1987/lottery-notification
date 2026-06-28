@@ -57,7 +57,14 @@ test('finalReport prompt 探查工作树脏状态（halt 时记录，防回归�
     const p = promptBody(src, 'finalReport')
     assert.match(p, /git status --porcelain/, 'finalReport 须探查工作树脏状态')
     assert.match(p, /likely_source/, 'finalReport blocked.md 须含 likely_source 语义提示')
+    assert.match(p, /blockedInfo=/, 'finalReport 须接收 blockedInfo 独立占位符')
   }
+})
+
+test('run-plans.js orchestrator 传 blockedInfo 给 finalReport', () => {
+  // halt 传 blockedInfo（halted task 的 blocked_info JSON）；done 传空串（条件渲染段落消失）
+  assert.match(runSrc, /blockedInfo, runsDir/, 'halt() 须传 blockedInfo')
+  assert.match(runSrc, /blockedInfo: ''/, 'done 模式 finalReport 须传空 blockedInfo')
 })
 
 test('no彩票硬编码残留在通用 prompt（bootstrap 中性化 + qualityReviewer 去 domain 纪律）', () => {

@@ -200,7 +200,7 @@ review 链 max-rounds halt 后，task 留在「未 commit」状态（implementor
 ```
 崩溃/halt 后看它定位问题（非翻 transcript）。
 
-`runs/<run-ts>/blocked.md`（仅 mode=halted 时 finalReport 写）：人读摘要，含 which task / category / last_error / suggested_fix / **likely_source**（工作树脏状态来源语义：`implementor changes` / `gate restored` / `bootstrap frontmatter` / `unknown`）+ **Working Tree** 段——finalReport halt 时跑 `git status --porcelain` + `git diff --stat` 的 ground truth 输出（dirty 时附文件列表 + diff stat + 接手指引；clean 时标注，如 gate halt 已 restore HEAD）。`likely_source` 是基于 reason 的确定性映射（非 dirty 推断），与 git status ground truth 并存：用户既有真实状态，也有快速定位线索。git 探查 best-effort，失败不阻塞 manifest 写入。
+`runs/<run-ts>/blocked.md`（仅 mode=halted 时 finalReport 写）：人读摘要。finalReport 收到独立 `blockedInfo` 占位符（halted task 的 `blocked_info` JSON，无需从整个 state 里捞字段），渲染 each field：plan / task / reason / category / last_error / suggested_fix / quota_exhausted / **likely_source**（工作树脏状态来源语义：`implementor changes` / `gate restored` / `bootstrap frontmatter` / `unknown`）。再加 **Working Tree** 段——finalReport halt 时跑 `git status --porcelain` + `git diff --stat` 的 ground truth 输出（dirty 时附文件列表 + diff stat + 接手指引；clean 时标注，如 gate halt 已 restore HEAD）。`likely_source` 是基于 reason 的确定性映射（非 dirty 推断），与 git status ground truth 并存。git 探查 best-effort，失败不阻塞 manifest 写入。
 
 ## 9. 常见场景
 
