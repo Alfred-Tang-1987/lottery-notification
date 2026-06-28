@@ -1,21 +1,27 @@
 import json
-import pytest
 from datetime import datetime
+
+import pytest
 from sqlmodel import Session, select
-from app.services.correct_service import DrawCorrectService
+
+from app.models import Comparison, DrawCorrection, DrawResult, PendingComparison, Ticket, User
 from app.services.compare_service import CompareService
-from app.models import User, Ticket, DrawResult, PendingComparison, Comparison, DrawCorrection
+from app.services.correct_service import DrawCorrectService
 
 
 def _seed_user_and_ticket(session, front=(1, 2, 3, 4, 5, 6), back=(7,)):
-    u = User(username="u", password_hash="x", role="user", invite_code="C")
+    u = User(username='u', password_hash='x', role='user', invite_code='C')
     session.add(u)
     session.commit()
     session.refresh(u)
     dr = DrawResult(
-        lottery_code="ssq", draw_no="062", draw_date=datetime.utcnow(),
-        numbers_json=json.dumps({"front": list(front), "back": list(back)}),
-        source="mxnzp", verified=True, version=1,
+        lottery_code='ssq',
+        draw_no='062',
+        draw_date=datetime.utcnow(),
+        numbers_json=json.dumps({'front': list(front), 'back': list(back)}),
+        source='mxnzp',
+        verified=True,
+        version=1,
     )
     session.add(dr)
     session.commit()
@@ -24,9 +30,12 @@ def _seed_user_and_ticket(session, front=(1, 2, 3, 4, 5, 6), back=(7,)):
     session.add(pc)
     session.commit()
     t = Ticket(
-        user_id=u.id, lottery_code="ssq", play_type="single",
-        numbers_json=json.dumps({"front": list(front), "back": list(back)}),
-        multiplier=1, cost=200,
+        user_id=u.id,
+        lottery_code='ssq',
+        play_type='single',
+        numbers_json=json.dumps({'front': list(front), 'back': list(back)}),
+        multiplier=1,
+        cost=200,
     )
     session.add(t)
     session.commit()
@@ -49,7 +58,7 @@ def test_correct_increments_version_and_recompares(db_engine):
         draw_result_id=dr_id,
         new_front=(1, 2, 3, 4, 5, 6),
         new_back=(8,),
-        reason="官方更正",
+        reason='官方更正',
     )
     CompareService(db_engine).process_pending()
 
@@ -80,7 +89,7 @@ def test_correct_true_lose_changes_is_win(db_engine):
         draw_result_id=dr_id,
         new_front=(10, 11, 12, 13, 14, 15),
         new_back=(8,),
-        reason="官方更正",
+        reason='官方更正',
     )
     CompareService(db_engine).process_pending()
 
@@ -95,5 +104,5 @@ def test_correct_true_lose_changes_is_win(db_engine):
 
 def test_correct_draw_result_not_found_raises(db_engine):
     svc = DrawCorrectService(db_engine)
-    with pytest.raises(ValueError, match="draw_result 999 不存在"):
-        svc.correct(draw_result_id=999, new_front=(1, 2, 3, 4, 5, 6), new_back=(7,), reason="x")
+    with pytest.raises(ValueError, match='draw_result 999 不存在'):
+        svc.correct(draw_result_id=999, new_front=(1, 2, 3, 4, 5, 6), new_back=(7,), reason='x')

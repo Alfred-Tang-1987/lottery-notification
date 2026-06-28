@@ -4,6 +4,7 @@ outbox 原子认领（pending_comparisons）→ 取追投 tickets → 领域 com
 写 comparisons（唯一约束 draw_result_id+ticket_id 兜底，更正重比原地更新）+
 中奖写 prize_claims(pending)。比对只做一次（spec §4 line99：路径 A/B 复用 comparisons）。
 """
+
 import json
 import logging
 from datetime import datetime, timedelta
@@ -17,14 +18,18 @@ from app.domain import compare as domain_compare
 from app.domain.entry import Entry
 from app.domain.spec import LotterySpec
 from app.models import (
-    Comparison, DrawResult, PendingComparison, PrizeClaim, Ticket,
+    Comparison,
+    DrawResult,
+    PendingComparison,
+    PrizeClaim,
+    Ticket,
 )
 from app.seeds import SPECS
 
 logger = logging.getLogger(__name__)
 
 # 全程 Asia/Shanghai（spec §4.3）。aware datetime，与 FetchService 统一。
-_CST = ZoneInfo("Asia/Shanghai")
+_CST = ZoneInfo('Asia/Shanghai')
 
 
 def _now() -> datetime:
@@ -37,7 +42,7 @@ _SPEC_CACHE: dict[str, LotterySpec] = {}
 
 def _spec_for(code: str) -> LotterySpec:
     if code not in _SPEC_CACHE:
-        spec_dict = next(s for s in SPECS if s["code"] == code)
+        spec_dict = next(s for s in SPECS if s['code'] == code)
         _SPEC_CACHE[code] = LotterySpec.from_dict(spec_dict)
     return _SPEC_CACHE[code]
 
@@ -61,9 +66,7 @@ class CompareService:
         显式留痕（不静默），processed_at 保持已认领（不无限重试配置错）。
         """
         with Session(self._engine) as s:
-            pending = list(s.exec(
-                select(PendingComparison).where(PendingComparison.processed_at.is_(None))
-            ).all())
+            pending = list(s.exec(select(PendingComparison).where(PendingComparison.processed_at.is_(None))).all())
         processed = 0
         for pc in pending:
             if not self._claim(pc.id):
@@ -76,8 +79,10 @@ class CompareService:
                 # claim 已提交，此期不再自动重试（避免配置错无限重试），靠日志告警人工介入。
                 # 期级失败多为编程/配置错，含 traceback 便于定位（I2）。
                 logger.error(
-                    "compare_failed draw_result_id=%s pending_id=%s",
-                    pc.draw_result_id, pc.id, exc_info=True,
+                    'compare_failed draw_result_id=%s pending_id=%s',
+                    pc.draw_result_id,
+                    pc.id,
+                    exc_info=True,
                 )
         return processed
 
@@ -85,10 +90,13 @@ class CompareService:
         """原子认领：UPDATE ... WHERE processed_at IS NULL RETURNING。
         影响 0 行 = 已被认领（并发或重复调用），返回 False。"""
         with self._engine.begin() as conn:
-            row = conn.execute(text(
-                "UPDATE pending_comparisons SET processed_at = :now "
-                "WHERE id = :id AND processed_at IS NULL RETURNING id"
-            ), {"now": _now(), "id": pending_id}).first()
+            row = conn.execute(
+                text(
+                    'UPDATE pending_comparisons SET processed_at = :now '
+                    'WHERE id = :id AND processed_at IS NULL RETURNING id'
+                ),
+                {'now': _now(), 'id': pending_id},
+            ).first()
             return row is not None
 
     def _compare_one(self, draw_result_id: int) -> None:
@@ -98,14 +106,19 @@ class CompareService:
             if dr is None or not dr.verified:
                 return
             dn = json.loads(dr.numbers_json)
-            draw_front = tuple(dn["front"])
-            draw_back = tuple(dn["back"]) if dn.get("back") else None
+            draw_front = tuple(dn['front'])
+            draw_back = tuple(dn['back']) if dn.get('back') else None
             spec = _spec_for(dr.lottery_code)
 
             # 仅追投该彩种的启用注（spec §4 line99：比对范围由号码池决定，没追的不比对）
-            tickets = list(s.exec(select(Ticket).where(
-                Ticket.lottery_code == dr.lottery_code, Ticket.enabled == True  # noqa: E712
-            )).all())
+            tickets = list(
+                s.exec(
+                    select(Ticket).where(
+                        Ticket.lottery_code == dr.lottery_code,
+                        Ticket.enabled == True,  # noqa: E712
+                    )
+                ).all()
+            )
 
             for t in tickets:
                 # per-ticket 隔离（spec §10 line375：坏注单/格式异常 → 隔离该注，不影响
@@ -124,33 +137,51 @@ class CompareService:
                     with s.begin_nested():  # SAVEPOINT：失败只回滚该注
                         tn = json.loads(t.numbers_json)
                         entry = Entry(
-                            lottery_code=t.lottery_code, play_type=t.play_type,
-                            front=tuple(tn["front"]),
-                            back=tuple(tn["back"]) if tn.get("back") else None,
-                            multiplier=t.multiplier, append=t.append,
+                            lottery_code=t.lottery_code,
+                            play_type=t.play_type,
+                            front=tuple(tn['front']),
+                            back=tuple(tn['back']) if tn.get('back') else None,
+                            multiplier=t.multiplier,
+                            append=t.append,
                         )
                         results = domain_compare(
-                            spec, draw_front=draw_front, draw_back=draw_back, entry=entry,
+                            spec,
+                            draw_front=draw_front,
+                            draw_back=draw_back,
+                            entry=entry,
                         )
                         # single/zhixuan 玩法展开为 1 注；复式/胆拖 Phase 2 扩展后逐注比对写行
                         for hit in results:
                             self._upsert_comparison(
-                                s, user_id=t.user_id, draw_result_id=dr.id,
-                                ticket_id=t.id, hit=hit, multiplier=t.multiplier,
+                                s,
+                                user_id=t.user_id,
+                                draw_result_id=dr.id,
+                                ticket_id=t.id,
+                                hit=hit,
+                                multiplier=t.multiplier,
                             )
                 except Exception:
                     # 隔离该注：savepoint 已回滚该注的写，跳过 + 记录错误日志（含 traceback，
                     # 便于排查 DB 错根因——I2），继续比对同期的其他注（§10）。
                     logger.warning(
-                        "compare_skip_bad_ticket ticket_id=%s user_id=%s "
-                        "lottery=%s draw_result_id=%s",
-                        t.id, t.user_id, t.lottery_code, dr.id, exc_info=True,
+                        'compare_skip_bad_ticket ticket_id=%s user_id=%s lottery=%s draw_result_id=%s',
+                        t.id,
+                        t.user_id,
+                        t.lottery_code,
+                        dr.id,
+                        exc_info=True,
                     )
                     continue
             s.commit()
 
     def _upsert_comparison(
-        self, session: Session, *, user_id, draw_result_id, ticket_id, hit,
+        self,
+        session: Session,
+        *,
+        user_id,
+        draw_result_id,
+        ticket_id,
+        hit,
         multiplier: int = 1,
     ) -> None:
         """唯一约束 (draw_result_id, ticket_id)：存在则原地更新（更正重比），否则新建。
@@ -163,12 +194,14 @@ class CompareService:
           - 浮动档（一二等奖）amount=None → 保持 None，倍投 + 追加在 T5 回填时应用
             （金额未知，不在此乘，避免 None*multiplier 误算）。
         """
-        hits_json = json.dumps({"front_hit": hit.front_hit, "back_hit": hit.back_hit})
+        hits_json = json.dumps({'front_hit': hit.front_hit, 'back_hit': hit.back_hit})
         amount = hit.amount * multiplier if hit.amount is not None else None
-        existing = session.exec(select(Comparison).where(
-            Comparison.draw_result_id == draw_result_id,
-            Comparison.ticket_id == ticket_id,
-        )).first()
+        existing = session.exec(
+            select(Comparison).where(
+                Comparison.draw_result_id == draw_result_id,
+                Comparison.ticket_id == ticket_id,
+            )
+        ).first()
         if existing:
             was_win = existing.is_win
             existing.hits_json = hits_json
@@ -185,8 +218,12 @@ class CompareService:
             _sync_claim(session, existing, is_win_now=hit.is_win, was_win=was_win)
         else:
             cmp = Comparison(
-                user_id=user_id, draw_result_id=draw_result_id, ticket_id=ticket_id,
-                hits_json=hits_json, prize_tier=hit.tier, prize_amount=amount,
+                user_id=user_id,
+                draw_result_id=draw_result_id,
+                ticket_id=ticket_id,
+                hits_json=hits_json,
+                prize_tier=hit.tier,
+                prize_amount=amount,
                 is_win=hit.is_win,
             )
             session.add(cmp)
@@ -197,20 +234,25 @@ class CompareService:
 
 def _create_claim(session: Session, comparison_id: int) -> None:
     """中奖 → 写 prize_claim(pending)，兑奖截止 60 天（以官方为准，可配置）。"""
-    session.add(PrizeClaim(
-        comparison_id=comparison_id, status="pending",
-        deadline=_now() + timedelta(days=60),
-    ))
+    session.add(
+        PrizeClaim(
+            comparison_id=comparison_id,
+            status='pending',
+            deadline=_now() + timedelta(days=60),
+        )
+    )
 
 
 def _sync_claim(
-    session: Session, comparison: Comparison, *, is_win_now: bool, was_win: bool,
+    session: Session,
+    comparison: Comparison,
+    *,
+    is_win_now: bool,
+    was_win: bool,
 ) -> None:
     """更正重比后 prize_claims 同步：win→lose 删 claim；lose→win 建 claim；win→win 不变。"""
     if was_win and not is_win_now:
-        for c in session.exec(select(PrizeClaim).where(
-            PrizeClaim.comparison_id == comparison.id
-        )).all():
+        for c in session.exec(select(PrizeClaim).where(PrizeClaim.comparison_id == comparison.id)).all():
             session.delete(c)
     elif not was_win and is_win_now:
         _create_claim(session, comparison.id)

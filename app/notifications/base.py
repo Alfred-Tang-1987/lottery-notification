@@ -1,17 +1,19 @@
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 
-class ChannelStatus(str, Enum):
+class ChannelStatus(StrEnum):
     """单次推送的渠道投递结果（spec §8.2 多渠道降级 / §10 重试）。"""
-    SENT = "sent"
-    FAILED = "failed"
-    PENDING = "pending"
+
+    SENT = 'sent'
+    FAILED = 'failed'
+    PENDING = 'pending'
 
 
 @dataclass(frozen=True)
 class NotificationPayload:
     """推送内容（spec §8.3）。渠道插件只消费 title/body，其余字段供 Notifier 记日志/去重。"""
+
     title: str
     body: str
     user_id: int | None = None
@@ -36,6 +38,7 @@ class NotifierChannel:
     send 永远返回 SendResult，绝不向调用方抛异常——配置缺失/网络故障/业务码错误
     一律转 FAILED，由 Notifier 走降级/重试/告警（spec §10）。
     """
+
     type: str
 
     def send(self, payload: NotificationPayload, config: dict) -> SendResult:

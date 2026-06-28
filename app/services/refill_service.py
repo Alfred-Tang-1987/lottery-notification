@@ -1,9 +1,10 @@
 import logging
-from datetime import datetime, timedelta, timezone
-from typing import Callable
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 
-from sqlmodel import Session, select
 from sqlalchemy.engine import Engine
+from sqlmodel import Session, select
+
 from app.models import Comparison, DrawResult
 
 logger = logging.getLogger(__name__)
@@ -22,7 +23,7 @@ def _cutoff_naive_utc(days: int) -> datetime:
     用 datetime.now(UTC).replace(tzinfo=None) 而非弃用的 datetime.utcnow()。
     系统性根治（让 created_at 也 aware CST）需迁移规整旧行，超出 T5 范围，留后续。
     """
-    return datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)
+    return datetime.now(UTC).replace(tzinfo=None) - timedelta(days=days)
 
 
 class FloatRefillWorker:
@@ -56,12 +57,7 @@ class FloatRefillWorker:
             )
             # 预载 draw_result 映射（拿 lottery_code/draw_no 查官方奖金）
             dr_ids = {c.draw_result_id for c in pending}
-            drs = {
-                dr.id: dr
-                for dr in s.exec(
-                    select(DrawResult).where(DrawResult.id.in_(dr_ids))
-                ).all()
-            }
+            drs = {dr.id: dr for dr in s.exec(select(DrawResult).where(DrawResult.id.in_(dr_ids))).all()}
         # 每行回填独立：单行 lookup 抛异常（源 5xx/超时/解析错）只隔离该行，不阻断后续行
         # （silent-failure C1：旧版无 try/except，一行 raise 中断整批 → 后续行静默丢失）。
         for cmp in pending:
@@ -73,8 +69,12 @@ class FloatRefillWorker:
             except Exception:
                 # 源故障隔离到该行：记日志（含 traceback），不阻断其他行回填
                 logger.warning(
-                    "refill_skip_lookup_failed comparison_id=%s lottery=%s draw_no=%s tier=%s",
-                    cmp.id, dr.lottery_code, dr.draw_no, cmp.prize_tier, exc_info=True,
+                    'refill_skip_lookup_failed comparison_id=%s lottery=%s draw_no=%s tier=%s',
+                    cmp.id,
+                    dr.lottery_code,
+                    dr.draw_no,
+                    cmp.prize_tier,
+                    exc_info=True,
                 )
                 continue
             if amount is not None:
@@ -112,4 +112,3 @@ class FloatRefillWorker:
                 cmp.unresolved = True
             if expired:
                 s.commit()
-

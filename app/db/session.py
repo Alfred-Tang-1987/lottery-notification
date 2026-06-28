@@ -1,5 +1,6 @@
 """全局 engine 单例（惰性初始化）。"""
-from app.db.engine import build_engine, apply_sqlite_pragmas
+
+from app.db.engine import apply_sqlite_pragmas, build_engine
 
 _engine = None  # type: ignore
 
@@ -9,6 +10,7 @@ def get_engine():
     global _engine
     if _engine is None:
         from app.config import get_settings
+
         _engine = build_engine(get_settings().database_url)
         apply_sqlite_pragmas(_engine)
     return _engine

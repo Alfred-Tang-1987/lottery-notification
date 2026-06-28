@@ -1,23 +1,25 @@
 from datetime import datetime, timedelta
-from sqlmodel import Session, select
+
+from sqlmodel import Session
+
+from app.models import Comparison, DrawResult, Ticket, User
 from app.services.refill_service import FloatRefillWorker
-from app.models import User, Ticket, DrawResult, Comparison
 
 
-def _seed_float_win(engine, days_ago=0, tier=1, suffix=""):
+def _seed_float_win(engine, days_ago=0, tier=1, suffix=''):
     """seed 一条浮动奖中奖 comparison（prize_amount=None）。
     suffix 区分多次调用（username/draw_no 均有唯一约束）。"""
     with Session(engine) as s:
-        u = User(username=f"u{suffix}", password_hash="x", role="user", invite_code="C")
+        u = User(username=f'u{suffix}', password_hash='x', role='user', invite_code='C')
         s.add(u)
         s.commit()
         s.refresh(u)
         dr = DrawResult(
-            lottery_code="ssq",
-            draw_no=f"062{suffix}",
+            lottery_code='ssq',
+            draw_no=f'062{suffix}',
             draw_date=datetime.utcnow() - timedelta(days=days_ago),
             numbers_json='{"front":[1,2,3,4,5,6],"back":[7]}',
-            source="mxnzp",
+            source='mxnzp',
             verified=True,
             version=1,
         )
@@ -26,8 +28,8 @@ def _seed_float_win(engine, days_ago=0, tier=1, suffix=""):
         s.refresh(dr)
         t = Ticket(
             user_id=u.id,
-            lottery_code="ssq",
-            play_type="single",
+            lottery_code='ssq',
+            play_type='single',
             numbers_json='{"front":[1,2,3,4,5,6],"back":[7]}',
             multiplier=1,
             cost=200,
@@ -48,7 +50,7 @@ def _seed_float_win(engine, days_ago=0, tier=1, suffix=""):
         s.add(cmp)
         s.commit()
         s.refresh(cmp)
-        return cmp.id, f"062{suffix}"  # comparison_id, draw_no（供 lookup 路由用）
+        return cmp.id, f'062{suffix}'  # comparison_id, draw_no（供 lookup 路由用）
 
 
 def test_refill_updates_null_amount(db_engine):
@@ -68,9 +70,7 @@ def test_refill_skips_after_max_age_and_marks_unresolved(db_engine):
     cmp_id, _ = _seed_float_win(db_engine, days_ago=10)
     from unittest.mock import MagicMock
 
-    worker = FloatRefillWorker(
-        db_engine, amount_lookup=MagicMock(return_value=999), max_age_days=7
-    )
+    worker = FloatRefillWorker(db_engine, amount_lookup=MagicMock(return_value=999), max_age_days=7)
     assert worker.refill() == 0  # 超期不查
     with Session(db_engine) as s:
         cmp = s.get(Comparison, cmp_id)
@@ -88,9 +88,7 @@ def test_refill_explicit_tier_filter_only_float(db_engine):
         s.commit()
     from unittest.mock import MagicMock
 
-    worker = FloatRefillWorker(
-        db_engine, amount_lookup=MagicMock(return_value=999), max_age_days=7
-    )
+    worker = FloatRefillWorker(db_engine, amount_lookup=MagicMock(return_value=999), max_age_days=7)
     assert worker.refill() == 0  # tier 3 不是浮动档，不应回填
     with Session(db_engine) as s:
         cmp = s.get(Comparison, cmp_id)
@@ -112,28 +110,28 @@ def test_refill_lookup_raises_isolates_row_and_still_marks_expired(db_engine):
     expired 标记块不可达 → C 永远 unresolved=False、每轮重查、永不 resolve（T5 的
     terminal-state 契约被破坏，每日调度复利恶化）。
     """
-    a_id, a_no = _seed_float_win(db_engine, days_ago=1, suffix="A")  # cutoff 内，触发 raise
-    b_id, b_no = _seed_float_win(db_engine, days_ago=1, suffix="B")  # cutoff 内，应回填
-    c_id, _ = _seed_float_win(db_engine, days_ago=10, suffix="C")  # 超期，应标 unresolved
+    a_id, a_no = _seed_float_win(db_engine, days_ago=1, suffix='A')  # cutoff 内，触发 raise
+    b_id, _ = _seed_float_win(db_engine, days_ago=1, suffix='B')  # cutoff 内，应回填
+    c_id, _ = _seed_float_win(db_engine, days_ago=10, suffix='C')  # 超期，应标 unresolved
 
     # A 的 amount_lookup 抛异常；B 正常（C 超期不会到 lookup）
     def lookup(lottery_code, draw_no, tier):
         if draw_no == a_no:  # A 触发源故障
-            raise RuntimeError("source 5xx for A")
+            raise RuntimeError('source 5xx for A')
         return 5_000_000
 
     worker = FloatRefillWorker(db_engine, amount_lookup=lookup, max_age_days=7)
     n = worker.refill()  # 不得抛异常
-    assert n == 1, f"仅 B 回填（A 被隔离），实际 {n}"
+    assert n == 1, f'仅 B 回填（A 被隔离），实际 {n}'
     with Session(db_engine) as s:
         a = s.get(Comparison, a_id)
         b = s.get(Comparison, b_id)
         c = s.get(Comparison, c_id)
-        assert a.prize_amount is None, "A 源故障被隔离，不回填"
-        assert b.prize_amount == 5_000_000, "B 不受 A 故障影响，照常回填"
-        assert c.prize_amount is None, "C 超期不查"
-        assert c.unresolved is True, "C 超期须标 unresolved（expired 块即使 A raise 也须执行）"
-        assert a.unresolved is not True, "A cutoff 内未超期，不标 unresolved（下轮重试）"
+        assert a.prize_amount is None, 'A 源故障被隔离，不回填'
+        assert b.prize_amount == 5_000_000, 'B 不受 A 故障影响，照常回填'
+        assert c.prize_amount is None, 'C 超期不查'
+        assert c.unresolved is True, 'C 超期须标 unresolved（expired 块即使 A raise 也须执行）'
+        assert a.unresolved is not True, 'A cutoff 内未超期，不标 unresolved（下轮重试）'
 
 
 def test_refill_lookup_returns_none_is_patient_retry(db_engine):
@@ -142,9 +140,7 @@ def test_refill_lookup_returns_none_is_patient_retry(db_engine):
     cmp_id, _ = _seed_float_win(db_engine, days_ago=1)
     from unittest.mock import MagicMock
 
-    worker = FloatRefillWorker(
-        db_engine, amount_lookup=MagicMock(return_value=None), max_age_days=7
-    )
+    worker = FloatRefillWorker(db_engine, amount_lookup=MagicMock(return_value=None), max_age_days=7)
     assert worker.refill() == 0
     with Session(db_engine) as s:
         cmp = s.get(Comparison, cmp_id)
@@ -169,42 +165,61 @@ def test_refill_boundary_not_misclassified_expired_by_tz(db_engine):
     比较把 aware-CST 串排在 naive-UTC 串之后 → created_at < cutoff 误成立 → 该行被判超期、
     标 unresolved、永久排除 → 浮奖金额永远 null。8 小时窗口（CST=UTC+8）内的边界行全中招。
     """
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     # created_at 用 naive UTC（忠实复刻模型 default_factory=datetime.utcnow 的真实存储形态）。
     # 6d20h 前 = 窗口内（< 7d），且在 tz bug 8h 误判区内（7d-8h=6d16h < 6d20h < 7d）。
     created_at_naive_utc = datetime.utcnow() - timedelta(days=6, hours=20)
     with Session(db_engine) as s:
-        u = User(username="utz", password_hash="x", role="user", invite_code="C")
-        s.add(u); s.commit(); s.refresh(u)
+        u = User(username='utz', password_hash='x', role='user', invite_code='C')
+        s.add(u)
+        s.commit()
+        s.refresh(u)
         dr = DrawResult(
-            lottery_code="ssq", draw_no="062tz",
-            draw_date=datetime.utcnow(), numbers_json='{"front":[1,2,3,4,5,6],"back":[7]}',
-            source="mxnzp", verified=True, version=1,
+            lottery_code='ssq',
+            draw_no='062tz',
+            draw_date=datetime.utcnow(),
+            numbers_json='{"front":[1,2,3,4,5,6],"back":[7]}',
+            source='mxnzp',
+            verified=True,
+            version=1,
         )
-        s.add(dr); s.commit(); s.refresh(dr)
+        s.add(dr)
+        s.commit()
+        s.refresh(dr)
         t = Ticket(
-            user_id=u.id, lottery_code="ssq", play_type="single",
-            numbers_json='{"front":[1,2,3,4,5,6],"back":[7]}', multiplier=1, cost=200,
+            user_id=u.id,
+            lottery_code='ssq',
+            play_type='single',
+            numbers_json='{"front":[1,2,3,4,5,6],"back":[7]}',
+            multiplier=1,
+            cost=200,
         )
-        s.add(t); s.commit(); s.refresh(t)
+        s.add(t)
+        s.commit()
+        s.refresh(t)
         cmp = Comparison(
-            user_id=u.id, draw_result_id=dr.id, ticket_id=t.id,
-            hits_json='{}', prize_tier=1, prize_amount=None, is_win=True,
+            user_id=u.id,
+            draw_result_id=dr.id,
+            ticket_id=t.id,
+            hits_json='{}',
+            prize_tier=1,
+            prize_amount=None,
+            is_win=True,
             created_at=created_at_naive_utc,  # 恰好 7 天前，naive UTC（模型真实形态）
         )
-        s.add(cmp); s.commit(); s.refresh(cmp)
+        s.add(cmp)
+        s.commit()
+        s.refresh(cmp)
         cmp_id = cmp.id
 
     from unittest.mock import MagicMock
-    worker = FloatRefillWorker(
-        db_engine, amount_lookup=MagicMock(return_value=5_000_000), max_age_days=7
-    )
+
+    worker = FloatRefillWorker(db_engine, amount_lookup=MagicMock(return_value=5_000_000), max_age_days=7)
     n = worker.refill()
     with Session(db_engine) as s:
         cmp = s.get(Comparison, cmp_id)
         # 恰好 7 天 = 窗口边界内（>= cutoff）→ 应回填，不标 unresolved
-        assert n == 1, f"恰好 7 天的行应 refillable（窗口内），实际回填 {n}"
-        assert cmp.prize_amount == 5_000_000, "边界行应被回填"
-        assert cmp.unresolved is not True, (
-            "边界行不得因 tz 字符串比较被误判超期标 unresolved → 永久排除回填")
+        assert n == 1, f'恰好 7 天的行应 refillable（窗口内），实际回填 {n}'
+        assert cmp.prize_amount == 5_000_000, '边界行应被回填'
+        assert cmp.unresolved is not True, '边界行不得因 tz 字符串比较被误判超期标 unresolved → 永久排除回填'

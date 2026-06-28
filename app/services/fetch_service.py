@@ -11,6 +11,7 @@
   双源都无 → not_drawn，不存
   双源都故障 → 告警不存（spec §10）
 """
+
 import json
 import logging
 import random
@@ -19,8 +20,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from app.adapters.base import DrawNumbers, DrawSource
@@ -29,12 +30,13 @@ from app.seeds import SPECS
 
 logger = logging.getLogger(__name__)
 
-_CST = ZoneInfo("Asia/Shanghai")  # spec：全程 Asia/Shanghai
+_CST = ZoneInfo('Asia/Shanghai')  # spec：全程 Asia/Shanghai
 
 
 @dataclass
 class FetchResult:
     """单次 fetch_and_store 的结果（供调度/告警/健康面板消费）。"""
+
     stored: bool
     verified: bool = False
     single_source: bool = False
@@ -63,7 +65,7 @@ class FetchService:
             # max_attempts<=0 使 range() 为空 → _fetch_with_backoff 隐式返回 None，
             # 被 _try_fetch 归类为"未开奖"，把"配置错误"误报成"该期未开奖"（错误方向）。
             # spec §10 准确性优先：配置错误须显式暴露，不得静默伪装成 not_drawn。
-            raise ValueError("max_attempts must be >= 1")
+            raise ValueError('max_attempts must be >= 1')
         self._primary = primary
         self._backup = backup
         self._engine = engine
@@ -86,13 +88,16 @@ class FetchService:
                 # 源故障不得静默吞没：结构化日志供告警/排障（silent-failure-hunter）。
                 # 重试耗尽后仍上抛，由 _try_fetch 归类为 ok=False（源故障态）。
                 logger.warning(
-                    "source_fetch_failed source=%s lottery=%s attempt=%d/%d error=%s",
-                    getattr(source, "name", "unknown"), lottery_code,
-                    attempt + 1, self._max_attempts, exc,
+                    'source_fetch_failed source=%s lottery=%s attempt=%d/%d error=%s',
+                    getattr(source, 'name', 'unknown'),
+                    lottery_code,
+                    attempt + 1,
+                    self._max_attempts,
+                    exc,
                 )
                 if attempt == self._max_attempts - 1:
                     raise
-                self._sleep(self._backoff ** attempt + random.random())
+                self._sleep(self._backoff**attempt + random.random())
 
     def _try_fetch(self, source: DrawSource, lottery_code: str) -> tuple[DrawNumbers | None, bool]:
         """返回 (numbers, ok)。ok=False=源故障（异常被吞）；ok=True+None=未开奖。"""
@@ -108,7 +113,7 @@ class FetchService:
 
         # 双源都故障 → 告警不存（spec §10）
         if not p_ok and not b_ok:
-            return FetchResult(stored=False, error="all_sources_failed")
+            return FetchResult(stored=False, error='all_sources_failed')
 
         # 仅取有效结果（故障源的 None 不算"未开奖"）
         p = primary if p_ok else None
@@ -121,8 +126,7 @@ class FetchService:
         # 双源都有 → 交叉校验
         if p is not None and b is not None:
             if _numbers_match(p, b):
-                return self._store(p, verified=True, single_source=False,
-                                   source_name=self._primary.name)
+                return self._store(p, verified=True, single_source=False, source_name=self._primary.name)
             return self._mismatch(lottery_code, p, b)
 
         # 恰一源有效：grace 后重抓缺失源（spec §7.2 部分源 grace window）。
@@ -136,9 +140,11 @@ class FetchService:
             # 否则主源故障靠备源恢复入库的行会错标 source=主源，丢失 ops 追溯来源。
             present_source_name = self._primary.name if p is not None else self._backup.name
             verdict = self._grace_refetch(
-                lottery_code, present_dn=present_dn,
+                lottery_code,
+                present_dn=present_dn,
                 missing_source=self._primary if p is None else self._backup,
-                present_source_name=present_source_name)
+                present_source_name=present_source_name,
+            )
             if verdict is not None:
                 return verdict  # 双源校验成功入库 / mismatch 拒绝
 
@@ -154,13 +160,21 @@ class FetchService:
         查"为何 062 期没入库"无迹可寻（与源故障同属不得静默吞没，silent-failure-hunter）。
         """
         logger.warning(
-            "cross_verify_mismatch lottery=%s draw_no=%s primary=%s/%s backup=%s/%s",
-            lottery_code, a.draw_no, a.front, a.back, b.front, b.back,
+            'cross_verify_mismatch lottery=%s draw_no=%s primary=%s/%s backup=%s/%s',
+            lottery_code,
+            a.draw_no,
+            a.front,
+            a.back,
+            b.front,
+            b.back,
         )
-        return FetchResult(stored=False, verified=False, error="cross_verify_mismatch")
+        return FetchResult(stored=False, verified=False, error='cross_verify_mismatch')
 
     def _grace_refetch(
-        self, lottery_code: str, present_dn: DrawNumbers, missing_source: DrawSource,
+        self,
+        lottery_code: str,
+        present_dn: DrawNumbers,
+        missing_source: DrawSource,
         present_source_name: str,
     ) -> FetchResult | None:
         """grace 内重抓缺失源并双源校验。返回 FetchResult=已决（入库/拒绝）；None=重抓仍无/故障。"""
@@ -168,13 +182,11 @@ class FetchService:
         if not m2_ok or m2 is None:
             return None  # 仍无/故障 → 回主流程单源兜底
         if _numbers_match(m2, present_dn):
-            return self._store(present_dn, verified=True, single_source=False,
-                               source_name=present_source_name)
+            return self._store(present_dn, verified=True, single_source=False, source_name=present_source_name)
         return self._mismatch(lottery_code, m2, present_dn)
 
     # ------------------------------------------------------------------ store
-    def _store(self, dn: DrawNumbers, *, verified: bool, single_source: bool,
-               source_name: str) -> FetchResult:
+    def _store(self, dn: DrawNumbers, *, verified: bool, single_source: bool, source_name: str) -> FetchResult:
         """幂等入库：唯一约束 (lottery_code, draw_no) 兜底。
 
         - 新行：与 pending_comparisons outbox（verified 时，spec §7.1 line271）同事务一次
@@ -187,19 +199,23 @@ class FetchService:
           号码一致时不重复写 outbox（比对已跑过）。
         - 并发：唯一约束并发插入触发 IntegrityError → 重读既有行复用升级分支（不抛错）。
         """
-        incoming_json = json.dumps({
-            "front": list(dn.front),
-            "back": list(dn.back) if dn.back else None,
-        })
+        incoming_json = json.dumps(
+            {
+                'front': list(dn.front),
+                'back': list(dn.back) if dn.back else None,
+            }
+        )
         with Session(self._engine) as s:
-            existing = s.exec(select(DrawResult).where(
-                DrawResult.lottery_code == dn.lottery_code,
-                DrawResult.draw_no == dn.draw_no,
-            )).first()
+            existing = s.exec(
+                select(DrawResult).where(
+                    DrawResult.lottery_code == dn.lottery_code,
+                    DrawResult.draw_no == dn.draw_no,
+                )
+            ).first()
             if existing:
-                return self._upgrade_existing(s, existing, incoming_json,
-                                              verified=verified, single_source=single_source,
-                                              source_name=source_name)
+                return self._upgrade_existing(
+                    s, existing, incoming_json, verified=verified, single_source=single_source, source_name=source_name
+                )
             try:
                 dr = DrawResult(
                     lottery_code=dn.lottery_code,
@@ -223,20 +239,29 @@ class FetchService:
             except IntegrityError:
                 # 并发：另一进程已插入同 (lottery_code, draw_no) → 回滚并重读复用升级分支
                 s.rollback()
-                existing = s.exec(select(DrawResult).where(
-                    DrawResult.lottery_code == dn.lottery_code,
-                    DrawResult.draw_no == dn.draw_no,
-                )).first()
+                existing = s.exec(
+                    select(DrawResult).where(
+                        DrawResult.lottery_code == dn.lottery_code,
+                        DrawResult.draw_no == dn.draw_no,
+                    )
+                ).first()
                 if existing is None:  # 理论不可达
                     raise
-                return self._upgrade_existing(s, existing, incoming_json,
-                                              verified=verified, single_source=single_source,
-                                              source_name=source_name)
-            return FetchResult(stored=True, verified=verified, single_source=single_source,
-                               draw_result_id=dr.id)
+                return self._upgrade_existing(
+                    s, existing, incoming_json, verified=verified, single_source=single_source, source_name=source_name
+                )
+            return FetchResult(stored=True, verified=verified, single_source=single_source, draw_result_id=dr.id)
 
-    def _upgrade_existing(self, session: Session, existing: DrawResult, incoming_json: str, *,
-                          verified: bool, single_source: bool, source_name: str) -> FetchResult:
+    def _upgrade_existing(
+        self,
+        session: Session,
+        existing: DrawResult,
+        incoming_json: str,
+        *,
+        verified: bool,
+        single_source: bool,
+        source_name: str,
+    ) -> FetchResult:
         """既有行升级：仅当 incoming 号码与既有号码一致时升级 flag，不 bless 旧号码。"""
         upgraded = False
         if existing.numbers_json == incoming_json:
@@ -254,7 +279,8 @@ class FetchService:
             session.commit()
             session.refresh(existing)
         return FetchResult(
-            stored=True, verified=existing.verified,
+            stored=True,
+            verified=existing.verified,
             single_source=existing.single_source,
             draw_result_id=existing.id,
         )
@@ -267,7 +293,7 @@ def _number_style(code: str) -> str:
     顺序不同的双源号码 → verified=true 入错号。默认 positional（tuple ==，更严格）更安全——
     顺序不同即拒，宁可误拒也不放过不一致。彩种应在 seeds 注册后才进 adapters，此处兜底。
     """
-    return next((s["number_style"] for s in SPECS if s["code"] == code), "positional")
+    return next((s['number_style'] for s in SPECS if s['code'] == code), 'positional')
 
 
 def _numbers_match(a: DrawNumbers, b: DrawNumbers) -> bool:
@@ -284,7 +310,7 @@ def _numbers_match(a: DrawNumbers, b: DrawNumbers) -> bool:
       前/后区独立。
     """
     style = _number_style(a.lottery_code)
-    if style in ("positional", "hybrid"):
+    if style in ('positional', 'hybrid'):
         if a.front != b.front:  # 按位、有序、允许跨位重复 → tuple ==，不可 sorted
             return False
         if (a.back is None) != (b.back is None):
@@ -296,6 +322,4 @@ def _numbers_match(a: DrawNumbers, b: DrawNumbers) -> bool:
     if (a.back is None) != (b.back is None):
         return False
     a_back, b_back = a.back, b.back
-    if a_back is not None and b_back is not None and sorted(a_back) != sorted(b_back):
-        return False
-    return True
+    return not (a_back is not None and b_back is not None and sorted(a_back) != sorted(b_back))

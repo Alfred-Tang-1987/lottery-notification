@@ -6,8 +6,9 @@ from typing import Protocol
 @dataclass(frozen=True)
 class DrawNumbers:
     """归一化开奖号码（adapter 输出）。"""
+
     lottery_code: str
-    draw_no: str        # 归一化（去年份，如 '062'）
+    draw_no: str  # 归一化（去年份，如 '062'）
     draw_date: date
     front: tuple[int, ...]
     back: tuple[int, ...] | None
@@ -26,13 +27,14 @@ def normalize_draw_no(raw: str) -> str:
     而非默默猜一个可能撞车的值（如纯年份回退成 '000' 会让不同期号归一后相同）。
     """
     s = raw.strip()
-    if len(s) > 4 and s[:2] in ("19", "20"):
-        s = s[4:]               # 去 4 位年份前缀：'2026062' -> '062'
-    return s.zfill(3)            # '062' -> '062'；'62' -> '062'
+    if len(s) > 4 and s[:2] in ('19', '20'):
+        s = s[4:]  # 去 4 位年份前缀：'2026062' -> '062'
+    return s.zfill(3)  # '062' -> '062'；'62' -> '062'
 
 
 class DrawSource(Protocol):
     name: str
+
     def fetch(self, lottery_code: str) -> DrawNumbers | None:
         """返回归一化号码；None = 该期未开奖（HTTP 200 但无数据）。抛异常 = 网络/服务错误。"""
         ...

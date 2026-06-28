@@ -1,9 +1,10 @@
 from sqlmodel import Field
+
 from app.models._base import TimestampMixin
 
 
 class LotteryType(TimestampMixin, table=True):
-    __tablename__ = "lottery_types"
+    __tablename__ = 'lottery_types'
     code: str = Field(primary_key=True, max_length=8)  # ssq/dlt/...
     name: str = Field(max_length=16)
     category: str = Field(max_length=8)  # welfare | sport
