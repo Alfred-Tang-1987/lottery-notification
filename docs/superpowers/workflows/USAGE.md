@@ -166,7 +166,8 @@ review 链 max-rounds halt 后，task 留在「未 commit」状态（implementor
 推荐流程：
 
 1. 看 `runs/<ts>/manifest.json` 的 `per_task.<T>.blocked_info`（`reason: review max rounds` +
-   spec/qual/hunt 的 issues）定位阻塞缺陷。
+   spec/qual/hunt 的 issues）定位阻塞缺陷；或直接看 `runs/<ts>/blocked.md`——含 `likely_source`
+   + Working Tree 段（git status 真实输出 + 接手指引），一眼看清哪些文件被改、是否脏。
 2. 手动修代码（主循环 Claude 或你）→ 跑 test + lint 确认绿 → `git commit -m "feat(plan-X/T-Y): ..."`
    （遵守 convention）。
 3. （可选）派 spec-review / quality-review subagent 复核该 commit。
@@ -191,13 +192,15 @@ review 链 max-rounds halt 后，task 留在「未 commit」状态（implementor
       "review_rounds": 1,
       "files_touched_per_round": [...],
       "commit_sha": "abc1234",
-      "blocked_info": { "reason": "...", "quota_exhausted": false, "last_error": "...", "suggested_fix": "..." }
+      "blocked_info": { "reason": "...", "quota_exhausted": false, "last_error": "...", "suggested_fix": "...", "likely_source": "implementor changes | gate restored | bootstrap frontmatter | unknown" }
     }
   },
   "result": "done" | "halted"
 }
 ```
 崩溃/halt 后看它定位问题（非翻 transcript）。
+
+`runs/<run-ts>/blocked.md`（仅 mode=halted 时 finalReport 写）：人读摘要，含 which task / category / last_error / suggested_fix / **likely_source**（工作树脏状态来源语义：`implementor changes` / `gate restored` / `bootstrap frontmatter` / `unknown`）+ **Working Tree** 段——finalReport halt 时跑 `git status --porcelain` + `git diff --stat` 的 ground truth 输出（dirty 时附文件列表 + diff stat + 接手指引；clean 时标注，如 gate halt 已 restore HEAD）。`likely_source` 是基于 reason 的确定性映射（非 dirty 推断），与 git status ground truth 并存：用户既有真实状态，也有快速定位线索。git 探查 best-effort，失败不阻塞 manifest 写入。
 
 ## 9. 常见场景
 
