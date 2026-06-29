@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目状态
 
-**Plan 01（基础设施）+ 02（领域层）+ 03（仓储/核心闭环 T1–T7）+ 04（推送 T1–T3）已完成，215 tests green。** Plan 04 剩 T4+，Plan 05–06 待实现，plan 在 `docs/superpowers/plans/`。改代码前先读 spec + 对应 plan；实现通过 **workflow orchestrator**（见下）自动跑 plan。
+**Plan 01（基础设施）+ 02（领域层）+ 03（仓储/核心闭环 T1–T7）+ 04（调度/推送 T1–T7）已完成，237 tests green。** Plan 05（认证/用户/管理）+ 06（Web UI/部署）待实现，plan 在 `docs/superpowers/plans/`。改代码前先读 spec + 对应 plan；实现通过 **workflow orchestrator**（见下）自动跑 plan。
 
 **Workflow orchestrator 修复**（2026-06-25）：修复了 10 个 CRITICAL/IMPORTANT bug——qualityReviewer 结构化 findings 被 `.join()` 序列化为 `[object Object]`、hunter `silent_failures` 完全丢弃、fix-round implementor 状态被忽略等。修复后的 review chain 基于 `collectReviewFindings` + `formatFindings` 传播完整的结构化反馈。
 
