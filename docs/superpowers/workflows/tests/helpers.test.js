@@ -114,6 +114,25 @@ test('reviewHaltReason: 仅 model_unavailable → model_unavailable', () => {
   assert.equal(reviewHaltReason(ok, ok, { status: 'model_unavailable' }), 'model_unavailable')
 })
 
+// —— review_empty（thinking-only 空响应：agent() 静默空返回，无异常但无有效 review status）——
+// 与 agent_error 区分：agent_error 是抛异常（safeAgent catch 构造）；review_empty 是空返回（瞬态模型 hiccup）。
+// 守卫：status 缺失/为空/非法 → halt 'review_empty'，而非漏过 → 不静默继续跑空修复循环。
+test('reviewHaltReason: 空/null/undefined review → review_empty（防 thinking-only 空响应静默哑火）', () => {
+  assert.equal(reviewHaltReason(ok, ok, {}), 'review_empty')             // status 缺失
+  assert.equal(reviewHaltReason(ok, ok, null), 'review_empty')           // 整个 review 为 null
+  assert.equal(reviewHaltReason(ok, ok, undefined), 'review_empty')      // 整个 review 为 undefined
+  assert.equal(reviewHaltReason(ok, ok, { status: '' }), 'review_empty') // status 空串
+  assert.equal(reviewHaltReason(ok, ok, { status: 'weird' }), 'review_empty') // status 非法
+  assert.equal(reviewHaltReason({}, {}, {}), 'review_empty')             // 三个全空
+})
+
+test('reviewHaltReason: 优先级 agent_error > model_unavailable > review_empty', () => {
+  // agent_error 优先于 review_empty
+  assert.equal(reviewHaltReason({ status: 'agent_error' }, ok, {}), 'agent_error')
+  // model_unavailable 优先于 review_empty
+  assert.equal(reviewHaltReason({ status: 'model_unavailable' }, ok, null), 'model_unavailable')
+})
+
 // —— haltLikelySource（halt reason → 工作树脏状态来源语义）——
 test('haltLikelySource: implementor 路径 → implementor changes', () => {
   assert.equal(haltLikelySource('review max rounds'), 'implementor changes')

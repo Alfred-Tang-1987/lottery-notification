@@ -170,7 +170,7 @@ orchestrator 是 JS sandbox：**无 fs、无 subprocess、无 Date.now/Math.rand
 | agent() 上限 min(16,cpu-2) | serial task → 同时仅 1 task in flight；每 task 最多 implementor + 3 review 并行 + simplify + commit ≈ 6 agent，远低于上限 |
 | 无持久化 | 状态靠 git log + run manifest（subagent 写盘，§6/§9） |
 
-**代码分层（实现约束）**：纯函数/SCHEMAS/PROMPTS 的真源是 `docs/superpowers/workflows/lib.js`（ES module，`node --test` 单测）；`run-plans.js` inline 复制它们（runtime 禁模块 import），`sync.test.js` 守护字节一致。**纯决策**（如 `collectReviewFindings`/`classifyThrown`/`reviewHaltReason`，不调 `agent()`）进 lib.js 可测；**runtime 胶水**（`safeAgent`/`dispatchImpl`，调 `agent()`）只能留 run-plans.js（lib.js 是纯模块不能调 runtime 全局）。`agent_error` 是 orchestrator-internal sentinel（catch 块构造、绕过 schema 校验），不入 review schema enum。
+**代码分层（实现约束）**：纯函数/SCHEMAS/PROMPTS 的真源是 `docs/superpowers/workflows/lib.js`（ES module，`node --test` 单测）；`run-plans.js` inline 复制它们（runtime 禁模块 import），`sync.test.js` 守护字节一致。**纯决策**（如 `collectReviewFindings`/`classifyThrown`/`reviewHaltReason`，不调 `agent()`）进 lib.js 可测；**runtime 胶水**（`safeAgent`/`dispatchImpl`，调 `agent()`）只能留 run-plans.js（lib.js 是纯模块不能调 runtime 全局）。`agent_error`（agent() 抛非 quota 异常，catch 块构造）/ `review_empty`（agent() 静默空返回，如 thinking-only 空响应——模型在 thinking 块里"以为"调了 StructuredOutput 实际无 tool_use 块；瞬态模型 hiccup）是 orchestrator-internal sentinel，绕过 schema 校验，不入 review schema enum。`reviewHaltReason` 扫三类 review 的 status：`agent_error > model_unavailable > review_empty`，全合法非 sentinel → null；空响应守卫防 hunter/quality/spec 哑火（旧逻辑漏过 null status → 不 halt → implementor 跑空修复 → max rounds 误 halt）。
 
 ### 4.4 orchestrator 状态管理
 
@@ -240,6 +240,8 @@ if (state.files_touched_per_round.length >= 2) {
 │   round N: spec ‖ quality ‖ hunter 并行（同 snapshot）    │
 │     全 ✅ → break                                        │
 │     任一 ❌ → implementor 修复 → round N+1（针对新 tree） │
+│     任一 review 异常/空响应 → halt（reviewHaltReason:    │
+│       agent_error > model_unavailable > review_empty）   │
 │   max 3 耗尽仍有 ❌ → BLOCKED                            │
 └──────────────────────┬──────────────────────────────────┘
                        ▼
@@ -467,7 +469,7 @@ return {result: 'done', state}
 **runTask(plan, task) 控制流（要点）**：
 
 1. **implementor**（`model = task.model || 'sonnet'`）；`status='blocked'` → §2.3 升级链（sonnet→opus→halt，带上限）
-2. **review rounds（max 3）**：每轮 `spec ‖ quality ‖ hunter` 并行（同 tree snapshot）；收集各 `diagnostics.files_touched` → 振荡检测（§13g）；全绿 break，任一 ❌ → implementor 修复（`collectReviewFindings` 归一化三类 review 的不同 diagnostics key + `formatFindings` 序列化为可读反馈；`fetchedContext` 独立占位符传参考上下文，不混入 fixIssues）→ 下一轮；max 3 耗尽 → halt
+2. **review rounds（max 3）**：每轮 `spec ‖ quality ‖ hunter` 并行（同 tree snapshot）；收集各 `diagnostics.files_touched` → 振荡检测（§13g）；全绿 break，任一 ❌ → implementor 修复（`collectReviewFindings` 归一化三类 review 的不同 diagnostics key + `formatFindings` 序列化为可读反馈；`fetchedContext` 独立占位符传参考上下文，不混入 fixIssues）→ 下一轮；max 3 耗尽 → halt。**review 异常/空响应 → halt**：`reviewHaltReason` 扫 status，sentinel 优先级 `agent_error > model_unavailable > review_empty`——`review_empty` 守 status 缺失/为空/非法（含 thinking-only 空响应：agent() 静默返回 null/空对象，无异常），防 hunter/quality/spec 哑火（旧逻辑漏过 → 不 halt → implementor 跑空修复 → max rounds 误 halt）。**schema items 约束**：quality/hunter 的 `issues`/`silent_failures` 元素强制对象 `{title, fix}`（specReview 保持字符串模板走 `reviewSchema`，qualityReviewer 拆出 `qualityReviewSchema`）——防 LLM 返回纯字符串/缺 fix/用错字段名 → `collectReviewFindings` 的 `it.title||String(it)` 兜底为 `[object Object]`。
 3. **simplify（max 1，§5.2）**：无条件触发一轮 review（不信任自报 `changed`）；该轮 ❌ → 标记 `simplify_failed`，**回退委托 commit subagent**（orchestrator 无 fs，commit subagent 在 commit 前按 simplify 的 `files_changed` 先 `git checkout` 回退，再走正常 commit）；simplify 视为 no-op，用 simplify 前的 review 全绿状态继续
 4. **commit**：status check → test → `git commit -m "feat(plan-X/T-Y): ..."`；返回 `commit_sha` → `state.task_status[task.id]='committed'`
 

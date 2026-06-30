@@ -41,6 +41,21 @@ test('run-plans.js SCHEMAS mirror key changes', () => {
   assert.match(runSrc, /required:\s*\['tests_exit_code',\s*'pytest_summary',\s*'lint_results'\]/)
 })
 
+test('run-plans.js inlines review_empty 空响应守卫 + quality/hunter items 约束', () => {
+  // reviewHaltReason 守卫：空响应 → review_empty sentinel（防 thinking-only 静默哑火）
+  assert.match(runSrc, /REVIEW_VALID_STATUSES/, 'run-plans.js 须 inline REVIEW_VALID_STATUSES 集合')
+  assert.match(runSrc, /'review_empty'/, "run-plans.js 须 inline review_empty sentinel")
+  // qualityReviewer 拆出独立 schema（issues items 强制 {title,fix}）
+  assert.match(runSrc, /function qualityReviewSchema/, 'run-plans.js 须 inline qualityReviewSchema')
+  // hunter silent_failures items 约束
+  assert.match(runSrc, /silent_failures:\s*\{\s*type:\s*'array',\s*items:/, 'hunter silent_failures 须有 items 约束')
+  // 同步也要校验 lib.js 真源一致
+  assert.match(libSrc, /REVIEW_VALID_STATUSES/)
+  assert.match(libSrc, /'review_empty'/)
+  assert.match(libSrc, /function qualityReviewSchema/)
+  assert.match(libSrc, /silent_failures:\s*\{\s*type:\s*'array',\s*items:/)
+})
+
 test('run-plans.js orchestrator wires new placeholders + gate lint loop', () => {
   assert.match(runSrc, /referencePaths: formatReferencePaths/)
   assert.match(runSrc, /languageChecklist: languageChecklist\(cfg\.language\)/)

@@ -143,7 +143,7 @@ export function haltLikelySource(reason) {
   const r = String(reason || '')
   if (r === 'plan gate failed' || /gate/.test(r)) return 'gate restored'        // gate 已 checkout 回原 HEAD
   if (/^bootstrap /.test(r)) return 'bootstrap frontmatter'                      // bootstrap 可能写了 plan frontmatter
-  if (/max rounds|OSCILLATING|fix-round|commit failed|simplify reported|BLOCKED|after (context-fetch|retry)|agent_error|model_unavailable/.test(r)) return 'implementor changes'
+  if (/max rounds|OSCILLATING|fix-round|commit failed|simplify reported|BLOCKED|after (context-fetch|retry)|agent_error|model_unavailable|review_empty/.test(r)) return 'implementor changes'
   return 'unknown'
 }
 
@@ -270,10 +270,14 @@ export const SCHEMAS = {
     },
   },
   specReview: reviewSchema(),
-  qualityReviewer: reviewSchema(),
+  qualityReviewer: qualityReviewSchema(),
   hunter: { type: 'object', required: ['status'], additionalProperties: true,
     properties: { status: { type: 'string', enum: ['ok', 'failed', 'model_unavailable'] },
-      diagnostics: { type: 'object', properties: { files_touched: { type: 'array' }, silent_failures: { type: 'array' } } },
+      diagnostics: { type: 'object', properties: { files_touched: { type: 'array' },
+        silent_failures: { type: 'array', items: {
+          type: 'object', required: ['title', 'fix'],
+          properties: { title: { type: 'string' }, severity: { type: 'string', enum: ['critical', 'important', 'minor'] }, file: { type: 'string' }, line: { type: 'integer' }, fix: { type: 'string' } },
+        } } } },
       summary: { type: 'string' } } },
   simplify: { type: 'object', required: ['evidence'], additionalProperties: true,
     properties: { evidence: { type: 'object', required: ['changed', 'files_changed'],
@@ -301,6 +305,21 @@ function reviewSchema() {
     properties: {
       status: { type: 'string', enum: ['ok', 'failed', 'model_unavailable'] },
       diagnostics: { type: 'object', properties: { files_touched: { type: 'array' }, issues: { type: 'array' } } },
+      summary: { type: 'string' },
+    } }
+}
+
+// qualityReviewer 单独 schema：issues 元素强制对象 {title, fix, severity, file}（specReview 用字符串模板故走 reviewSchema）。
+// items 约束防 LLM 返回纯字符串/缺 fix/用错字段名 → collectReviewFindings 的 it.title||String(it) 兜底为 [object Object]。
+function qualityReviewSchema() {
+  return { type: 'object', required: ['status'], additionalProperties: true,
+    properties: {
+      status: { type: 'string', enum: ['ok', 'failed', 'model_unavailable'] },
+      diagnostics: { type: 'object', properties: { files_touched: { type: 'array' },
+        issues: { type: 'array', items: {
+          type: 'object', required: ['title', 'fix'],
+          properties: { severity: { type: 'string', enum: ['Critical', 'Important', 'Minor'] }, title: { type: 'string' }, file: { type: 'string' }, fix: { type: 'string' } },
+        } } } },
       summary: { type: 'string' },
     } }
 }
@@ -397,6 +416,7 @@ This is a STATIC READ-ONLY review. You may use 'git diff', 'git status', 'find',
 Categorize issues by ACTUAL severity — not everything is Critical. Acknowledge what was done well (strengths) before listing issues; accurate praise helps the implementer trust the rest.
 
 Return {status (ok|failed), diagnostics:{files_touched:[...], issues:[{severity: Critical|Important|Minor, title, file, fix}]}, summary}.
+issues 元素 MUST 是 object 且必有 title + fix（severity/file 亦建议）——纯字符串或缺 title/fix 的对象会被 schema 拒绝。
 RED FLAG: ok 仅当无 Critical/Important 问题。Critical/Important（架构/安全/正确性）必须 failed；仅 Minor 可 ok（记入 issues）。若遇到 model 限额耗尽（quota/rate-limit/429 错误），返回 status:'model_unavailable'（非 failed），让 orchestrator halt 并保存进度。`,
 
   hunter: `You are the SILENT-FAILURE-HUNTER. Hunt swallowed errors, bad fallbacks, missing error propagation, swallowed exceptions, except:pass, broad except hiding bugs, default values masking failures. Verdict on CURRENT tree.
@@ -419,7 +439,8 @@ Steps:
 
 This is a STATIC READ-ONLY review. You may use 'git status', 'git diff', 'find', 'grep'/'rg', and read files to locate patterns and inspect code. Do NOT run the test suite, ruff, lint, or any build — silent-failure hunting is done by reading code, not by running it. Running tests/builds is the implementor's and gate's job, not yours.
 
-Return {status (ok|failed), diagnostics:{files_touched:[...], silent_failures:[...]}, summary}.
+Return {status (ok|failed), diagnostics:{files_touched:[...], silent_failures:[{title, severity (critical|important|minor), file, line?, fix}]}, summary}.
+silent_failures 元素 MUST 是 object（必有 title + fix；file 强烈建议；severity 可选默认 important）——纯字符串或不带 fix 的对象会被 schema 拒绝。
 RED FLAG: 只报真正的静默失败（会导致 bug 被隐藏），不报刻意的优雅降级（有日志+合理 fallback）。若遇到 model 限额耗尽（quota/rate-limit/429 错误），返回 status:'model_unavailable'（非 failed），让 orchestrator halt 并保存进度。`,
 
   simplify: `You are SIMPLIFY. Reduce code: dedupe, remove dead code, tighten naming, lower complexity. Behavior MUST be preserved (tests still pass). Be honest about whether you changed anything.
