@@ -12,6 +12,7 @@ from app.models.notification import (
 from app.models.health import ApiSourceHealth
 from app.models.audit import AdminAuditLog
 from app.models.scheduler import ApschedulerJob
+from app.models.invite import InviteCode
 
 __all__ = [
     'AdminAuditLog',
@@ -20,6 +21,7 @@ __all__ = [
     'Comparison',
     'DrawCorrection',
     'DrawResult',
+    'InviteCode',
     'LotteryType',
     'NotificationChannel',
     'NotificationLog',
