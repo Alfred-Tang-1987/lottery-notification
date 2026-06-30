@@ -122,7 +122,9 @@ export function formatFindings(findings) {
 // 判断错误是否 model 限额耗尽（§2.4 双重检测的捕获路径）
 export function isQuotaError(e) {
   const s = String(e?.message || e || '').toLowerCase()
-  return /quota|rate.?limit|429|overloaded|insufficient.*balance|credit|capacity/i.test(s)
+  // 含中文 router 限额错误（本机 router 返回 "已达到 5 小时的使用上限" / "额度" / "限额"）。
+  // 不认则 dispatchImpl catch 不归类 model_unavailable → 走 throw → 顶层 uncaught crash。
+  return /quota|rate.?limit|429|overloaded|insufficient.*balance|credit|capacity|使用上限|限额|额度|超出.*限制/i.test(s)
 }
 
 // 安全提取错误字符串

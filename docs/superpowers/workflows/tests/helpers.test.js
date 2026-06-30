@@ -60,6 +60,14 @@ test('isQuotaError detects quota/rate-limit/429 keywords', () => {
   assert.equal(isQuotaError(new Error('file not found')), false)
 })
 
+test('REGRESSION: isQuotaError 认中文 router 限额错误（dispatchImpl 归类 model_unavailable 的前提）', () => {
+  // 本机 router 返回 "[1308][已达到 5 小时的使用上限]"——旧正则不认中文 → 不归类
+  // model_unavailable → throw → 顶层 uncaught crash（observed wf_a80ebbf1 bootstrap）。
+  assert.equal(isQuotaError(new Error('API Error: [1308][已达到 5 小时的使用上限。您的限额将在 2026-07-01 04:06:44 重置。]')), true)
+  assert.equal(isQuotaError(new Error('额度不足')), true)
+  assert.equal(isQuotaError(new Error('超出调用限制')), true)
+})
+
 test('errStr extracts message safely', () => {
   assert.equal(errStr(new Error('hello')), 'hello')
   assert.equal(errStr('plain string'), 'plain string')

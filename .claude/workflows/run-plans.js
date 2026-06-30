@@ -96,7 +96,8 @@ function formatFindings(findings) {
 // 判断错误是否 model 限额耗尽（§2.4 双重检测的捕获路径）—— inline 自 lib.js
 function isQuotaError(e) {
   const s = String(e?.message || e || '').toLowerCase()
-  return /quota|rate.?limit|429|overloaded|insufficient.*balance|credit|capacity/i.test(s)
+  // 含中文 router 限额错误（本机 router "已达到 5 小时的使用上限" / "额度" / "限额"）。
+  return /quota|rate.?limit|429|overloaded|insufficient.*balance|credit|capacity|使用上限|限额|额度|超出.*限制/i.test(s)
 }
 function errStr(e) {
   return String(e?.message || e || '').slice(0, 200)
@@ -151,6 +152,10 @@ async function dispatchImpl(prompt, opts, model) {
     throw e
   }
   if (impl?.status === 'model_unavailable') return { halted: true, reason: 'model_unavailable', diag: impl.diagnostics }
+  // agent() 返回 null：限额耗尽（router 中文错误如"已达到 5 小时的使用上限"常被 runtime
+  // 吞为空响应而非 throw）或 thinking-only 空响应。视作 model_unavailable halt 等 resume，
+  // 不能放任 null 流到调用方导致 `boot.halted`/`impl.halted` crash（observed wf_a80ebbf1）。
+  if (impl == null) return { halted: true, reason: 'model_unavailable', diag: { model, error: 'agent returned null (quota exhausted or empty/thinking-only response)' } }
   return impl
 }
 
