@@ -100,6 +100,7 @@ get-ts（取时间戳）
             review rounds (max 3): spec ‖ quality ‖ hunter 并行
               → 全绿 break / 任一❌→ implementor 修复 → 下轮 / max3 → halt
               → 任一 review 空响应/异常（agent_error|model_unavailable|review_empty）→ halt
+              → 任一 review failed 但 0 findings（review_failed_no_findings）→ halt
               → 振荡检测（同文件≥3 round）
             simplify (max 1) → 无条件重跑 review → 失败委托 commit 回退
             commit → git commit feat(plan-X/T-Y)
@@ -240,6 +241,7 @@ plan frontmatter 的 `model` 字段决定 implementor 用 sonnet 还是 opus：
 | implementor 反复失败 | 看 `blocked_info.last_error` + `suggested_fix`；可能 plan 顺序错（依赖前序 task） |
 | review 振荡 halt | `blocked_info.reason: OSCILLATING`——同文件多 round 反复改，人工介入 |
 | review 空响应 halt | `blocked_info.reason: review_empty`——某 review agent 静默空返回（thinking-only 空响应，模型瞬态 hiccup；非限额非崩溃）。**全新跑续即可**（见 §7.1，勿用 resumeFromRunId）；频繁复发则换 model 槽 |
+| review 空诊断 halt | `blocked_info.reason: review_failed_no_findings`——某 review agent 明确判 `failed` 但 `issues`/`silent_failures` 为空（无可执行发现）。implementor 无法据空反馈修复，halt 暴露而非跑空循环误报 max rounds。多为 prompt/schema 与 model 不匹配（如 LLM 用错字段名）——看该 review 的 diag，**全新跑续**（见 §7.1） |
 | 限额 halt | `blocked_info.quota_exhausted: true`——等额度恢复后**全新跑**续跑（见 §7.1，勿用 resumeFromRunId） |
 | gate 失败 | committed SHA 上 test/lint 任一非 0——看 `tests_exit_code` + `pytest_summary` + `lint_results`（lint 失败多为架构纪律违反，如 domain 层 import infra 被 `lint-imports` 抓到） |
 

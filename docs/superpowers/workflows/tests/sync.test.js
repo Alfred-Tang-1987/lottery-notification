@@ -28,7 +28,7 @@ for (const role of ROLES) {
 }
 
 test('run-plans.js inlines the new conditional-render helpers', () => {
-  for (const fn of ['formatReferencePaths', 'formatSilentFailureContext', 'languageChecklist', 'LANGUAGE_CHECKLISTS', 'gateCommands', 'collectReviewFindings', 'formatFindings', 'matchesPlanFilter', 'classifyThrown', 'reviewHaltReason', 'haltLikelySource']) {
+  for (const fn of ['formatReferencePaths', 'formatSilentFailureContext', 'languageChecklist', 'LANGUAGE_CHECKLISTS', 'gateCommands', 'collectReviewFindings', 'formatFindings', 'matchesPlanFilter', 'classifyThrown', 'reviewHaltReason', 'reviewHaltForEmptyFailed', 'haltLikelySource']) {
     assert.match(runSrc, new RegExp(`function ${fn}|const ${fn}`), `missing helper: ${fn}`)
   }
 })
@@ -41,10 +41,14 @@ test('run-plans.js SCHEMAS mirror key changes', () => {
   assert.match(runSrc, /required:\s*\['tests_exit_code',\s*'pytest_summary',\s*'lint_results'\]/)
 })
 
-test('run-plans.js inlines review_empty 空响应守卫 + quality/hunter items 约束', () => {
+test('run-plans.js inlines review_empty 空响应守卫 + review_failed_no_findings + quality/hunter items 约束', () => {
   // reviewHaltReason 守卫：空响应 → review_empty sentinel（防 thinking-only 静默哑火）
   assert.match(runSrc, /REVIEW_VALID_STATUSES/, 'run-plans.js 须 inline REVIEW_VALID_STATUSES 集合')
   assert.match(runSrc, /'review_empty'/, "run-plans.js 须 inline review_empty sentinel")
+  // 第二道守卫：failed 但 0 findings → review_failed_no_findings（防空修复循环 → max rounds 误 halt）
+  assert.match(runSrc, /'review_failed_no_findings'/, 'run-plans.js 须 inline review_failed_no_findings sentinel')
+  assert.match(runSrc, /reviewHaltForEmptyFailed\(spec, qual, hunt\)/, '主 review 轮须接 reviewHaltForEmptyFailed 守卫')
+  assert.match(runSrc, /reviewHaltForEmptyFailed\(spec2, qual2, hunt2\)/, 'simplify review 轮须接 reviewHaltForEmptyFailed 守卫')
   // qualityReviewer 拆出独立 schema（issues items 强制 {title,fix}）
   assert.match(runSrc, /function qualityReviewSchema/, 'run-plans.js 须 inline qualityReviewSchema')
   // hunter silent_failures items 约束
@@ -52,6 +56,7 @@ test('run-plans.js inlines review_empty 空响应守卫 + quality/hunter items �
   // 同步也要校验 lib.js 真源一致
   assert.match(libSrc, /REVIEW_VALID_STATUSES/)
   assert.match(libSrc, /'review_empty'/)
+  assert.match(libSrc, /'review_failed_no_findings'/)
   assert.match(libSrc, /function qualityReviewSchema/)
   assert.match(libSrc, /silent_failures:\s*\{\s*type:\s*'array',\s*items:/)
 })

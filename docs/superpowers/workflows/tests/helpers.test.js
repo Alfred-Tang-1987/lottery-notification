@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, isQuotaError, errStr, matchesPlanFilter, classifyThrown, reviewHaltReason, haltLikelySource } from '../lib.js'
+import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, isQuotaError, errStr, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource } from '../lib.js'
 
 const ok = { status: 'ok', diagnostics: { files_touched: ['a.py'] } }
 const ok2 = { status: 'ok', diagnostics: { files_touched: ['b.py'] } }
@@ -131,6 +131,39 @@ test('reviewHaltReason: 优先级 agent_error > model_unavailable > review_empty
   assert.equal(reviewHaltReason({ status: 'agent_error' }, ok, {}), 'agent_error')
   // model_unavailable 优先于 review_empty
   assert.equal(reviewHaltReason({ status: 'model_unavailable' }, ok, null), 'model_unavailable')
+})
+
+// —— reviewHaltForEmptyFailed（第二道守卫：failed 但 0 findings → halt，防空修复循环）——
+// 防「合法 failed + 空 diagnostics」漏过 reviewHaltReason → collectReviewFindings 空 →
+// implementor 收「0 项发现」跑空修复 → max rounds 误 halt。
+const failedWithFindings = { status: 'failed', diagnostics: { issues: [{ severity: 'Critical', title: 'bug', file: 'a.py', fix: 'x' }] } }
+const hunterFailedWithFindings = { status: 'failed', diagnostics: { silent_failures: [{ title: 'except:pass', file: 'b.py', fix: 'log' }] } }
+const failedNoDiag = { status: 'failed' }                                         // 无 diagnostics 字段
+const failedEmptyDiag = { status: 'failed', diagnostics: {} }                     // diagnostics 空对象
+const failedEmptyIssues = { status: 'failed', diagnostics: { issues: [] } }       // issues 空数组（spec/quality 用 issues key）
+const hunterFailedNoFindings = { status: 'failed', diagnostics: { silent_failures: [] } } // hunter 用 silent_failures key
+
+test('reviewHaltForEmptyFailed: 任一 failed 但 0 findings → review_failed_no_findings', () => {
+  assert.equal(reviewHaltForEmptyFailed(failedNoDiag, ok, ok), 'review_failed_no_findings')
+  assert.equal(reviewHaltForEmptyFailed(ok, failedEmptyDiag, ok), 'review_failed_no_findings')
+  assert.equal(reviewHaltForEmptyFailed(ok, failedEmptyIssues, ok), 'review_failed_no_findings')  // spec/quality issues 空
+  assert.equal(reviewHaltForEmptyFailed(ok, ok, hunterFailedNoFindings), 'review_failed_no_findings') // hunter silent_failures 空
+  // hunter failed 但只填了 issues（用错 key）→ silent_failures 空 → 仍判 no-findings（key 不匹配）
+  assert.equal(reviewHaltForEmptyFailed(ok, ok, failedEmptyIssues), 'review_failed_no_findings')
+})
+
+test('reviewHaltForEmptyFailed: failed 且有 findings → null（正常进 fix-round）', () => {
+  assert.equal(reviewHaltForEmptyFailed(failedWithFindings, ok, ok), null)
+  assert.equal(reviewHaltForEmptyFailed(ok, failedWithFindings, hunterFailedWithFindings), null)
+})
+
+test('reviewHaltForEmptyFailed: 全 ok → null', () => {
+  assert.equal(reviewHaltForEmptyFailed(ok, ok, ok), null)
+})
+
+test('reviewHaltForEmptyFailed: 不误判 failed+findings 与 ok 混合（仅 failed 行无 findings 才 halt）', () => {
+  // spec failed 有 findings，quality ok，hunter failed 无 findings → halt（hunter 那行空）
+  assert.equal(reviewHaltForEmptyFailed(failedWithFindings, ok, failedEmptyIssues), 'review_failed_no_findings')
 })
 
 // —— haltLikelySource（halt reason → 工作树脏状态来源语义）——

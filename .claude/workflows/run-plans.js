@@ -40,23 +40,44 @@ function issuesFromReviews(...reviews) {
   const out = []; for (const r of reviews) if (r && r.status === 'failed') out.push(...(r.diagnostics?.issues || [])); return out
 }
 
+// 收集单个 failed review 的 findings（内部 helper，collectReviewFindings 与
+// reviewHaltForEmptyFailed 共用，避免两处重复 push 逻辑漂移）—— inline 自 lib.js
+// 非 failed 或无 diagnostics → 返回 []。items 归一化同 collectReviewFindings。
+function findingsOf(r, source, key) {
+  if (!r || r.status !== 'failed') return []
+  const out = []
+  for (const it of (r.diagnostics?.[key] || [])) {
+    if (it && typeof it === 'object') out.push({ source, severity: it.severity, title: it.title || String(it), file: it.file, fix: it.fix })
+    else out.push({ source, title: String(it) })
+  }
+  return out
+}
+
 // 收集三类 review 的发现并归一化为结构化数组（orchestrator fix-round 反馈管道）—— inline 自 lib.js
 // spec/quality 存 diagnostics.issues；hunter 存 diagnostics.silent_failures（不同 key！
 // 旧 issuesFromReviews 只读 issues → hunter 发现被完全丢弃，Bug 2）。
 // items 可能是 string 或 object → 统一归一化为 {source, severity?, title, file?, fix?}。
 function collectReviewFindings(spec, qual, hunt) {
-  const out = []
-  const push = (r, source, key) => {
-    if (!r || r.status !== 'failed') return
-    for (const it of (r.diagnostics?.[key] || [])) {
-      if (it && typeof it === 'object') out.push({ source, severity: it.severity, title: it.title || String(it), file: it.file, fix: it.fix })
-      else out.push({ source, title: String(it) })
-    }
+  return [...findingsOf(spec, 'spec', 'issues'), ...findingsOf(qual, 'quality', 'issues'), ...findingsOf(hunt, 'hunter', 'silent_failures')]
+}
+
+// 第二道静默失败守卫（reviewHaltReason 之后）：任一 review status==='failed' 但产出 0 项 findings
+// → 返回 'review_failed_no_findings'—— inline 自 lib.js
+// 防「合法 failed + 空 diagnostics」漏过 reviewHaltReason（status 合法 → 不 halt）→
+// collectReviewFindings 空 → implementor 收「0 项发现」跑空修复 → max rounds 误 halt。
+// 与 review_empty 区分：review_empty 是 status 缺失（agent 静默空返回）；
+// review_failed_no_findings 是 agent 明确判 failed 却没给可执行发现（issues/silent_failures 空）。
+// 优先级在 reviewHaltReason 之后：先排除空 status，再查 failed-no-findings。
+function reviewHaltForEmptyFailed(spec, qual, hunt) {
+  const checks = [
+    [spec, 'spec', 'issues'],
+    [qual, 'quality', 'issues'],
+    [hunt, 'hunter', 'silent_failures'],
+  ]
+  for (const [r, source, key] of checks) {
+    if (r && r.status === 'failed' && findingsOf(r, source, key).length === 0) return 'review_failed_no_findings'
   }
-  push(spec, 'spec', 'issues')
-  push(qual, 'quality', 'issues')
-  push(hunt, 'hunter', 'silent_failures')
-  return out
+  return null
 }
 
 // 把 collectReviewFindings 的结构化数组序列化为 implementor 可读的多行字符串 —— inline 自 lib.js
@@ -109,7 +130,7 @@ function haltLikelySource(reason) {
   const r = String(reason || '')
   if (r === 'plan gate failed' || /gate/.test(r)) return 'gate restored'
   if (/^bootstrap /.test(r)) return 'bootstrap frontmatter'
-  if (/max rounds|OSCILLATING|fix-round|commit failed|simplify reported|BLOCKED|after (context-fetch|retry)|agent_error|model_unavailable|review_empty/.test(r)) return 'implementor changes'
+  if (/max rounds|OSCILLATING|fix-round|commit failed|simplify reported|BLOCKED|after (context-fetch|retry)|agent_error|model_unavailable|review_empty|review_failed_no_findings/.test(r)) return 'implementor changes'
   return 'unknown'
 }
 
@@ -636,6 +657,11 @@ async function runTask(plan, task) {
     if (reviewReason) {
       return { halted: true, reason: reviewReason, diag: { spec: spec?.diagnostics, qual: qual?.diagnostics, hunt: hunt?.diagnostics } }
     }
+    // 第二道守卫：failed 但 0 findings（防「合法 failed + 空 diagnostics」跑空修复循环 → max rounds 误 halt）
+    const emptyFailedReason = reviewHaltForEmptyFailed(spec, qual, hunt)
+    if (emptyFailedReason) {
+      return { halted: true, reason: emptyFailedReason, diag: { spec: spec?.diagnostics, qual: qual?.diagnostics, hunt: hunt?.diagnostics } }
+    }
     state.perTask[task.id].files_touched_per_round.push(unionFiles(spec, qual, hunt))
     const osc = detectOscillation(state.perTask[task.id].files_touched_per_round)
     if (osc.oscillating) return { halted: true, reason: 'OSCILLATING', diag: osc }
@@ -668,6 +694,11 @@ async function runTask(plan, task) {
     const simpReviewReason = reviewHaltReason(spec2, qual2, hunt2)
     if (simpReviewReason) {
       return { halted: true, reason: simpReviewReason, diag: { spec2: spec2?.diagnostics, qual2: qual2?.diagnostics, hunt2: hunt2?.diagnostics } }
+    }
+    // 第二道守卫（同主 review 轮）：failed 但 0 findings → halt，防空诊断静默回退
+    const simpEmptyFailed = reviewHaltForEmptyFailed(spec2, qual2, hunt2)
+    if (simpEmptyFailed) {
+      return { halted: true, reason: simpEmptyFailed, diag: { spec2: spec2?.diagnostics, qual2: qual2?.diagnostics, hunt2: hunt2?.diagnostics } }
     }
     if (!allGreen(spec2, qual2, hunt2)) { simplifyFailed = true; simplifyFiles = simp.evidence.files_changed || [] }
   }
