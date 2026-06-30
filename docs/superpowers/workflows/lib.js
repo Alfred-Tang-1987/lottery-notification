@@ -116,12 +116,23 @@ export function classifyThrown(e) {
   return isQuotaError(e) ? 'model_unavailable' : 'agent_error'
 }
 
-// 扫描三类 review 的 status，返回应 halt 的 reason（agent_error 优先于 model_unavailable，全 ok→null）。
-// 封装 review 后重复的优先级检查链（orchestrator 据此构造 halt 返回值）。
+// review status 的合法集合（含 orchestrator-internal sentinel）。
+// agent() 带 schema 时内部会重试 StructuredOutput；耗尽后偶发返回 null/空对象——
+// 即 thinking-only 空响应（模型在 thinking 块里"以为"调了 StructuredOutput，实际只输出 thinking，
+// 无 tool_use 块）。等 safeAgent 看到空返回时 runtime 重试多半已耗尽，故 orchestrator 直接 halt。
+const REVIEW_VALID_STATUSES = new Set(['ok', 'failed', 'model_unavailable', 'agent_error'])
+
+// 扫描三类 review 的 status，返回应 halt 的 reason。
+// 优先级：agent_error > model_unavailable > review_empty；全合法且非 sentinel → null。
+// review_empty：status 缺失/为空/非法（含 thinking-only 空响应 → null/undefined status）。
+// 与 agent_error 区分：agent_error 是 agent() 抛非 quota 异常（safeAgent catch 构造）；
+// review_empty 是 agent() 静默空返回（无异常、但无有效 review）——瞬态模型 hiccup，
+// blocked.md 据此提示"全新跑续即可"，可操作性高于笼统的 agent_error。
 export function reviewHaltReason(s, q, h) {
   const statuses = [s?.status, q?.status, h?.status]
   if (statuses.includes('agent_error')) return 'agent_error'
   if (statuses.includes('model_unavailable')) return 'model_unavailable'
+  if (statuses.some(st => !st || !REVIEW_VALID_STATUSES.has(st))) return 'review_empty'
   return null
 }
 
