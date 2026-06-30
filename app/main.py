@@ -212,6 +212,11 @@ from app.api.channels import router as channels_router  # noqa: E402
 
 app.include_router(channels_router)
 
+# admin 后台 API（Plan 05 / T6）
+from app.api.admin import router as admin_router  # noqa: E402
+
+app.include_router(admin_router)
+
 
 @app.get('/health')
 def health(db: Engine = Depends(get_db_for_health)):
