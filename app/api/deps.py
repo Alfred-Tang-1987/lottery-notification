@@ -1,9 +1,9 @@
-"""Plan 05 / T3：FastAPI 依赖——current_user / require_admin。"""
+"""Plan 05 / T3：FastAPI 依赖——current_user / require_admin / verify_csrf。"""
 
-from fastapi import Cookie, Depends, HTTPException, status
+from fastapi import Cookie, Depends, Header, HTTPException, status
 from sqlmodel import Session
 
-from app.api.security import COOKIE_NAME, decode_session_token
+from app.api.security import COOKIE_NAME, CSRF_HEADER, csrf_tokens_match, decode_session_token
 from app.db.session import get_engine
 from app.models import User
 
@@ -35,3 +35,17 @@ def require_admin(user: User = Depends(current_user)) -> User:
     if user.role != 'admin':
         raise HTTPException(status.HTTP_403_FORBIDDEN, '需要管理员权限')
     return user
+
+
+def verify_csrf(
+    csrf_cookie: str | None = Cookie(default=None, alias='csrf_token'),
+    csrf_header: str | None = Header(default=None, alias=CSRF_HEADER),
+) -> None:
+    """CSRF double-submit 校验（spec §4.3）：X-CSRF-Token header 须与 csrf_token
+    cookie 一致且非空，否则 403。
+
+    挂载到已登录用户的 state-changing 路由（如 /auth/logout）。匿名进入端点
+    （register/login）豁免——首次请求时尚无 csrf cookie，强制校验会形成鸡生蛋死锁。
+    """
+    if not csrf_tokens_match(csrf_cookie, csrf_header):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, 'CSRF token 无效')

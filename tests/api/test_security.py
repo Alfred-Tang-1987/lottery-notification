@@ -13,6 +13,7 @@ from cryptography.fernet import Fernet
 
 from app.api.security import (
     create_session_token,
+    csrf_tokens_match,
     decode_session_token,
     generate_csrf_token,
     hash_password,
@@ -62,3 +63,16 @@ def test_csrf_token_random():
     a = generate_csrf_token()
     b = generate_csrf_token()
     assert a != b and len(a) >= 32
+
+
+def test_csrf_tokens_match_rules():
+    """double-submit 一致性判定：两者非空且相等才放行。"""
+    assert csrf_tokens_match('t', 't') is True
+    assert csrf_tokens_match('same-token', 'same-token') is True
+    # 任一缺失 → 拒绝（防 attacker 只塞 header 不带 cookie）
+    assert csrf_tokens_match(None, 't') is False
+    assert csrf_tokens_match('t', None) is False
+    assert csrf_tokens_match('', 't') is False
+    assert csrf_tokens_match('t', '') is False
+    # 不一致 → 拒绝（防伪造）
+    assert csrf_tokens_match('cookie-val', 'header-val') is False
