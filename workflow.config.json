@@ -6,5 +6,12 @@
   "extra_lint_commands": ["uv run lint-imports"],
   "spec_path": "docs/superpowers/specs/2026-06-16-lottery-notification-design.md",
   "reference_paths": ["docs/reference/lottery-rules.md"],
-  "language": "python"
+  "language": "python",
+  "silent_failure_context": [
+    "DB 写不得 split-commit：一个逻辑操作（如 DrawResult + PendingComparison outbox）必须单事务一次 commit；分两次 commit 时第二次失败会导致重试幂等分支跳过、不补 outbox → 永不比对 → 漏通知。",
+    "per-row 异常隔离用 savepoint：循环里逐行处理 + 共享 session 时，单行失败必须 with session.begin_nested()（SAVEPOINT）隔离，否则 flush 时 DB 错毒化 session（PendingRollback），后续好行全丢 + 末尾 commit 变 rollback。bare except Exception 不够。",
+    "批量循环里单行故障不得中断整批：per-row try/except + log（含 exc_info=True），不阻断后续行；批末兜底标记（如 expired/unresolved）须无条件执行（独立方法/finally），不依赖循环不抛。",
+    "更正路径重置终态标记：行被标 unresolved=True 后经官方更正重比，须在 upsert existing 分支重置 unresolved=False，否则永久卡死、永不再查官方金额。",
+    "datetime 时区对齐：SQLite 对 datetime 做字符串比较且存取会剥离 tzinfo。模型里凡与其他 datetime 字段比较/排序的写入值，须与项目主流惯例（created_at = naive UTC）同时区同数值。用 datetime.now(timezone.utc).replace(tzinfo=None)，非 aware CST、非弃用 utcnow()。"
+  ]
 }

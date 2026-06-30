@@ -28,7 +28,7 @@ for (const role of ROLES) {
 }
 
 test('run-plans.js inlines the new conditional-render helpers', () => {
-  for (const fn of ['formatReferencePaths', 'languageChecklist', 'LANGUAGE_CHECKLISTS', 'gateCommands', 'collectReviewFindings', 'formatFindings', 'matchesPlanFilter', 'classifyThrown', 'reviewHaltReason', 'haltLikelySource']) {
+  for (const fn of ['formatReferencePaths', 'formatSilentFailureContext', 'languageChecklist', 'LANGUAGE_CHECKLISTS', 'gateCommands', 'collectReviewFindings', 'formatFindings', 'matchesPlanFilter', 'classifyThrown', 'reviewHaltReason', 'haltLikelySource']) {
     assert.match(runSrc, new RegExp(`function ${fn}|const ${fn}`), `missing helper: ${fn}`)
   }
 })
@@ -49,6 +49,7 @@ test('run-plans.js orchestrator wires new placeholders + gate lint loop', () => 
   assert.match(runSrc, /gateCommands: JSON\.stringify\(cmds\)/)
   assert.match(runSrc, /fetchedContext:/)
   assert.match(runSrc, /simplifyRevertNote:/)
+  assert.match(runSrc, /silentFailureContext: formatSilentFailureContext\(cfg\.silent_failure_context\)/, 'hunter 须注入 silentFailureContext')
 })
 
 test('finalReport prompt 探查工作树脏状态（halt 时记录，防回归）', () => {

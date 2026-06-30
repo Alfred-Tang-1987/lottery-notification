@@ -377,11 +377,16 @@ runs/<run-id>/
   "build_command": "uv build",
   "lint_command": "uv run ruff check .",
   "spec_path": "docs/superpowers/specs/2026-06-16-lottery-notification-design.md",
-  "language": "python"
+  "language": "python",
+  "extra_lint_commands": ["uv run lint-imports"],
+  "reference_paths": ["docs/reference/lottery-rules.md"],
+  "silent_failure_context": ["<项目特定静默失败纪律数组>"]
 }
 ```
 
 启动 config smoke：`test_command --collect-only`（fail loud，2 秒发现 typo 而非 20 分钟）。
+
+> **可选字段**：`extra_lint_commands`（架构纪律 lint，如 domain 层纯度护栏）/ `reference_paths`（spec 外权威文档）/ `silent_failure_context`（项目特定静默失败纪律，hunter 优先核查）均可选，不配即对应 prompt 段消失（条件渲染）。通用性原则：项目特有内容只走 config，不写进 prompt。
 
 ### 11.2 plan frontmatter（YAML，writing-plans 产出约定）
 
@@ -494,7 +499,7 @@ return {result: 'done', state}
 | `implementor` | TDD（RED→GREEN→REFACTOR），跑 `test_command`，self-review；BLOCKED 时填 diagnostics | task.model\|\|sonnet | tests_exit_code, files_changed[], pytest_summary |
 | `specReviewer` | 代码 vs spec（`spec_path`）逐行比对，记 files_touched | opus | status, issues[] |
 | `qualityReviewer` | 质量/架构/边界/类型/不可变性，记 files_touched | opus | status, issues[] |
-| `hunter` | 静默失败/吞错/bad fallback（ECC silent-failure-hunter 语义），记 files_touched | sonnet | status, silent_failures[] |
+| `hunter` | 静默失败/吞错/bad fallback（ECC silent-failure-hunter 语义），记 files_touched。**只读审查**：禁止跑 pytest/ruff/build（那是 implementor/gate 职责）；项目特定静默失败纪律经 `silent_failure_context` config 注入，hunter 优先核查 | sonnet | status, silent_failures[] |
 | `simplify` | 精简代码（ECC simplify 语义），**如实报 `changed(bool)`** | sonnet | changed, files_changed[] |
 | `commit` | status check → test → `git commit -m "feat(plan-X/T-Y): ..."`，返回 commit_sha | sonnet | commit_sha, committed_files[], tests_at_commit |
 | `contextFetcher` | NEEDS_CONTEXT 兑现（grep/glob/LSP/读 spec/Context7/WebSearch） | sonnet | context |

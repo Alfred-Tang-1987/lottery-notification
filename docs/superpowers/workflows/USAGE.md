@@ -31,7 +31,8 @@
   "extra_lint_commands": ["uv run lint-imports"],
   "spec_path": "docs/superpowers/specs/2026-06-16-lottery-notification-design.md",
   "reference_paths": ["docs/reference/lottery-rules.md"],
-  "language": "python"
+  "language": "python",
+  "silent_failure_context": ["<项目特定静默失败纪律条目，见下>"]
 }
 ```
 
@@ -47,6 +48,7 @@
 | `spec_path` | 是 | 设计 spec（specReview 逐条对照） |
 | `reference_paths` | 否 | **额外权威文档数组**（implementor/specReview 对照）。承载 spec 之外的硬规则——如本项目的彩种规则参考。不配即该 prompt 段消失 |
 | `language` | 否 | `python` / `general`（可扩展 ts/go…）。决定 qualityReviewer 的语言专项清单。未知值 → 通用清单 |
+| `silent_failure_context` | 否 | **项目特定静默失败纪律数组**（hunter 优先核查）。承载本项目反复踩的领域致命点——如 DB split-commit / savepoint 隔离 / 批量循环兜底 / 更正重置终态 / datetime 时区对齐。hunter 先查这些再查通用 `except:pass` 模式。不配即 hunter 退化为通用清单 |
 
 > **通用性原则**：项目特有内容（彩种规则、domain 纯度纪律）只走 config，不写进 prompt。换一个非彩票 Python 项目，改几个路径即可复用；换 TS 项目加 `language: "typescript"` 清单即可。新字段全部可选——旧 config 无它们照跑（条件渲染：orchestrator 传空串，相关 prompt 段消失）。
 

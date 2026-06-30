@@ -194,6 +194,17 @@ ${lines}
 Read the relevant section(s) BEFORE implementing/reviewing number/play/prize/rule logic. Deviations from these authoritative rules are bugs (e.g. positional vs partition number comparison).`
 }
 
+// 项目特定静默失败纪律（可选 config 注入）——通用 hunter 清单之上，注入本项目反复踩的领域致命点。
+// 不填 → 空串 → hunter 退化为通用清单（通用性不破坏）。填了 → hunter 重点核查这些项目特定条款。
+export function formatSilentFailureContext(items) {
+  if (!Array.isArray(items) || items.length === 0) return ''
+  const lines = items.map(it => `- ${it}`).join('\n')
+  return `## Project-Specific Silent-Failure Risks (HIGHEST PRIORITY — hunt these first)
+This system's core value is "中奖永不静默漏通知". Beyond the generic patterns below, the following project-specific silent-failure traps have caused real misses and MUST be checked explicitly:
+${lines}
+For each, verify the changed code does not fall into the trap. Report a silent_failure with the specific trap name + file:line + why it violates.`
+}
+
 // 按 language 返回 quality review 专项清单；未知 language → 通用清单（不硬编码任何项目架构）。
 export const LANGUAGE_CHECKLISTS = {
   python: `## Language-specific checks (Python / FastAPI / SQLModel)
@@ -290,7 +301,7 @@ export const PROMPTS = {
 Inputs: configPath={{configPath}} plansDir={{plansDir}} runTs={{runTs}}
 
 Steps:
-1. Read {{configPath}} → {test_command, full_test_command, build_command, lint_command, extra_lint_commands, spec_path, reference_paths, language}. extra_lint_commands / reference_paths are OPTIONAL (may be absent → treat as [] / []).
+1. Read {{configPath}} → {test_command, full_test_command, build_command, lint_command, extra_lint_commands, spec_path, reference_paths, language, silent_failure_context}. extra_lint_commands / reference_paths / silent_failure_context are OPTIONAL (may be absent → treat as [] / [] / []).
 2. Config smoke: run test_command with --collect-only. 判断：命令本身不存在（command not found / No such file: pytest）→ status=failed（环境/typo）；命令存在但 collect 失败（no module named pytest / pyproject.toml 不存在 / no tests collected / 业务代码未初始化）→ 记录 'project not yet initialized' 到 summary，status 仍 ok（业务代码由后续 task 创建，预期）。
 3. For each {{plansDir}}/*.md: if frontmatter (starts with ---) read task models; else generate — extract LEAF ids (## Task N with ### Task NX children → only NX; else N), modelHint (title contains 安全|加密|认证|JWT|CSRF|Fernet|算法|比对|策略|边界|集成|接口 → opus, else omit), write frontmatter at file top. Idempotent. Record each plan's file (full path) and seq (last two digits of filename, e.g. 01).
 4. git log → completed task ids via convention feat(plan-X/T-Y).
@@ -349,6 +360,8 @@ Steps:
    c. MISUNDERSTANDING: requirement interpreted differently than intended? right feature wrong way?
 4. Record files_touched (files in the diff).
 
+This is a STATIC READ-ONLY review. You may use 'git diff', 'git status', 'find', 'grep'/'rg', and read files to locate and inspect changes. Do NOT run the test suite, ruff, lint, or any build — spec verification is done by reading code, not by running it. Running tests/builds is the implementor's and gate's job, not yours.
+
 Return {status (ok|failed), diagnostics:{files_touched:[...], issues:[<dimension>: <spec requirement>: <code gap or over-build>]}, summary}.
 RED FLAG: ok 仅当三维度全清——逐条 spec 全符合 AND 无越界。绝不模糊通过。越界（spec 未要求的功能，尤其是合规红线禁止类如预测/推荐）必须 failed。issues 要具体（哪条 spec + 代码哪里不符/越界 + file:line）。若遇到 model 限额耗尽（quota/rate-limit/429 错误），返回 status:'model_unavailable'（非 failed），让 orchestrator halt 并保存进度。`,
 
@@ -367,6 +380,8 @@ Inputs: taskId={{taskId}} changedHint={{filesChanged}}
 2. Check universal checks + the language-specific checklist above. (Note: architectural discipline like layer-purity is enforced automatically by the gate's lint commands — you focus on code a human must judge; do NOT invent layer rules not in the checklist.)
 3. Record files_touched.
 
+This is a STATIC READ-ONLY review. You may use 'git diff', 'git status', 'find', 'grep'/'rg', and read files to locate and inspect changes. Do NOT run the test suite, ruff, lint, or any build — quality review is done by reading code, not by running it. Running tests/builds is the implementor's and gate's job, not yours.
+
 ## Calibration
 Categorize issues by ACTUAL severity — not everything is Critical. Acknowledge what was done well (strengths) before listing issues; accurate praise helps the implementer trust the rest.
 
@@ -376,10 +391,12 @@ RED FLAG: ok 仅当无 Critical/Important 问题。Critical/Important（架构/�
   hunter: `You are the SILENT-FAILURE-HUNTER. Hunt swallowed errors, bad fallbacks, missing error propagation, swallowed exceptions, except:pass, broad except hiding bugs, default values masking failures. Verdict on CURRENT tree.
 
 Inputs: taskId={{taskId}} changedHint={{filesChanged}}
+{{silentFailureContext}}
 
 Steps:
 1. Read changed files.
-2. Find:
+2. If project-specific silent-failure risks are listed above, hunt those FIRST (they are this system's known fatal traps) — then hunt the generic patterns below.
+3. Find:
    - try/except that pass or log-only; bare except hiding bugs; errors converted to null/empty with no context
    - fallback returning wrong-type default; default values masking real failure; .catch(() => [])
    - unhandled None; ignored return values; missing await; fire-and-forget without error path
@@ -387,7 +404,9 @@ Steps:
    - transactional work with no rollback on failure
    - lost stack traces (rethrow without context); generic rethrows
    - logs with wrong severity / log-and-forget (no handling after logging)
-3. Record files_touched.
+4. Record files_touched.
+
+This is a STATIC READ-ONLY review. You may use 'git status', 'git diff', 'find', 'grep'/'rg', and read files to locate patterns and inspect code. Do NOT run the test suite, ruff, lint, or any build — silent-failure hunting is done by reading code, not by running it. Running tests/builds is the implementor's and gate's job, not yours.
 
 Return {status (ok|failed), diagnostics:{files_touched:[...], silent_failures:[...]}, summary}.
 RED FLAG: 只报真正的静默失败（会导致 bug 被隐藏），不报刻意的优雅降级（有日志+合理 fallback）。若遇到 model 限额耗尽（quota/rate-limit/429 错误），返回 status:'model_unavailable'（非 failed），让 orchestrator halt 并保存进度。`,
