@@ -190,7 +190,9 @@ def _read_cors_origins() -> list[str]:
         if isinstance(parsed, list):
             return [str(o) for o in parsed]
     except (json.JSONDecodeError, TypeError):
-        pass
+        # H1（安全审查）：解析失败不得静默回退 dev default——运维写错 CORS_ORIGINS 不会察觉，
+        # 可能让 API 暴露给非预期 origin。显式 WARNING 让运维在日志里看到配置错误。
+        logger.warning('CORS_ORIGINS 不是有效 JSON 列表（%r），回退到开发默认 origin', raw)
     return ['http://localhost:5173']
 
 

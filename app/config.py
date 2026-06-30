@@ -64,6 +64,10 @@ class Settings(BaseSettings):
     # 测试通过 SCHEDULER_ENABLED=false 跳过 lifespan 内抓取/比对网络与后台线程。
     scheduler_enabled: bool = Field(default=True, alias='SCHEDULER_ENABLED')
 
+    # Cookie secure 标志（安全审查 #2）：生产默认 True——session/CSRF cookie 仅经 HTTPS
+    # 传输，防明文泄露 bearer。开发期（http://localhost）与测试经 COOKIE_SECURE=false 关闭。
+    cookie_secure: bool = Field(default=True, alias='COOKIE_SECURE')
+
     @field_validator('crypto_key_v1')
     @classmethod
     def _check_crypto_key_v1(cls, v: str) -> str:
