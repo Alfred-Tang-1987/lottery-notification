@@ -217,6 +217,16 @@ from app.api.admin import router as admin_router  # noqa: E402
 
 app.include_router(admin_router)
 
+# 号码池 CRUD API（Plan 05 / T7）：复用 Plan 03 TicketRepo（IDOR-safe via user_id 注入）。
+from app.api.tickets import router as tickets_router  # noqa: E402
+
+app.include_router(tickets_router)
+
+# 兑奖领取 API（Plan 05 / T7）：PrizeClaim pending→claimed，IDOR 经 comparison→user。
+from app.api.claims import router as claims_router  # noqa: E402
+
+app.include_router(claims_router)
+
 
 @app.get('/health')
 def health(db: Engine = Depends(get_db_for_health)):
