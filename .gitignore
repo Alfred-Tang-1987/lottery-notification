@@ -14,3 +14,5 @@ runs/
 .coverage
 htmlcov/
 *.egg-info/
+static/
+web/node_modules/
