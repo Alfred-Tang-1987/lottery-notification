@@ -64,10 +64,10 @@ def test_vite_config_uses_vue_and_unocss(vite_config):
 
 
 def test_vite_config_proxies_api_and_builds_to_static(vite_config):
-    assert '"/api"' in vite_config
-    assert '"/auth"' in vite_config
+    assert "'/api'" in vite_config or '"/api"' in vite_config
+    assert "'/auth'" in vite_config or '"/auth"' in vite_config
     assert "8280" in vite_config
-    assert '"../static"' in vite_config
+    assert "'../static'" in vite_config or '"../static"' in vite_config
     assert "emptyOutDir" in vite_config
 
 
@@ -85,3 +85,30 @@ def test_main_ts_mounts_vue_app(main_ts):
 def test_main_ts_wires_router_and_pinia(main_ts):
     assert "vue-router" in main_ts
     assert "pinia" in main_ts
+
+
+def test_tsconfig_json_exists():
+    path = WEB / "tsconfig.json"
+    assert path.exists(), "web/tsconfig.json is missing"
+
+
+def test_tsconfig_node_json_exists():
+    path = WEB / "tsconfig.node.json"
+    assert path.exists(), "web/tsconfig.node.json is missing"
+
+
+def test_uno_config_exists_and_uses_preset_uno():
+    path = WEB / "uno.config.ts"
+    assert path.exists(), "web/uno.config.ts is missing"
+    text = path.read_text(encoding="utf-8")
+    assert "defineConfig" in text
+    assert "presetUno" in text
+
+
+def test_env_d_ts_exists_with_vite_vue_shims():
+    path = WEB / "src" / "env.d.ts"
+    assert path.exists(), "web/src/env.d.ts is missing"
+    text = path.read_text(encoding="utf-8")
+    assert "vite/client" in text
+    assert "*.vue" in text
+    assert "virtual:uno.css" in text
