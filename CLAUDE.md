@@ -8,6 +8,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Workflow orchestrator 修复**（2026-06-25）：修复了 10 个 CRITICAL/IMPORTANT bug——qualityReviewer 结构化 findings 被 `.join()` 序列化为 `[object Object]`、hunter `silent_failures` 完全丢弃、fix-round implementor 状态被忽略等。修复后的 review chain 基于 `collectReviewFindings` + `formatFindings` 传播完整的结构化反馈。
 
+**Review agent 循环修复 + 职责硬边界**（2026-06-30）：hunter 子代理在 Plan 05/T1 全绿后陷入死循环——把 `pytest --cov` / `ruff + pytest -q` / `git status+find` 三件套重跑 406 次、47 分钟不退出（claude-mem 里 50+ 条 "Final Security Module Validation" 是其副产物）。根因：review agent PROMPT 没禁止跑测试，hunter 误把"验证代码行为"当职责、全绿后反复重跑。修复：(1) 三个 review agent（specReview/qualityReviewer/hunter）PROMPT 加职责硬边界——**STATIC READ-ONLY，禁止跑 pytest/ruff/lint/build**（那是 implementor/gate 职责），只允许 git diff/status/find/grep/Read；(2) 删掉最初加的软计数 STOP RULE（"最多 5-10 次命令"靠不住）。同时给 hunter 加 `silent_failure_context` config 注入入口（见下「通用性」），把 CLAUDE.md「静默失败纪律」5 类项目特定致命点经 config 驱动喂给 hunter 优先核查——通用框架 + config 特化，非硬编码。改 lib.js 的 PROMPTS/helpers 必须同步 run-plans.js inline 副本（sync.test 守护）。
+
 **Workflow orchestrator 去重重构**（2026-06-28）：runTask 178→126 行。抽 `dispatchImpl`/`safeAgent` 统一重复的 try/catch+quota 处理，纯决策（`classifyThrown`/`reviewHaltReason`）进 lib.js 可 node:test 测，runtime 胶水留 run-plans.js。分层原则：**改 lib.js 的纯函数/helper 必须同步 inline 副本到 run-plans.js**（sync.test 守护）；runtime 胶水（调 `agent()`）只在 run-plans.js。
 
 ## 项目是什么
