@@ -33,6 +33,16 @@ test('emission is recognized: extractTaskKey ∘ commitSubject ∘ normalizeComp
   assert.deepEqual(normalizeCompleted([key]), ['plan-04/T6'])
 })
 
+test('REGRESSION: normalizeCompleted tolerates hyphen separator from bootstrap (OSCILLATING root cause)', () => {
+  // bootstrap agent 返回格式不稳定，偶用连字符 "01-T2"（observed in wf_32a43021 manifest:
+  // completed=['01-T1',...] 而 taskKey='plan-01/T1'）。只认 `/` 的旧正则让连字符 id 原样
+  // 漏过 → 与 taskKey 不等 → 已完成 task 误判 pending → 重做 plan-01 → 脏工作树 + OSCILLATING。
+  assert.deepEqual(
+    normalizeCompleted(['01-T1', 'plan-01-T2', '01/T3', 'plan-05/T5', '03-T4a']),
+    ['plan-01/T1', 'plan-01/T2', 'plan-01/T3', 'plan-05/T5', 'plan-03/T4a'],
+  )
+})
+
 test('REGRESSION: plan-template example scopes are INVISIBLE to bootstrap (OSCILLATING root cause)', () => {
   // 这些是 plan 文件 Step 5/8 的字面示意——agent 曾照抄导致 bootstrap 漏认、重跑、OSCILLATING。
   const badScopes = [

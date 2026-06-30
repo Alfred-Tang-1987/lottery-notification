@@ -169,9 +169,11 @@ function extractTaskKey(subject) {
 
 // 把 completed id 归一化为 plan-scoped key "plan-{seq}/T-{id}"（inline 自 lib.js）。
 // 避免跨 plan 同名 task 误跳过：去 plan 前缀会让 Plan 02 的 T2 被 Plan 01 的 T2 误 skip。
+// 分隔符容忍 `/` 与 `-`：bootstrap agent 返回格式不稳定，偶用连字符（"01-T2"），
+// 只认 `/` 会让其原样漏过 → 与 taskKey("plan-01/T2") 不等 → 已完成 task 误判 pending → 重做。
 function normalizeCompleted(ids) {
   return ids.map(id => {
-    const m = String(id).match(/^(?:plan-)?(\d+)\/+(T[\w-]+)$/i)
+    const m = String(id).match(/^(?:plan-)?(\d+)[\/\-]+(T[\w-]+)$/i)
     return m ? `plan-${m[1]}/${m[2]}` : String(id)
   })
 }

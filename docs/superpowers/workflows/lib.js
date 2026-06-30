@@ -187,12 +187,12 @@ export function extractTaskKey(subject) {
 }
 
 // 避免跨 plan 同名 task 误跳过：Plan 01/02 都有 T1-T10，若去 plan 前缀，Plan 02 的 T2 会被
-// Plan 01 的 T2 误 skip。bootstrap 返回格式不稳定（"01/T2" / "plan-01/T2" / 裸 "T2"）：
-// - 带前缀 → 归一化为 "plan-{seq}/T-{id}"
+// Plan 01 的 T2 误 skip。bootstrap 返回格式不稳定（"01/T2" / "01-T2" / "plan-01/T2" / 裸 "T2"）：
+// - 带前缀 → 归一化为 "plan-{seq}/T-{id}"（分隔符容忍 `/` 与 `-`，bootstrap 偶用连字符）
 // - 裸 id（无 plan 信息）→ 原样保留；它不匹配任何 plan-scoped 比对 key，故不会误跳过（最坏重跑，安全）
 export function normalizeCompleted(ids) {
   return ids.map(id => {
-    const m = String(id).match(/^(?:plan-)?(\d+)\/+(T[\w-]+)$/i)
+    const m = String(id).match(/^(?:plan-)?(\d+)[\/\-]+(T[\w-]+)$/i)
     return m ? `plan-${m[1]}/${m[2]}` : String(id)
   })
 }
