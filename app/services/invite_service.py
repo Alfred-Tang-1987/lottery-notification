@@ -89,15 +89,8 @@ class InviteService:
         if ic.used_by is not None or ic.locked_at is not None:
             return None
 
-        # 2. 有效但未请求占用（user_id is None）→ 累计 attempts，可能锁定，然后返回失败
-        if user_id is None:
-            ic.attempts += 1
-            if ic.attempts >= self._max_attempts:
-                ic.locked_at = now
-            return None
-
-        # 3. 过期 → 累计 attempts，可能锁定，但返回失败
-        if now > ic.expires_at:
+        # 2. 未请求占用（user_id is None）或已过期 → 累计 attempts，可能锁定，返回失败
+        if user_id is None or now > ic.expires_at:
             ic.attempts += 1
             if ic.attempts >= self._max_attempts:
                 ic.locked_at = now
