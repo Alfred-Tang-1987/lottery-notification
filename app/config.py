@@ -6,6 +6,9 @@ Spec §124 启动校验要求：JWT_SECRET / CRYPTO_KEY 必须在启动时验证
 CryptoService 端到端证明密钥可用，避免运行时首次加解密才崩。
 """
 
+import json
+import logging
+import os
 import threading
 from typing import Literal
 
@@ -58,7 +61,9 @@ class Settings(BaseSettings):
 
     database_url: str = 'sqlite:///./data/lottery.db'
     tz: str = 'Asia/Shanghai'
-    cors_origins: list[str] = Field(default_factory=lambda: ['http://localhost:5173'])
+    # CORS origins 不放 Settings 字段（pydantic-settings 对 list env 解析脆，且曾因无 alias
+    # 导致 login Origin 校验与中间件读不同源——quality review CRITICAL）。统一用
+    # get_cors_origins() 读 CORS_ORIGINS env（JSON 列表 + 解析失败 warning 回退）。
 
     # 调度器启动开关（spec §4.3）：生产默认开启；运维排障/迁移时可关。
     # 测试通过 SCHEDULER_ENABLED=false 跳过 lifespan 内抓取/比对网络与后台线程。
@@ -126,3 +131,25 @@ def reset_settings_cache() -> None:
     global _settings
     with _settings_lock:
         _settings = None
+
+
+# CORS origins 单一真源：CORS 中间件（main.py）与 login Origin 校验（auth.py）都调此函数，
+# 避免两处读不同来源导致生产登录被 403 误拒（quality review CRITICAL: 中间件读 os.environ、
+# login 读 settings.cors_origins 无 alias → 永远 dev default → 不一致）。
+_DEV_DEFAULT_ORIGINS = ['http://localhost:5173']
+
+
+def get_cors_origins() -> list[str]:
+    """读 CORS_ORIGINS env（JSON 列表），缺省/解析失败回退开发默认并 WARNING（H1：不静默）。"""
+    raw = os.environ.get('CORS_ORIGINS')
+    if not raw:
+        return list(_DEV_DEFAULT_ORIGINS)
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            return [str(o) for o in parsed]
+    except (json.JSONDecodeError, TypeError):
+        logging.getLogger(__name__).warning(
+            'CORS_ORIGINS 不是有效 JSON 列表（%r），回退到开发默认 origin', raw,
+        )
+    return list(_DEV_DEFAULT_ORIGINS)

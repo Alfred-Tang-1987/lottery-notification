@@ -191,3 +191,19 @@ def test_login_allowed_origin_accepted(db_engine):
         headers={'Origin': 'http://localhost:5173'},
     )
     assert r.status_code == 200
+
+
+def test_login_origin_reads_cors_env(db_engine, monkeypatch):
+    """quality review CRITICAL（回归）：login Origin 校验须读 CORS_ORIGINS env（与 CORS 中间件
+    同源），不能读永远-dev-default 的 settings.cors_origins。设生产 origin，带该 Origin 须通过。"""
+    monkeypatch.setenv('CORS_ORIGINS', '["https://prod.example.com"]')
+    invite = InviteService(db_engine)
+    code = invite.generate(admin_id=1)
+    client = _client(db_engine)
+    client.post('/auth/register', json={'username': 'alice', 'password': 'password1', 'invite_code': code})
+    r = client.post(
+        '/auth/login',
+        json={'username': 'alice', 'password': 'password1'},
+        headers={'Origin': 'https://prod.example.com'},
+    )
+    assert r.status_code == 200
