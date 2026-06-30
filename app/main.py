@@ -1,6 +1,4 @@
-import json
 import logging
-import os
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
@@ -172,33 +170,19 @@ def get_db_for_health() -> Engine:
 app = FastAPI(title='兑奖了吗？API', version='0.1.0', lifespan=lifespan)
 
 # CORS（spec §4.3）：allow_credentials=True + 显式 origins（禁用通配符）。
-# 生产同源托管 SPA；开发期 Vite 5173 → FastAPI 8000 需显式白名单。
-# 中间件在 app 构造时确定 origins——此处直接从 env 读 CORS_ORIGINS（JSON 列表），
-# 不触发完整 Settings() 构造（后者要求 JWT_SECRET/CRYPTO_KEY，会在缺密钥的测试
-# collection 期 import app.main 即崩）。运行时 get_settings() 仍读同一 env 字段，
-# 两处保持一致。
+# 生产同源托管 SPA；开发期 Vite 5173 → FastAPI 8000 需显式白名单。origins 由
+# get_cors_origins() 读 CORS_ORIGINS env（不触发完整 Settings 构造——后者要求
+# JWT_SECRET/CRYPTO_KEY，缺密钥的测试 collection 期 import app.main 会崩）。中间件与
+# login Origin 校验共用此函数为单一真源（防两处读不同源致生产登录被 403 误拒）。
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 
-
-def _read_cors_origins() -> list[str]:
-    """从 env 读 CORS_ORIGINS（JSON 列表），缺省回退到开发默认。"""
-    raw = os.environ.get('CORS_ORIGINS')
-    if not raw:
-        return ['http://localhost:5173']
-    try:
-        parsed = json.loads(raw)
-        if isinstance(parsed, list):
-            return [str(o) for o in parsed]
-    except (json.JSONDecodeError, TypeError):
-        # H1（安全审查）：解析失败不得静默回退 dev default——运维写错 CORS_ORIGINS 不会察觉，
-        # 可能让 API 暴露给非预期 origin。显式 WARNING 让运维在日志里看到配置错误。
-        logger.warning('CORS_ORIGINS 不是有效 JSON 列表（%r），回退到开发默认 origin', raw)
-    return ['http://localhost:5173']
-
+# CORS origins 单一真源在 app.config.get_cors_origins（中间件与 login Origin 校验共用，
+# 防两处读不同源导致生产登录被 403 误拒）。H1 warning 回退逻辑也在该函数内。
+from app.config import get_cors_origins  # noqa: E402
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_read_cors_origins(),
+    allow_origins=get_cors_origins(),
     allow_credentials=True,
     allow_methods=['*'],
     allow_headers=['*'],
@@ -236,7 +220,9 @@ def health(db: Engine = Depends(get_db_for_health)):
         with db.connect() as conn:
             conn.execute(text('SELECT 1'))
         db_ok = True
-    except Exception:
+    except Exception as exc:
+        # hunter：db 故障不得静默——只在 HTTP 响应变 degraded 会让运维无迹可寻，延误发现。
+        logger.warning('/health db 探活失败: %s', exc)
         db_ok = False
     return {
         'status': 'ok' if db_ok else 'degraded',

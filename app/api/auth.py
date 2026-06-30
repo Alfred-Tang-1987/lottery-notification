@@ -28,7 +28,7 @@ from app.api.security import (
     hash_password,
     verify_password,
 )
-from app.config import get_settings
+from app.config import get_cors_origins, get_settings
 from app.models import User
 from app.services.invite_service import InviteService
 
@@ -142,7 +142,7 @@ def login(
     须在 cors_origins allow-list，否则 403（防 forced-login 到攻击者账号）。无 Origin
     放行（同源浏览器 fetch 默认带 Origin；缺 Origin 是同源工具/TestClient）。
     """
-    if origin and origin not in get_settings().cors_origins:
+    if origin and origin not in get_cors_origins():
         raise HTTPException(status.HTTP_403_FORBIDDEN, '跨站登录被拒')
     user = session.exec(select(User).where(User.username == body.username)).first()
     # 用户不存在与密码错误统一返回 401（避免用户名枚举）。

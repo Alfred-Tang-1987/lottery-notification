@@ -42,7 +42,17 @@ def force_verify(
         raise HTTPException(404, '开奖结果不存在')
     old = {'verified': dr.verified}
     dr.verified = True
-    session.add(PendingComparison(draw_result_id=dr.id))
+    # outbox 判重（quality review IMPORTANT）：重复 force-verify 不得插第二条 PendingComparison
+    # ——否则 CompareService._claim 按 id 认领两行，第二行写 comparisons 撞 (draw_result_id,
+    # ticket_id) unique 约束被 per-row 隔离吞掉，outbox 残留重复行破坏比对幂等。
+    existing = session.exec(
+        select(PendingComparison).where(
+            PendingComparison.draw_result_id == dr.id,
+            PendingComparison.processed_at.is_(None),
+        )
+    ).first()
+    if existing is None:
+        session.add(PendingComparison(draw_result_id=dr.id))
     write_audit(
         session,
         admin_id=admin.id,

@@ -1,3 +1,6 @@
+import logging
+from unittest.mock import MagicMock
+
 import pytest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
@@ -70,3 +73,21 @@ def test_validate_startup_catches_invalid_crypto_key(monkeypatch):
     monkeypatch.setenv('CRYPTO_KEY_V1', 'k' * 16)
     with pytest.raises(Exception):
         validate_startup()
+
+
+def test_health_logs_when_db_down(caplog):
+    """hunter：/health db 故障不得静默吞——须 logger.warning 让运维在日志察觉（否则只在
+    HTTP 响应变 degraded，服务端无迹可寻，延误故障发现）。"""
+    bad = MagicMock()
+    bad.connect.side_effect = OSError('connection refused')
+    app.dependency_overrides[get_db_for_health] = lambda: bad
+    try:
+        with caplog.at_level(logging.WARNING, logger='app.main'):
+            r = TestClient(app).get('/health')
+        assert r.status_code == 200
+        assert r.json()['db'] == 'down'
+        assert any(rec.levelno >= logging.WARNING for rec in caplog.records), (
+            '/health db 故障应 logger.warning，不该静默吞'
+        )
+    finally:
+        app.dependency_overrides.clear()

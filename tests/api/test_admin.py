@@ -84,6 +84,32 @@ def test_admin_force_verify_creates_pending_comparison(db_engine, monkeypatch):
         assert pc is not None and pc.processed_at is None
 
 
+def test_admin_force_verify_idempotent_no_duplicate_outbox(db_engine, monkeypatch):
+    """quality review IMPORTANT：重复 force-verify 不得插重复 PendingComparison——否则
+    CompareService._claim 按 id 认领两行，第二行写 comparisons 撞 (draw_result_id,ticket_id)
+    unique 约束（被 per-row 隔离吞掉），outbox 残留重复行破坏比对幂等。"""
+    with Session(db_engine) as s:
+        dr = DrawResult(
+            lottery_code='ssq',
+            draw_no='063',
+            draw_date=datetime.utcnow(),
+            numbers_json='{"front":[1,2,3,4,5,6],"back":[7]}',
+            source='mxnzp',
+            verified=False,
+            version=1,
+        )
+        s.add(dr)
+        s.commit()
+        s.refresh(dr)
+        dr_id = dr.id
+    client = _admin_client(db_engine, monkeypatch)
+    assert client.post(f'/admin/draw-results/{dr_id}/force-verify').status_code == 200
+    assert client.post(f'/admin/draw-results/{dr_id}/force-verify').status_code == 200
+    with Session(db_engine) as s:
+        pcs = s.exec(select(PendingComparison).where(PendingComparison.draw_result_id == dr_id)).all()
+        assert len(pcs) == 1, f'重复 force-verify 不应插重复 outbox，实际 {len(pcs)} 行'
+
+
 def test_non_admin_forbidden(db_engine, monkeypatch):
     _set_required_env(monkeypatch)
     with Session(db_engine) as s:
@@ -142,7 +168,7 @@ def test_admin_force_verify_writes_audit_log(db_engine, monkeypatch):
 def test_admin_push_logs_limit_is_capped(db_engine, monkeypatch):
     """push-logs limit 须被限制在合理上限，防止无界查询。"""
     with Session(db_engine) as s:
-        for i in range(5):
+        for _i in range(5):
             s.add(NotificationLog(user_id=1, type='bark', payload='{}', status='sent'))
         s.commit()
     client = _admin_client(db_engine, monkeypatch)
