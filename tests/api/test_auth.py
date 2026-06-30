@@ -163,3 +163,31 @@ def test_csrf_endpoint_returns_token():
     assert r.status_code == 200
     assert 'csrf_token' in r.json()
     assert len(r.json()['csrf_token']) > 0
+
+
+def test_login_cross_origin_rejected(db_engine):
+    """安全审查 #3（login CSRF）：恶意 Origin → 403，防 forced-login 到攻击者账号。"""
+    invite = InviteService(db_engine)
+    code = invite.generate(admin_id=1)
+    client = _client(db_engine)
+    client.post('/auth/register', json={'username': 'alice', 'password': 'password1', 'invite_code': code})
+    r = client.post(
+        '/auth/login',
+        json={'username': 'alice', 'password': 'password1'},
+        headers={'Origin': 'http://evil.com'},
+    )
+    assert r.status_code == 403
+
+
+def test_login_allowed_origin_accepted(db_engine):
+    """允许的 Origin（cors_origins 之一）→ 正常登录（不误伤同源/SPA 请求）。"""
+    invite = InviteService(db_engine)
+    code = invite.generate(admin_id=1)
+    client = _client(db_engine)
+    client.post('/auth/register', json={'username': 'alice', 'password': 'password1', 'invite_code': code})
+    r = client.post(
+        '/auth/login',
+        json={'username': 'alice', 'password': 'password1'},
+        headers={'Origin': 'http://localhost:5173'},
+    )
+    assert r.status_code == 200

@@ -61,6 +61,17 @@ test('run-plans.js inlines review_empty 空响应守卫 + review_failed_no_findi
   assert.match(libSrc, /silent_failures:\s*\{\s*type:\s*'array',\s*items:/)
 })
 
+test('REGRESSION: allGreen break 在 detectOscillation 之前（防收敛误报 OSCILLATING）', () => {
+  // r3 三 reviewer 全 ok 时，若 detectOscillation（核心文件被审 ≥3 轮）先判 halt，
+  // allGreen break 永远轮不到 → 收敛误报（T2 invite / T5 channels）。顺序断言保证
+  // allGreen 提前放行 review 共识，真矛盾（不全绿）才落进 detectOscillation halt。
+  const allGreenIdx = runSrc.indexOf('if (allGreen(spec, qual, hunt)) break')
+  const oscIdx = runSrc.indexOf('const osc = detectOscillation')
+  assert.notEqual(allGreenIdx, -1, 'run-plans.js 须有 allGreen break')
+  assert.notEqual(oscIdx, -1, 'run-plans.js 须有 detectOscillation 调用')
+  assert.ok(allGreenIdx < oscIdx, 'allGreen break 必须在 detectOscillation 之前（收敛误报根治）')
+})
+
 test('run-plans.js orchestrator wires new placeholders + gate lint loop', () => {
   assert.match(runSrc, /referencePaths: formatReferencePaths/)
   assert.match(runSrc, /languageChecklist: languageChecklist\(cfg\.language\)/)

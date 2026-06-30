@@ -14,7 +14,7 @@ Spec §4.3 / §6.1 / §6.2：
 UPDATE...RETURNING 原子占用，失败即回滚（不建半截用户、不漏占码）。
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
@@ -28,6 +28,7 @@ from app.api.security import (
     hash_password,
     verify_password,
 )
+from app.config import get_settings
 from app.models import User
 from app.services.invite_service import InviteService
 
@@ -56,9 +57,11 @@ class LoginIn(BaseModel):
 def csrf(response: Response) -> dict[str, str]:
     """签发 CSRF token：返回体 + 非 httpOnly cookie（供 SPA 读取做 double-submit）。"""
     token = generate_csrf_token()
-    # samesite=lax：跨站 POST 不带 cookie，配合 CSRF token 防 CSRF；secure=False
-    # 与 session cookie 一致（生产同源/反代 TLS，开发期 http）。
-    response.set_cookie('csrf_token', token, httponly=False, samesite='lax')
+    # samesite=lax：跨站 POST 不带 cookie，配合 CSRF token 防 CSRF。
+    # secure 从配置（生产 True 仅 HTTPS 传输；开发 http 关闭）——安全审查 #2。
+    response.set_cookie(
+        'csrf_token', token, httponly=False, samesite='lax', secure=get_settings().cookie_secure,
+    )
     return {'csrf_token': token}
 
 
@@ -131,8 +134,16 @@ def login(
     body: LoginIn,
     response: Response,
     session: Session = Depends(get_session_dep),
+    origin: str | None = Header(default=None, alias='Origin'),
 ) -> dict[str, object]:
-    """登录：校验密码，签发 JWT 并写入 httpOnly session cookie。"""
+    """登录：校验密码，签发 JWT 并写入 httpOnly session cookie。
+
+    Login CSRF 缓解（安全审查 #3）：浏览器跨站请求必带 Origin header——有 Origin 则
+    须在 cors_origins allow-list，否则 403（防 forced-login 到攻击者账号）。无 Origin
+    放行（同源浏览器 fetch 默认带 Origin；缺 Origin 是同源工具/TestClient）。
+    """
+    if origin and origin not in get_settings().cors_origins:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, '跨站登录被拒')
     user = session.exec(select(User).where(User.username == body.username)).first()
     # 用户不存在与密码错误统一返回 401（避免用户名枚举）。
     if user is None or not verify_password(body.password, user.password_hash):
@@ -143,7 +154,7 @@ def login(
         token,
         httponly=True,
         samesite='lax',
-        secure=False,
+        secure=get_settings().cookie_secure,
         max_age=_SESSION_MAX_AGE_SECONDS,
     )
     return {'id': user.id, 'username': user.username, 'role': user.role}

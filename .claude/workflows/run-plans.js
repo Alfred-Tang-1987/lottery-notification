@@ -670,9 +670,13 @@ async function runTask(plan, task) {
       return { halted: true, reason: emptyFailedReason, diag: { spec: spec?.diagnostics, qual: qual?.diagnostics, hunt: hunt?.diagnostics } }
     }
     state.perTask[task.id].files_touched_per_round.push(unionFiles(spec, qual, hunt))
+    // allGreen 必须在 detectOscillation 之前：否则 r3 三 reviewer 全 ok 时，先被
+    // OSCILLATING（核心文件被审 ≥3 轮）截胡 halt，allGreen break 永远轮不到 → 收敛误报
+    // （T2 invite / T5 channels）。真矛盾（reviewer 持续分歧，如 T7 claims 时区）不会全绿，
+    // 自然落进 detectOscillation 正确 halt 让人介入。单轮全绿即 review 共识，足以放行。
+    if (allGreen(spec, qual, hunt)) break
     const osc = detectOscillation(state.perTask[task.id].files_touched_per_round)
     if (osc.oscillating) return { halted: true, reason: 'OSCILLATING', diag: osc }
-    if (allGreen(spec, qual, hunt)) break
     if (round === 3) return { halted: true, reason: 'review max rounds', diag: { spec: spec.diagnostics, qual: qual.diagnostics, hunt: hunt.diagnostics } }
     const findings = collectReviewFindings(spec, qual, hunt)
     impl = await dispatchImpl(buildPrompt('implementor', implCtx(formatFindings(findings), `修复 review round ${round} 问题（${findings.length} 项发现：spec/quality/hunter）。`)), { schema: SCHEMAS.implementor, model, label: `impl:${task.id}:fix${round}` }, model)
