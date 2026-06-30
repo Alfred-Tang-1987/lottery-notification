@@ -207,6 +207,11 @@ from app.api.auth import router as auth_router  # noqa: E402
 
 app.include_router(auth_router)
 
+# 渠道配置 API（Plan 05 / T5）：加密写入/读取，对齐 Notifier._decrypt_config。
+from app.api.channels import router as channels_router  # noqa: E402
+
+app.include_router(channels_router)
+
 
 @app.get('/health')
 def health(db: Engine = Depends(get_db_for_health)):
