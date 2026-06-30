@@ -46,9 +46,7 @@ def verify_password(plain: str, hashed: str) -> bool:
         return False
 
 
-def create_session_token(
-    *, user_id: int, role: str, expires_minutes: int = 60 * 24 * 7
-) -> str:
+def create_session_token(*, user_id: int, role: str, expires_minutes: int = 60 * 24 * 7) -> str:
     """签发 JWT session token（HS256），默认 7 天过期。"""
     now = datetime.now(UTC)
     exp = int((now + timedelta(minutes=expires_minutes)).timestamp())
@@ -72,3 +70,15 @@ def decode_session_token(token: str) -> dict | None:
 def generate_csrf_token() -> str:
     """生成随机 CSRF token（url-safe，>= 32 字符），供 double-submit。"""
     return secrets.token_urlsafe(32)
+
+
+def csrf_tokens_match(cookie_token: str | None, header_token: str | None) -> bool:
+    """判断 double-submit 的 cookie token 与 header token 是否一致且非空。
+
+    抽成纯函数便于单测：两者均非空且字符串相等才放行；任一缺失/不一致即拒绝。
+    不在此处抛 HTTP 异常——保持 security 层零 web 框架依赖（仅 FastAPI 的
+    HTTPException 由调用点 deps/auth 触发），与领域/工具层职责一致。
+    """
+    if not cookie_token or not header_token:
+        return False
+    return cookie_token == header_token

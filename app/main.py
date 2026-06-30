@@ -1,4 +1,6 @@
+import json
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
@@ -168,6 +170,42 @@ def get_db_for_health() -> Engine:
 
 
 app = FastAPI(title='兑奖了吗？API', version='0.1.0', lifespan=lifespan)
+
+# CORS（spec §4.3）：allow_credentials=True + 显式 origins（禁用通配符）。
+# 生产同源托管 SPA；开发期 Vite 5173 → FastAPI 8000 需显式白名单。
+# 中间件在 app 构造时确定 origins——此处直接从 env 读 CORS_ORIGINS（JSON 列表），
+# 不触发完整 Settings() 构造（后者要求 JWT_SECRET/CRYPTO_KEY，会在缺密钥的测试
+# collection 期 import app.main 即崩）。运行时 get_settings() 仍读同一 env 字段，
+# 两处保持一致。
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+
+
+def _read_cors_origins() -> list[str]:
+    """从 env 读 CORS_ORIGINS（JSON 列表），缺省回退到开发默认。"""
+    raw = os.environ.get('CORS_ORIGINS')
+    if not raw:
+        return ['http://localhost:5173']
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            return [str(o) for o in parsed]
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return ['http://localhost:5173']
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_read_cors_origins(),
+    allow_credentials=True,
+    allow_methods=['*'],
+    allow_headers=['*'],
+)
+
+# auth 路由（Plan 05 / T4）
+from app.api.auth import router as auth_router  # noqa: E402
+
+app.include_router(auth_router)
 
 
 @app.get('/health')
