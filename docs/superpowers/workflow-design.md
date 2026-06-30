@@ -83,7 +83,9 @@ agent(model=opus/sonnet) 调用
 **关键设计**：
 
 1. **`model_unavailable` 新 status**（§4.1/§4.4）：agent 遇 quota/rate-limit → 返回 `status:'model_unavailable'`（非 blocked/failed）。workflow 路由：`model_unavailable → halt`（不升级、不降级）。
-2. **双重限额检测**：agent 自报 `model_unavailable` + workflow 捕获 agent() 抛错（限额常致 agent 直接抛错而非返回 status）。workflow 判断错误关键词（quota / rate-limit / 429 / overloaded）。
+2. **双重限额检测**：agent 自报 `model_unavailable` + workflow 捕获 agent() 抛错（限额常致 agent 直接抛错而非返回 status）。workflow 判断错误关键词（quota / rate-limit / 429 / overloaded / **中文 router 限额**：`使用上限|限额|额度|超出.*限制`，本机 router 返回中文错误，旧 `isQuotaError` 正则不认 → 不归类 → 顶层 uncaught crash）。
+   - **`dispatchImpl` null guard**（2026-07-01）：router 限额中文错误常被 agent runtime 吞为空响应（`agent()` 返回 null 而非 throw）。dispatchImpl 不处理 null → 返回 null → 顶层 `boot.halted`/`impl.halted` crash。修：`agent()` 返回 null → 视作 `model_unavailable` halt（覆盖 bootstrap + 所有 task dispatch），不依赖 isQuotaError 认中文（双保险）。
+   - **`normalizeCompleted` 分隔符兼容**（2026-07-01）：bootstrap agent 返回 completed id 偶用连字符（`01-T1`），旧正则只认斜杠 `/` → 漏过 normalize → 与 taskKey `plan-01/T1` 不等 → 已完成 task 误判 pending → 重做 → 脏工作树 + OSCILLATING。修：正则 `[\/\-]+` 兼容两种分隔符。识别侧 `extractTaskKey` 不变（commit convention 固定斜杠）。
 3. **fallback 链 [opus, sonnet, haiku] 仅用于 halt/finalReport 保存**（逐一尝试）：
    ```javascript
    async function finalReportWithFallback(ctx) {
@@ -635,7 +637,13 @@ function detectOscillation(filesTouchedPerRound) {
 }
 ```
 
-**触发动作**：振荡 → orchestrator 不自动 halt（避免丢失 in-progress work），而是写 per-task `{status: OSCILLATING, oscillation_info}` + surface 用户决定（继续/跳过/干预）。
+**触发动作**：振荡 → orchestrator halt（写 per-task `{status: OSCILLATING, blocked_info}` + finalReport 写盘 manifest/blocked.md + `log()` surface）。
+
+**⚠️ allGreen 必须在 detectOscillation 之前**（收敛误报根治，2026-07-01）：run-plans.js review rounds 循环里 `if (allGreen(spec, qual, hunt)) break` 在 `detectOscillation` 检查之前调用。否则 r3 三 reviewer 全 ok 时，先被「核心文件被审 ≥3 轮」OSCILLATING 截胡、allGreen break 永远轮不到 → 收敛误报。Plan 05 跑 T2/T5 时反复踩此（r3 全 ok 仍 halt）。提前后：
+- **收敛**（r3 全 ok）→ allGreen break 放行，不进 OSCILLATING；
+- **真矛盾**（reviewer 持续分歧，如 T7 claims 时区：quality 要 CST「雷 2 同行同时区」vs hunter 要 naive UTC「主流惯例」，CLAUDE.md 两规则冲突）→ 永不全绿 → 落进 detectOscillation halt，让人介入打破规则冲突（手动选一侧 + commit + 全新跑续）。
+
+**files_touched 的来源**：review agent 的返回值 `diagnostics.files_touched` 由 orchestrator 追加到 in-memory `filesTouchedPerRound[]`。review agent 在检查 diff 时顺带记录变更文件列表。注：files_touched 记录的是「review 审查的文件」，核心文件每轮都被审查是正常的——故 detectOscillation 的「≥3 轮」规则只对「真矛盾/反复修同一文件不收敛」有意义，对「收敛」由前置 allGreen 兜底放行。
 
 **files_touched 的来源**：review agent 的返回值 `diagnostics.files_touched` 由 orchestrator 追加到 in-memory `filesTouchedPerRound[]`。review agent 在检查 diff 时顺带记录变更文件列表。
 
