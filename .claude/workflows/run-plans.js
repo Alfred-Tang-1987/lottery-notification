@@ -217,6 +217,15 @@ This system's core value is "中奖永不静默漏通知". Beyond the generic pa
 ${lines}
 For each, verify the changed code does not fall into the trap. Report a silent_failure with the specific trap name + file:line + why it violates.`
 }
+// 跨 session 失败方案追踪：bootstrap 扫 runs/*/manifest.json 提取历史失败方案，
+// 注入 implementor prompt 防止重复相同失败路径。不填 → 空串 → prompt 段消失。
+function formatFailedApproaches(items) {
+  if (!Array.isArray(items) || items.length === 0) return ''
+  const lines = items.map(it => `- ${it.task_id}: ${it.reason} — ${it.error}`).join('\n')
+  return `## Prior Failed Approaches (do not repeat)
+${lines}
+If your plan is similar to any above, explicitly state the difference.`
+}
 const LANGUAGE_CHECKLISTS = {
   python: `## Language-specific checks (Python / FastAPI / SQLModel)
 - SQL injection: f-strings/concat in queries → parameterized queries
@@ -282,7 +291,7 @@ const SCHEMAS = {
     properties: {
       status: { type: 'string', enum: ['ok', 'failed', 'blocked'] },
       evidence: { type: 'object', required: ['config', 'plans', 'completed', 'dirty_tree'],
-        properties: { config: { type: 'object' }, plans: { type: 'array' }, completed: { type: 'array' }, dirty_tree: { type: 'boolean' } } },
+        properties: { config: { type: 'object' }, plans: { type: 'array' }, completed: { type: 'array' }, dirty_tree: { type: 'boolean' }, failed_approaches: { type: 'array' } } },
       diagnostics: { type: 'object' }, summary: { type: 'string' },
     },
   },
@@ -337,14 +346,16 @@ Steps:
 4. git log → completed task ids via convention feat(plan-X/T-Y).
 5. git status --porcelain → dirty_tree.
 6. For each leaf task return its model (sonnet|opus|undefined→sonnet) and title (the description text from the Task header).
+7. If runs/ directory exists: scan runs/*/manifest.json files. For each, read per_task object. For each task_id in per_task that has blocked_info, extract {task_id, reason (from blocked_info.reason), error (from blocked_info.last_error)}. Filter to task_ids that match leaf tasks in the current plans. Return as failed_approaches in evidence. If runs/ does not exist → failed_approaches=[].
 
-Return {status, evidence:{config (include ALL fields read in step 1, even optional ones if present), plans:[{id, file, seq, tasks:[{id, model, title}]}], completed:[...], dirty_tree}, summary}.
+Return {status, evidence:{config (include ALL fields read in step 1, even optional ones if present), plans:[{id, file, seq, tasks:[{id, model, title}]}], completed:[...], dirty_tree, failed_approaches:[{task_id, reason, error}]}, summary}.
 RED FLAG: evidence 必须是真实读取结果，绝不编造。`,
 
   implementor: `You are the IMPLEMENTOR for {{taskId}} (plan {{planId}}). TDD strict (RED→GREEN→REFACTOR). {{retryNote}}
 
 Inputs: specPath={{specPath}} testCommand={{testCommand}} planFile={{planFilePath}} taskId={{taskId}} fixIssues={{fixIssues}} fetchedContext={{fetchedContext}}
 {{referencePaths}}
+{{failedApproaches}}
 {{fetchedContext}}
 
 Steps:
@@ -535,7 +546,7 @@ Inputs: mode={{mode}} state={{stateJson}} blockedInfo={{blockedInfo}} runsDir={{
 Steps:
 1. mkdir -p {{runsDir}}.
 2. Write {{runsDir}}/manifest.json = {run_ts:{{runTs}}, mode:{{mode}}, plans:[...], per_task:{<taskId>:{status,model,review_rounds,files_touched_per_round,commit_sha,blocked_info}}, result}.
-3. If mode=halted: write {{runsDir}}/blocked.md from {{blockedInfo}} (the blocked task's blocked_info JSON — render EACH field human-readably: plan, task, reason, category, last_error, suggested_fix, quota_exhausted, likely_source). Do NOT hunt for these fields in state — they are provided inline in blockedInfo.
+3. If mode=halted: write {{runsDir}}/blocked.md from {{blockedInfo}} (the blocked task's blocked_info JSON — render EACH field human-readably: plan, task, reason, category, last_error, suggested_fix, quota_exhausted, likely_source, failed_approach). For failed_approach, render as: "Failed Approach: <failed_approach.task_id>: <failed_approach.reason> — <failed_approach.error>". Do NOT hunt for these fields in state — they are provided inline in blockedInfo.
 4. If mode=halted: run "git status --porcelain" and "git diff --stat". BEST-EFFORT — if git fails (not a repo / index corrupt), skip this section (do NOT block manifest.json write).
    If "git status --porcelain" output is non-empty, append a "## Working Tree (dirty)" section to blocked.md with: the porcelain output (file list) + the diff --stat output (change summary) + 接手指引（implementor 改动未提交，留在工作树。选项：git diff <file> 查看 / git checkout -- <file> 丢弃 / 手动修后 git commit -m "feat(plan-X/T-Y): ..." 再全新跑续，见 USAGE.md §7.1）。
    If output is empty, append "## Working Tree (clean)" — no uncommitted changes（likely_source=gate restored 时预期如此）。
@@ -549,6 +560,7 @@ RED FLAG: manifest 必须真实写入磁盘（你 ls 确认）。stateJson 是 o
 const state = {
   runTs: null, config: null, completed: [], currentPlan: null, currentTask: null,
   perTask: {},  // {taskId: {planId, status, model, review_rounds, files_touched_per_round, commit_sha, blocked_info}}
+  failedApproaches: {},  // {taskId: [{task_id, reason, error}]}
 }
 
 // ===== halt（§13a：累积 blocked_info → finalReport halted 模式写盘 + surface）=====
@@ -574,6 +586,7 @@ async function halt(plan, task, r) {
       suggested_fix: r.diag?.suggested_fix || null,
       quota_exhausted: r.reason === 'model_unavailable',
       likely_source: haltLikelySource(r.reason),
+      failed_approach: { task_id: tid, reason: r.reason, error: r.diag?.last_error || r.reason },
       raw: r.diag || {},
     } }
   phase('Finalize')
@@ -603,7 +616,7 @@ async function runTask(plan, task) {
 
   // —— implementor + BLOCKED 升级链（§2.3）——
   let model = task.model || 'sonnet'
-  const implCtx = (fix, note, ctx = '') => ({ planId: plan.id, taskId: task.id, planFilePath: plan.file, specPath: cfg.spec_path, testCommand: cfg.test_command, fixIssues: fix, retryNote: note, fetchedContext: ctx, referencePaths: formatReferencePaths(cfg.reference_paths) })
+  const implCtx = (fix, note, ctx = '') => ({ planId: plan.id, taskId: task.id, planFilePath: plan.file, specPath: cfg.spec_path, testCommand: cfg.test_command, fixIssues: fix, retryNote: note, fetchedContext: ctx, referencePaths: formatReferencePaths(cfg.reference_paths), failedApproaches: formatFailedApproaches(state.failedApproaches?.[task.id] || []) })
   let impl
   impl = await dispatchImpl(buildPrompt('implementor', implCtx('', '')), { schema: SCHEMAS.implementor, model, label: `impl:${task.id}` }, model)
   if (impl.halted) return impl
@@ -748,13 +761,19 @@ try {
 if (boot.halted) { await halt(null, null, { reason: 'model_unavailable', diag: boot.diag }); return { result: 'halted', reason: 'model_unavailable' } }
 if (boot.status !== 'ok') { await halt(null, null, { reason: `bootstrap ${boot.status}`, diag: boot.diagnostics }); return { result: 'halted', reason: `bootstrap ${boot.status}` } }
 state.config = boot.evidence.config
-// plan-scoped completed：bootstrap 从 git log 解析的 id（"01/T1" / "plan-01/T1" / 裸 "T1"）
 // 归一化为 "plan-{seq}/T-{id}"。run-2 旧逻辑【去】plan 前缀→单 plan 内能匹配，但跨 plan 同名
 // task（Plan 01/02 都有 T1-T10）会让 Plan 02 的 T2 被 Plan 01 的 T2 误 skip → domain layer 残缺。
 // plan-scoped key 修复：见下方比对 `plan-${plan.seq}/${task.id}`。
 // args.completed 可手动覆盖（resume 时显式传已 commit 的 plan-scoped id 列表，双保险）。
 const _rawCompleted = (Array.isArray(args.completed) && args.completed.length ? args.completed : boot.evidence.completed) || []
 state.completed = normalizeCompleted(_rawCompleted)
+// 跨 session 失败方案追踪：按 task_id 索引存入 state，供 implCtx 注入 implementor prompt
+if (Array.isArray(boot.evidence.failed_approaches)) {
+  for (const fa of boot.evidence.failed_approaches) {
+    if (!state.failedApproaches[fa.task_id]) state.failedApproaches[fa.task_id] = []
+    state.failedApproaches[fa.task_id].push(fa)
+  }
+}
 
 for (const plan of boot.evidence.plans) {
   if (!matchesPlanFilter(plan, args.plan)) continue
