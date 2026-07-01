@@ -151,6 +151,13 @@ function haltLikelySource(reason) {
   return 'unknown'
 }
 
+// fix-round implementor 的 model 选择（§5.1 难度递增：最后 1 轮 fix 用最强 model）—— inline 自 lib.js
+// round 1 failed → fix(用 baseModel) → round 2 failed → fix(最后 1 次，强制 opus) → round 3 failed → halt。
+// 已是 opus 的 task 返回 'opus'（语义等价）。是升级而非降级，与 §2.4「限额 halt 不降级」纪律一致。
+function fixModelForRound(round, baseModel) {
+  return round === 2 ? 'opus' : baseModel
+}
+
 // ===== runtime helper（调 agent()，故留此文件不进 lib.js；决策逻辑走上面的纯函数）=====
 // review agent 的统一派发：异常归类为 model_unavailable/agent_error sentinel（绕过 schema，orchestrator 显式判断）。
 async function safeAgent(prompt, opts) {
@@ -663,7 +670,7 @@ async function halt(plan, task, r) {
 //              └─failed──→ retry once ─→ halt 'implementor X after retry'
 //              └─ok/done_with_concerns──→ REVIEW rounds(spec‖qual‖hunt 并行)
 //   REVIEW ──全绿──→ SIMPLIFY ──changed──→ re-review ──失败──→ simplifyFailed(commit 回退)
-//         └─任一❌──→ IMPL(fix-round) ──blocked/failed/needs_context──→ halt 'implementor X in fix-round N'
+//         └─任一❌──→ IMPL(fix-round, round=2 强制 opus) ──blocked/failed/needs_context──→ halt 'implementor X in fix-round N'
 //         └─max 3 轮──→ halt 'review max rounds'；振荡──→ halt 'OSCILLATING'
 //   SIMPLIFY ──→ COMMIT ──非 ok──→ halt 'commit failed'
 // 任一 agent 限额/异常──→ halt 'model_unavailable' / 'agent_error'（reviewHaltReason 判定）
@@ -761,7 +768,9 @@ async function runTask(plan, task) {
     if (osc.oscillating) return { halted: true, reason: 'OSCILLATING', diag: osc }
     if (round === 3) return { halted: true, reason: 'review max rounds', diag: { spec: spec.diagnostics, qual: qual.diagnostics, hunt: hunt.diagnostics } }
     const findings = collectReviewFindings(spec, qual, hunt)
-    impl = await dispatchImpl(buildPrompt('implementor', implCtx(formatFindings(findings), `修复 review round ${round} 问题（${findings.length} 项发现：spec/quality/hunter）。`)), { schema: SCHEMAS.implementor, model, label: `impl:${task.id}:fix${round}` }, model)
+    // 最后 1 轮 fix（round=2）强制 opus：难度递增，最后机会用最强 model 降低 halt 概率。
+    const fixModel = fixModelForRound(round, model)
+    impl = await dispatchImpl(buildPrompt('implementor', implCtx(formatFindings(findings), `修复 review round ${round} 问题（${findings.length} 项发现：spec/quality/hunter）。`)), { schema: SCHEMAS.implementor, model: fixModel, label: `impl:${task.id}:fix${round}` }, fixModel)
     if (impl.halted) return impl
     // Bug 4: fix-round implementor 返回 blocked/failed/needs_context 时不能静默忽略——
     // 否则 orchestrator 在 stale code 上继续下一轮 review，必然重复发现同样问题 → 浪费轮次。

@@ -187,6 +187,15 @@ export function haltLikelySource(reason) {
   return 'unknown'
 }
 
+// fix-round implementor 的 model 选择（§5.1 难度递增：最后 1 轮 fix 用最强 model）。
+// review rounds 循环：round 1 failed → fix(用 baseModel) → round 2 failed → fix(最后 1 次) → round 3 failed → halt。
+// 故 round=2 的 fix 是最后机会，强制 opus 降低 halt 概率（halt 后人工介入成本 >> opus 调用）。
+// 已是 opus 的 task 返回 'opus'（语义等价，不重复升级）。
+// 是升级而非降级，与 §2.4「限额 halt 不降级」纪律一致。
+export function fixModelForRound(round, baseModel) {
+  return round === 2 ? 'opus' : baseModel
+}
+
 // 把 bootstrap 从 git log 解析的 completed id 归一化为 plan-scoped key "plan-{seq}/T-{id}"。
 // 提交约定单一事实源（emission ↔ recognition 对称）。
 // 任何 task 的 git 提交消息必须是 feat(plan-XX/TY): <title>——这是 bootstrap 扫 git log

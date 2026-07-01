@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, isQuotaError, errStr, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource } from '../lib.js'
+import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, isQuotaError, errStr, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound } from '../lib.js'
 
 const ok = { status: 'ok', diagnostics: { files_touched: ['a.py'] } }
 const ok2 = { status: 'ok', diagnostics: { files_touched: ['b.py'] } }
@@ -196,4 +196,18 @@ test('haltLikelySource: bootstrap 路径 → bootstrap frontmatter', () => {
 test('haltLikelySource: 未知 reason → unknown', () => {
   assert.equal(haltLikelySource('some novel reason'), 'unknown')
   assert.equal(haltLikelySource(''), 'unknown')
+})
+
+// —— fixModelForRound（最后 1 轮 fix 固定 opus；§5.1 难度递增，最后机会用最强 model）——
+// review rounds 循环：round 1 failed → fix(用 baseModel) → round 2 failed → fix(最后 1 次，升级 opus) → round 3 failed → halt（无 fix）
+// 故 round=1 的 fix 是首次尝试（用 task.model），round=2 的 fix 是最后机会（强制 opus）。
+// 已是 opus 的 task 不重复升级（语义等价，但意图清晰且避免日志混淆）。
+test('fixModelForRound: round 1 用 baseModel（首次 fix，不升级）', () => {
+  assert.equal(fixModelForRound(1, 'sonnet'), 'sonnet')
+  assert.equal(fixModelForRound(1, 'opus'), 'opus')
+})
+
+test('fixModelForRound: round 2 强制 opus（最后 1 轮 fix，最后机会用最强 model）', () => {
+  assert.equal(fixModelForRound(2, 'sonnet'), 'opus')   // sonnet task 升级
+  assert.equal(fixModelForRound(2, 'opus'), 'opus')     // 已是 opus 不重复升级（语义等价）
 })
