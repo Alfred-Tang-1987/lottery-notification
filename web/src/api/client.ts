@@ -40,12 +40,23 @@ async function ensureCsrf(): Promise<string> {
 }
 
 /**
- * 解析非 2xx 响应体，构造携带原始上下文的错误消息。
+ * 带 HTTP status 的 API 错误，供调用方区分认证/授权错误与瞬态故障。
+ */
+export class ApiError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
+/**
+ * 解析非 2xx 响应体，返回携带原始上下文的错误消息字符串。
  *
  * 策略：先 r.text()（永不抛错）再尝试 JSON.parse；解析失败或无 detail 时，
  * 把原始响应文本（截断防巨量日志）附进错误消息，不静默归为 `{}`。
  */
-async function buildErrorFromResponse(r: Response): Promise<Error> {
+async function errorMessageFromResponse(r: Response): Promise<string> {
   const status = r.status;
   let raw = "";
   try {
@@ -54,23 +65,19 @@ async function buildErrorFromResponse(r: Response): Promise<Error> {
     // body 读取本身失败（极少见，如流已被消费）—— raw 保持空。
   }
 
-  let detail: string | undefined;
   if (raw) {
     try {
       const parsed = JSON.parse(raw) as { detail?: unknown };
       if (typeof parsed.detail === "string" && parsed.detail) {
-        detail = parsed.detail;
+        return parsed.detail;
       }
     } catch {
-      // 非 JSON 响应体（HTML 错误页、纯文本等）—— detail 留空，下方附 raw。
+      // 非 JSON 响应体（HTML 错误页、纯文本等）—— 下方附 raw。
     }
   }
 
-  if (detail) {
-    return new Error(detail);
-  }
   const snippet = raw ? `: ${raw.slice(0, 200)}` : "";
-  return new Error(`HTTP ${status}${snippet}`);
+  return `HTTP ${status}${snippet}`;
 }
 
 export async function api<T = unknown>(
@@ -102,11 +109,11 @@ export async function api<T = unknown>(
   if (r.status === 401) {
     // 未登录 → 回登录页（spec §12.x：受保护资源 401 统一重定向）。
     window.location.href = "/login";
-    throw new Error("未登录");
+    throw new ApiError(401, "未登录");
   }
 
   if (!r.ok) {
-    throw await buildErrorFromResponse(r);
+    throw new ApiError(r.status, await errorMessageFromResponse(r));
   }
 
   return (await r.json()) as T;
