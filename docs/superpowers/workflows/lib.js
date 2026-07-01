@@ -389,6 +389,14 @@ Steps:
 - Discipline: avoided overbuilding (YAGNI)? built only what was requested? followed existing patterns?
 - Testing: tests verify real behavior (not mock behavior)? comprehensive?
 
+## 6-Dimension Quick Check (before reporting)
+- Cognitive Overload: any function > 50 lines or nesting > 3 levels?
+- Change Propagation: did you change files unrelated to this task?
+- Knowledge Duplication: did you paste similar logic in 2+ places?
+- Accidental Complexity: did you add abstraction not needed by current requirements?
+- Dependency Disorder: any business layer importing infrastructure implementation?
+- Domain Distortion: are variable names domain terms, not generic (data/item/info)?
+
 If self-review finds issues, fix them now.
 
 Return {status, evidence:{tests_exit_code, files_changed:[...], pytest_summary}, diagnostics:{blocked_category, last_error, suggested_fix, concerns} (diagnostics only if blocked/done_with_concerns), summary}.
