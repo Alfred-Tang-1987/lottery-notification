@@ -168,6 +168,30 @@ onMounted(() => {
         </div>
       </section>
 
+      <!-- 我的命中 -->
+      <section v-if="data.recent_hits && data.recent_hits.length > 0" class="card" aria-labelledby="hits-title">
+        <div class="card-header">
+          <h2 id="hits-title" class="card-title">我的命中</h2>
+        </div>
+        <div class="card-body">
+          <div class="hits-grid">
+            <article v-for="hit in data.recent_hits" :key="hit.id" class="hit-card">
+              <div class="hit-header">
+                <span class="hit-lottery">{{ hit.lottery_name }}</span>
+                <span class="hit-draw">第{{ hit.draw_no }}期</span>
+              </div>
+              <div class="hit-tier" v-if="hit.prize_tier">{{ hit.prize_tier }}等奖</div>
+              <div class="hit-amount">{{ fmtMoney(hit.prize_amount) }}</div>
+              <div class="hit-status">
+                <span v-if="hit.claim_status === 'claimed'" class="tag claimed">已领取</span>
+                <span v-else-if="hit.claim_status === 'pending'" class="tag pending">待兑奖</span>
+                <span v-else class="tag none">无兑奖</span>
+              </div>
+            </article>
+          </div>
+        </div>
+      </section>
+
       <!-- 开奖概览 -->
       <section v-if="hasDraws" class="card" aria-labelledby="draws-title">
         <div class="card-header">
@@ -412,5 +436,77 @@ onMounted(() => {
 
 .stat-value.loss {
   color: var(--danger);
+}
+
+.hits-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+}
+
+.hit-card {
+  background: var(--surface-2);
+  border-radius: 14px;
+  padding: 14px 16px;
+}
+
+.hit-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.hit-lottery {
+  font-weight: 600;
+  font-size: var(--text-md);
+}
+
+.hit-draw {
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+
+.hit-tier {
+  display: inline-flex;
+  padding: 2px 8px;
+  background: #dbeafe;
+  color: #1e40af;
+  border-radius: 20px;
+  font-size: var(--text-xs);
+  margin-bottom: 4px;
+}
+
+.hit-amount {
+  font-size: var(--text-xl);
+  font-weight: 600;
+  color: var(--success);
+}
+
+.hit-status {
+  margin-top: 4px;
+}
+
+.tag {
+  display: inline-flex;
+  padding: 2px 8px;
+  border-radius: 20px;
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+
+.tag.claimed {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.tag.pending {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.tag.none {
+  background: #f3f4f6;
+  color: var(--muted);
 }
 </style>

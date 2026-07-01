@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue';
 import { apiGet, apiPost } from '../api/client';
-import { fmtMoney } from '../lib/format';
+import { fmtMoney, fmtDate } from '../lib/format';
+import { LOTTERIES } from '../lib/lotteries';
 import State from '../components/State.vue';
 
 interface WinRecord {
@@ -23,29 +24,60 @@ interface WinRecord {
 }
 
 const records = ref<WinRecord[] | null>(null);
-const loading = ref(false);
 const error = ref('');
-const filter = ref<'all' | 'pending' | 'claimed'>('all');
+const filterStatus = ref<'all' | 'pending' | 'claimed'>('all');
+const filterLottery = ref('');
+const loadingRecords = ref(false);
 
 async function load() {
-  loading.value = true;
+  loadingRecords.value = true;
   error.value = '';
   try {
     records.value = await apiGet<WinRecord[]>('/api/comparisons?win_only=true');
   } catch (err) {
     error.value = err instanceof Error ? err.message : '加载失败';
   } finally {
-    loading.value = false;
+    loadingRecords.value = false;
   }
 }
 
 const filtered = computed(() => {
   if (!records.value) return [];
-  if (filter.value === 'all') return records.value;
-  return records.value.filter((r) => r.claim_status === filter.value);
+  let list = records.value;
+  if (filterStatus.value !== 'all') {
+    list = list.filter((r) => r.claim_status === filterStatus.value);
+  }
+  if (filterLottery.value) {
+    list = list.filter((r) => r.lottery_code === filterLottery.value);
+  }
+  return list.map((r) => ({
+    ...r,
+    _days: daysLeft(r.deadline),
+  }));
 });
 
-async function claim(record: WinRecord) {
+const stats = computed(() => {
+  const all = records.value || [];
+  const pending = all.filter((r) => r.claim_status === 'pending');
+  const claimed = all.filter((r) => r.claim_status === 'claimed');
+  const expired = pending.filter((r) => r.deadline && new Date(r.deadline) < new Date());
+
+  const sumPrize = (list: typeof all) =>
+    list.reduce((sum, r) => sum + (r.prize_amount ?? 0), 0);
+
+  return {
+    total: all.length,
+    totalAmount: sumPrize(all),
+    pending: pending.length,
+    pendingAmount: sumPrize(pending),
+    claimed: claimed.length,
+    claimedAmount: sumPrize(claimed),
+    expired: expired.length,
+    expiredAmount: sumPrize(expired),
+  };
+});
+
+async function claim(record: typeof filtered.value[number]) {
   if (!record.claim_id) return;
   try {
     await apiPost(`/claims/${record.claim_id}/claim`);
@@ -61,6 +93,10 @@ function daysLeft(deadline: string | null): number | null {
   return Math.max(0, Math.floor(diff / (1000 * 60 * 60 * 24)));
 }
 
+function needsTaxHint(amount: number | null): boolean {
+  return amount != null && amount >= 1_000_000; // >=1万元（10000*100分）
+}
+
 onMounted(() => {
   void load();
 });
@@ -72,87 +108,107 @@ onMounted(() => {
       <h1>中奖记录</h1>
     </header>
 
-    <div class="filters" role="group" aria-label="兑奖状态筛选">
-      <button
-        type="button"
-        class="filter-btn"
-        :class="{ active: filter === 'all' }"
-        @click="filter = 'all'"
-      >
-        全部
-      </button>
-      <button
-        type="button"
-        class="filter-btn"
-        :class="{ active: filter === 'pending' }"
-        @click="filter = 'pending'"
-      >
-        待兑奖
-      </button>
-      <button
-        type="button"
-        class="filter-btn"
-        :class="{ active: filter === 'claimed' }"
-        @click="filter = 'claimed'"
-      >
-        已领取
-      </button>
-    </div>
-
-    <State v-if="loading" type="loading" title="加载中奖记录…" />
+    <State v-if="loadingRecords" type="loading" title="加载中奖记录…" />
     <State v-else-if="error" type="error" :title="error" @action="load" />
     <State
-      v-else-if="filtered.length === 0"
+      v-else-if="!records || records.length === 0"
       type="empty"
-      :title="filter === 'all' ? '本期暂无中奖，理性购彩' : '该筛选下暂无记录'"
+      title="暂无中奖记录"
       @action="load"
     />
 
-    <ul v-else class="record-list" role="list">
-      <li
-        v-for="record in filtered"
-        :key="record.id"
-        class="record-card"
-        :class="{ urgent: record.claim_status === 'pending' && daysLeft(record.deadline) !== null && daysLeft(record.deadline)! <= 15 }"
-      >
-        <div class="record-main">
-          <div class="record-title">
-            {{ record.lottery_name }} 第{{ record.draw_no }}期
-            <span class="tier" v-if="record.prize_tier">{{ record.prize_tier }}等奖</span>
-          </div>
-          <div class="record-amount">{{ fmtMoney(record.prize_amount) }}</div>
-          <div class="record-detail">
-            我的号码: {{ record.numbers_json }}
-          </div>
-          <div class="record-detail">
-            命中: {{ record.hits_json }}
-          </div>
+    <template v-else>
+      <!-- 统计概览 4 卡（金额与笔数，随筛选联动） -->
+      <div class="stats-row">
+        <div class="stat-mini">
+          <div class="stat-mini-label">累计中奖</div>
+          <div class="stat-mini-value">{{ fmtMoney(stats.totalAmount) }}</div>
+          <div class="stat-mini-sub">{{ stats.total }} 笔</div>
         </div>
-        <div class="record-side">
-          <span
-            class="status-badge"
-            :class="record.claim_status || 'unknown'"
-          >
-            {{ record.claim_status === 'pending' ? '待兑奖' : record.claim_status === 'claimed' ? '已领取' : '无兑奖' }}
-          </span>
-          <div
-            v-if="record.claim_status === 'pending' && record.deadline"
-            class="countdown"
-            :class="{ urgent: daysLeft(record.deadline)! <= 15 }"
-          >
-            剩余 {{ daysLeft(record.deadline) }} 天
-          </div>
-          <button
-            v-if="record.claim_status === 'pending' && record.claim_id"
-            type="button"
-            class="claim-btn"
-            @click="claim(record)"
-          >
-            已领取
-          </button>
+        <div class="stat-mini stat-mini--pending">
+          <div class="stat-mini-label">待兑奖</div>
+          <div class="stat-mini-value">{{ fmtMoney(stats.pendingAmount) }}</div>
+          <div class="stat-mini-sub">{{ stats.pending }} 笔</div>
         </div>
-      </li>
-    </ul>
+        <div class="stat-mini stat-mini--claimed">
+          <div class="stat-mini-label">已领取</div>
+          <div class="stat-mini-value">{{ fmtMoney(stats.claimedAmount) }}</div>
+          <div class="stat-mini-sub">{{ stats.claimed }} 笔</div>
+        </div>
+        <div class="stat-mini stat-mini--expired">
+          <div class="stat-mini-label">已过期</div>
+          <div class="stat-mini-value">{{ fmtMoney(stats.expiredAmount) }}</div>
+          <div class="stat-mini-sub">{{ stats.expired }} 笔</div>
+        </div>
+      </div>
+
+      <!-- 筛选条 -->
+      <div class="filters">
+        <div class="filter-group" role="group" aria-label="兑奖状态筛选">
+          <button type="button" class="filter-btn" :class="{ active: filterStatus === 'all' }" @click="filterStatus = 'all'">全部</button>
+          <button type="button" class="filter-btn" :class="{ active: filterStatus === 'pending' }" @click="filterStatus = 'pending'">待兑奖</button>
+          <button type="button" class="filter-btn" :class="{ active: filterStatus === 'claimed' }" @click="filterStatus = 'claimed'">已领取</button>
+        </div>
+        <select v-model="filterLottery" class="lottery-select" aria-label="彩种筛选">
+          <option value="">全部彩种</option>
+          <option v-for="l in LOTTERIES" :key="l.code" :value="l.code">{{ l.name }}</option>
+        </select>
+      </div>
+
+      <ul class="record-list" role="list">
+        <li
+          v-for="record in filtered"
+          :key="record.id"
+          class="record-card"
+          :class="{ urgent: record.claim_status === 'pending' && record._days !== null && record._days <= 15 }"
+        >
+          <div class="record-main">
+            <div class="record-title">
+              {{ record.lottery_name }} 第{{ record.draw_no }}期
+              <span v-if="record.prize_tier" class="tier">{{ record.prize_tier }}等奖</span>
+            </div>
+            <div class="record-amount">{{ fmtMoney(record.prize_amount) }}</div>
+            <div v-if="needsTaxHint(record.prize_amount)" class="tax-hint">
+              <span class="tax-icon">&#9432;</span>
+              单笔中奖超 1 万元需缴纳 20% 偶然所得税，实得约 {{ fmtMoney((record.prize_amount ?? 0) * 0.8) }}
+            </div>
+            <div class="record-detail">我的号码: {{ record.numbers_json }}</div>
+            <div class="record-detail">命中: {{ record.hits_json }}</div>
+          </div>
+          <div class="record-side">
+            <span class="status-badge" :class="record.claim_status || 'unknown'">
+              {{ record.claim_status === 'pending' ? '待兑奖' : record.claim_status === 'claimed' ? '已领取' : '无兑奖' }}
+            </span>
+            <div
+              v-if="record.claim_status === 'pending' && record._days !== null"
+              class="countdown"
+              :class="{ urgent: record._days! <= 15 }"
+            >
+              剩余 {{ record._days }} 天
+            </div>
+            <button
+              v-if="record.claim_status === 'pending' && record.claim_id"
+              type="button"
+              class="claim-btn"
+              @click="claim(record)"
+            >
+              已领取
+            </button>
+          </div>
+        </li>
+      </ul>
+
+      <!-- 兑奖须知 -->
+      <footer class="claim-footer">
+        <h3>兑奖须知</h3>
+        <ul>
+          <li>开奖之日起 60 个自然日内兑奖，逾期视为弃奖。</li>
+          <li>单注中奖金额 ≤ 1 万元：站点通兑；＞ 1 万元：须至彩票中心兑奖。</li>
+          <li>单注中奖金额超过 1 万元的部分缴纳 20% 偶然所得税。</li>
+          <li>请妥善保管原始彩票或购买凭证，兑奖时需出示。</li>
+        </ul>
+      </footer>
+    </template>
   </div>
 </template>
 
@@ -166,10 +222,67 @@ onMounted(() => {
   font-weight: 600;
 }
 
+.stats-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+@media (max-width: 640px) {
+  .stats-row {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+.stat-mini {
+  padding: 12px;
+  background: var(--surface);
+  border-radius: 14px;
+  text-align: center;
+  border: 1px solid var(--border);
+}
+
+.stat-mini--pending {
+  border-color: #fbbf24;
+}
+
+.stat-mini--claimed {
+  border-color: #34d399;
+}
+
+.stat-mini--expired {
+  border-color: #f87171;
+}
+
+.stat-mini-label {
+  font-size: var(--text-xs);
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.stat-mini-value {
+  font-size: var(--text-lg);
+  font-weight: 600;
+}
+
+.stat-mini-sub {
+  font-size: var(--text-xs);
+  color: var(--muted);
+  margin-top: 2px;
+}
+
 .filters {
   display: flex;
-  gap: 8px;
+  gap: 10px;
+  align-items: center;
   margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+
+.filter-group {
+  display: flex;
+  gap: 8px;
 }
 
 .filter-btn {
@@ -187,6 +300,16 @@ onMounted(() => {
   background: var(--accent);
   color: #fff;
   border-color: var(--accent);
+}
+
+.lottery-select {
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: var(--surface);
+  color: var(--fg);
+  font-size: var(--text-md);
+  min-height: 44px;
 }
 
 .record-list {
@@ -235,6 +358,20 @@ onMounted(() => {
   font-weight: 600;
   color: var(--success);
   margin-top: 4px;
+}
+
+.tax-hint {
+  margin-top: 4px;
+  padding: 6px 10px;
+  background: #fef3c7;
+  border-radius: 8px;
+  color: #92400e;
+  font-size: var(--text-xs);
+  line-height: 1.4;
+}
+
+.tax-icon {
+  margin-right: 4px;
 }
 
 .record-detail {
@@ -294,6 +431,30 @@ onMounted(() => {
   font-weight: 600;
   cursor: pointer;
   min-height: 44px;
+}
+
+.claim-footer {
+  margin-top: 24px;
+  padding: 20px;
+  background: var(--surface);
+  border-radius: 18px;
+  font-size: var(--text-sm);
+}
+
+.claim-footer h3 {
+  font-size: var(--text-md);
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
+.claim-footer ul {
+  padding-left: 18px;
+  color: var(--muted);
+  line-height: 1.8;
+}
+
+.claim-footer li {
+  margin-bottom: 4px;
 }
 
 @media (max-width: 640px) {

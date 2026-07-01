@@ -6,10 +6,12 @@ export function fmtMoney(cents: number | null | undefined): string {
 
 export function fmtDate(iso: string): string {
   const d = new Date(iso);
+  if (isNaN(d.getTime())) return '日期异常';
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 export function fmtShortDate(iso: string): string {
   const d = new Date(iso);
+  if (isNaN(d.getTime())) return '异常';
   return `${d.getMonth() + 1}月${d.getDate()}日`;
 }

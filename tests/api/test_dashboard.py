@@ -5,6 +5,7 @@ Spec §12.2：仪表盘首屏聚合「待兑奖 / 我的命中 / 盈亏速览 / 
 """
 
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 from cryptography.fernet import Fernet
@@ -16,6 +17,8 @@ from app.api.security import COOKIE_NAME, create_session_token
 from app.config import reset_settings_cache
 from app.main import app
 from app.models import Comparison, DrawResult, LotteryType, PrizeClaim, Ticket, User
+
+_CST = ZoneInfo('Asia/Shanghai')
 
 
 @pytest.fixture(autouse=True)
@@ -78,8 +81,10 @@ def test_dashboard_returns_aggregated_snapshot(db_engine):
     _seed_lottery(db_engine)
     uid = _make_user(db_engine, 'alice')
 
-    draw_date = datetime.utcnow() - timedelta(days=1)
-    deadline = datetime.utcnow() + timedelta(days=59)
+    # 用 CST naive 播种以匹配生产路径（compare_service._now() → aware CST → SQLite 剥离 tz）
+    cst_now = datetime.now(_CST).replace(tzinfo=None)
+    draw_date = cst_now - timedelta(days=1)
+    deadline = cst_now + timedelta(days=59)
 
     with Session(db_engine) as s:
         draw = DrawResult(
@@ -144,3 +149,180 @@ def test_dashboard_returns_aggregated_snapshot(db_engine):
     summary = data['summary']
     assert summary['total_cost'] == 200
     assert summary['ticket_count'] == 1
+    assert summary['pending_amount'] == 1  # one winning comparison with NULL prize_amount = pending
+    assert summary['win_count'] == 0  # prize_amount IS NULL → not counted as resolved win
+    assert summary['win_rate'] == 0.0  # 0 resolved wins / 1 ticket
+    assert isinstance(summary['welfare_contribution'], int)  # per-lottery welfare rate × cost
+
+    # 我的命中
+    assert 'recent_hits' in data
+    assert len(data['recent_hits']) >= 1
+    assert data['recent_hits'][0]['lottery_code'] == 'ssq'
+    assert data['recent_hits'][0]['prize_tier'] == 1
+    assert data['recent_hits'][0]['is_win'] is True
+
+
+def test_pending_claims_days_left_cst(db_engine):
+    """days_left 须基于 CST 时区——用 UTC 会 8h 偏差导致 off-by-one 误报。"""
+    from app.api.dashboard import _pending_claims
+
+    _seed_lottery(db_engine)
+    uid = _make_user(db_engine, 'bob')
+
+    # 生产 deadline 是 compare_service._now()+60days（aware CST，存为 naive CST 数值）。
+    # 用 deadline=now(CST)+23h → days_left 应为 0；UTC-today 会算成 1。
+    cst_now = datetime.now(_CST)
+    deadline_23h_naive = (cst_now + timedelta(hours=23)).replace(tzinfo=None)
+
+    with Session(db_engine) as s:
+        draw = DrawResult(
+            lottery_code='ssq', draw_no='2026100',
+            draw_date=cst_now - timedelta(days=1),
+            numbers_json='{"front":[1,2,3,4,5,6],"back":[7]}',
+            source='mxnzp', verified=True,
+        )
+        s.add(draw)
+        s.flush()
+        ticket = Ticket(
+            user_id=uid, lottery_code='ssq', play_type='single',
+            numbers_json='{}', cost=200,
+        )
+        s.add(ticket)
+        s.flush()
+        comp = Comparison(
+            user_id=uid, draw_result_id=draw.id, ticket_id=ticket.id,
+            hits_json='{}', prize_tier=1, prize_amount=None, is_win=True,
+        )
+        s.add(comp)
+        s.flush()
+        claim = PrizeClaim(
+            comparison_id=comp.id, status='pending',
+            deadline=deadline_23h_naive,
+        )
+        s.add(claim)
+        s.commit()
+
+    with Session(db_engine) as s:
+        claims = _pending_claims(s, uid)
+
+    assert len(claims) == 1
+    assert claims[0].days_left == 0, f'expected 0, got {claims[0].days_left} (23h from now should be 0 days left)'
+
+
+def test_recent_hits_batched_claim_lookup(db_engine):
+    """_recent_hits 对多个中奖记录批量查 PrizeClaim（非逐条 N+1）。
+    验证 claim_status 正确解析：有 claim → claim.status，无 claim → None。"""
+    from app.api.dashboard import _recent_hits
+
+    _seed_lottery(db_engine)
+    uid = _make_user(db_engine, 'carol')
+
+    cst_now = datetime.now(_CST).replace(tzinfo=None)
+    draw_date = cst_now - timedelta(days=2)
+
+    with Session(db_engine) as s:
+        draw = DrawResult(
+            lottery_code='ssq', draw_no='2026064',
+            draw_date=draw_date,
+            numbers_json='{"front":[1,2,3,4,5,6],"back":[7]}',
+            source='mxnzp', verified=True,
+        )
+        s.add(draw)
+        s.flush()
+
+        # Each comparison needs its own ticket (UNIQUE constraint on draw_result_id, ticket_id)
+        t_a = Ticket(user_id=uid, lottery_code='ssq', play_type='single', numbers_json='{"front":[1]}', cost=200)
+        t_b = Ticket(user_id=uid, lottery_code='ssq', play_type='single', numbers_json='{"front":[2]}', cost=200)
+        t_c = Ticket(user_id=uid, lottery_code='ssq', play_type='single', numbers_json='{"front":[3]}', cost=200)
+        s.add_all([t_a, t_b, t_c])
+        s.flush()
+
+        # Comparison A: has PrizeClaim (claimed)
+        comp_a = Comparison(
+            user_id=uid, draw_result_id=draw.id, ticket_id=t_a.id,
+            hits_json='{}', prize_tier=2, prize_amount=50000, is_win=True,
+        )
+        s.add(comp_a)
+        s.flush()
+        s.add(PrizeClaim(comparison_id=comp_a.id, status='claimed', deadline=cst_now + timedelta(days=50)))
+
+        # Comparison B: has PrizeClaim (pending)
+        comp_b = Comparison(
+            user_id=uid, draw_result_id=draw.id, ticket_id=t_b.id,
+            hits_json='{}', prize_tier=1, prize_amount=None, is_win=True,
+        )
+        s.add(comp_b)
+        s.flush()
+        s.add(PrizeClaim(comparison_id=comp_b.id, status='pending', deadline=cst_now + timedelta(days=58)))
+
+        # Comparison C: no PrizeClaim
+        comp_c = Comparison(
+            user_id=uid, draw_result_id=draw.id, ticket_id=t_c.id,
+            hits_json='{}', prize_tier=3, prize_amount=3000, is_win=True,
+        )
+        s.add(comp_c)
+        s.commit()
+
+    with Session(db_engine) as s:
+        hits = _recent_hits(s, uid)
+
+    assert len(hits) >= 3, f'Expected at least 3 hit records, got {len(hits)}'
+
+    # Build lookup by prize_tier for assertions
+    by_tier = {h['prize_tier']: h for h in hits}
+
+    assert by_tier[2]['claim_status'] == 'claimed'
+    assert by_tier[1]['claim_status'] == 'pending'
+    assert by_tier[3]['claim_status'] is None  # no PrizeClaim row
+
+
+def test_dashboard_monthly_returns_last_12_months(db_engine):
+    """GET /api/dashboard/monthly 返回最近12个月的投入/中奖月数据。"""
+    _seed_lottery(db_engine)
+    uid = _make_user(db_engine, 'dave')
+
+    cst_now = datetime.now(_CST).replace(tzinfo=None)
+
+    with Session(db_engine) as s:
+        t = Ticket(
+            user_id=uid, lottery_code='ssq', play_type='single',
+            numbers_json='{}', cost=200,
+        )
+        s.add(t)
+        s.flush()
+
+        draw = DrawResult(
+            lottery_code='ssq', draw_no='2026100',
+            draw_date=cst_now - timedelta(days=1),
+            numbers_json='{"front":[1,2,3,4,5,6],"back":[7]}',
+            source='mxnzp', verified=True,
+        )
+        s.add(draw)
+        s.flush()
+
+        comp = Comparison(
+            user_id=uid, draw_result_id=draw.id, ticket_id=t.id,
+            hits_json='{}', prize_tier=5, prize_amount=1000, is_win=True,
+        )
+        s.add(comp)
+        s.commit()
+
+    client = _auth_client(db_engine, uid)
+    r = client.get('/api/dashboard/monthly')
+    assert r.status_code == 200, r.text
+    monthly = r.json()
+    assert isinstance(monthly, list)
+    assert len(monthly) == 12, f'Expected 12 months, got {len(monthly)}'
+
+    # Each entry has month/cost/prize
+    for entry in monthly:
+        assert 'month' in entry
+        assert 'cost' in entry
+        assert 'prize' in entry
+
+    # Last month should have our seeded data
+    last_month = cst_now.strftime('%Y-%m')
+    last_entry = monthly[-1]
+    assert last_entry['month'] == last_month
+    assert last_entry['cost'] == 200
+    assert last_entry['prize'] == 1000

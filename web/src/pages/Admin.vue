@@ -63,6 +63,7 @@ onMounted(() => {
     <State v-else-if="error" type="error" :title="error" @action="load" />
 
     <template v-else>
+      <!-- 用户管理 -->
       <section class="card">
         <div class="card-header">
           <h2 class="card-title">用户管理</h2>
@@ -90,17 +91,47 @@ onMounted(() => {
         </div>
       </section>
 
+      <!-- 邀请码管理 -->
+      <section class="card">
+        <div class="card-header">
+          <h2 class="card-title">邀请码</h2>
+          <p class="card-subtitle">生成新邀请码供新用户注册</p>
+        </div>
+        <div class="card-body">
+          <p class="placeholder-note">邀请码管理 API 即将上线（Plan 07）。目前可通过 CLI 生成邀请码。</p>
+        </div>
+      </section>
+
+      <!-- SMTP 发件配置 -->
+      <section class="card">
+        <div class="card-header">
+          <h2 class="card-title">SMTP 发件配置</h2>
+          <p class="card-subtitle">系统通知邮件的统一发件服务器</p>
+        </div>
+        <div class="card-body">
+          <p class="placeholder-note">SMTP 配置目前通过 .env 文件管理，管理面板界面即将上线。</p>
+        </div>
+      </section>
+
+      <!-- 彩种配置 -->
+      <section class="card">
+        <div class="card-header">
+          <h2 class="card-title">彩种管理</h2>
+          <p class="card-subtitle">启用/停用彩种、修改开奖日</p>
+        </div>
+        <div class="card-body">
+          <p class="placeholder-note">彩种配置管理 API 即将上线。当前通过 DB 种子（seeds/）初始化。</p>
+        </div>
+      </section>
+
+      <!-- 数据源健康 -->
       <section class="card">
         <div class="card-header">
           <h2 class="card-title">数据源健康</h2>
         </div>
         <div class="card-body">
           <div v-if="health && health.sources.length > 0" class="source-list">
-            <div
-              v-for="s in health.sources"
-              :key="s.source"
-              class="source-item"
-            >
+            <div v-for="s in health.sources" :key="s.source" class="source-item">
               <span class="source-name">{{ s.source }}</span>
               <span class="source-status" :class="s.status">{{ s.status }}</span>
             </div>
@@ -109,6 +140,7 @@ onMounted(() => {
         </div>
       </section>
 
+      <!-- 推送日志 -->
       <section class="card">
         <div class="card-header">
           <h2 class="card-title">推送日志</h2>
@@ -135,6 +167,17 @@ onMounted(() => {
             </tbody>
           </table>
           <div v-else class="empty-tip">暂无推送日志</div>
+        </div>
+      </section>
+
+      <!-- 操作审计 -->
+      <section class="card">
+        <div class="card-header">
+          <h2 class="card-title">操作审计</h2>
+          <p class="card-subtitle">管理员操作记录</p>
+        </div>
+        <div class="card-body">
+          <p class="placeholder-note">审计日志查询 API 即将上线。后端 audit_service 已记录所有管理员操作，界面待开放。</p>
         </div>
       </section>
     </template>
@@ -168,6 +211,12 @@ onMounted(() => {
   font-weight: 600;
 }
 
+.card-subtitle {
+  font-size: var(--text-md);
+  color: var(--muted);
+  margin-top: 2px;
+}
+
 .card-body {
   padding: 16px 20px 20px;
 }
@@ -195,6 +244,12 @@ onMounted(() => {
   color: var(--muted);
   text-align: center;
   padding: 20px;
+}
+
+.placeholder-note {
+  color: var(--warning);
+  font-size: var(--text-sm);
+  padding: 8px 0;
 }
 
 .source-list {
