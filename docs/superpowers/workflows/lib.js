@@ -268,6 +268,19 @@ ${lines}
 Before committing, run git diff --name-only. If any file is NOT in the list above, you MUST either: 1. revert the out-of-scope change, or 2. report status=failed with out_of_scope in diagnostics.`
 }
 
+// schema 迁移一致性检查：config 可选声明 schema_tool + model_paths + migration_paths，
+// gate agent 在 committed SHA 上检查 model 文件有变更但无对应迁移文件。不声明 → 空串 → 检查跳过。
+export function formatSchemaCheck(schemaTool, modelPaths, migrationPaths) {
+  if (!schemaTool) return ''
+  const mp = Array.isArray(modelPaths) ? modelPaths.join(', ') : ''
+  const xp = Array.isArray(migrationPaths) ? migrationPaths.join(', ') : ''
+  return `## Schema Migration Check (gate agent must verify)
+1. Run git diff --name-only HEAD~1..HEAD — you are already checked out to the committed SHA, so HEAD~1 is the parent commit.
+2. Filter changed files by model_paths: ${mp}
+3. Filter changed files by migration_paths: ${xp}
+4. If model files changed but NO migration files changed → status=failed, evidence.migration_missing=true`
+}
+
 // 按 language 返回 quality review 专项清单；未知 language → 通用清单（不硬编码任何项目架构）。
 export const LANGUAGE_CHECKLISTS = {
   python: `## Language-specific checks (Python / FastAPI / SQLModel)
@@ -344,7 +357,7 @@ export const SCHEMAS = {
   gate: { type: 'object', required: ['status', 'evidence'], additionalProperties: true,
     properties: { status: { type: 'string', enum: ['ok', 'failed', 'model_unavailable'] },
       evidence: { type: 'object', required: ['tests_exit_code', 'pytest_summary', 'lint_results'],
-        properties: { tests_exit_code: { type: 'integer' }, pytest_summary: { type: 'string' }, lint_results: { type: 'array' } } }, summary: { type: 'string' } } },
+        properties: { tests_exit_code: { type: 'integer' }, pytest_summary: { type: 'string' }, lint_results: { type: 'array' }, migration_missing: { type: 'boolean' } } }, summary: { type: 'string' } } },
   finalReport: { type: 'object', required: ['summary'], additionalProperties: true,
     properties: { evidence: { type: 'object', properties: { manifest_path: { type: 'string' } } }, summary: { type: 'string' } } },
 }
@@ -578,6 +591,7 @@ RED FLAG: context 必须是真实查到的，绝不编造。查不到 → contex
 Inputs: sha={{sha}}
 Commands to run (JSON array, in order): {{gateCommands}}
 Each item is {kind: "test"|"lint", command}. Run ALL of them on the checked-out SHA.
+{{schemaCheck}}
 
 Steps:
 1. git checkout {{sha}}.
