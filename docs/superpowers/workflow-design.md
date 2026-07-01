@@ -294,6 +294,8 @@ orchestrator 路由:
   - bootstrap 重新读 git log 确认 completed（git log 是 ground truth，不读 manifest）
 ```
 
+> **提交 scope 区分（infra vs business）**：bootstrap 的 `extractTaskKey` 仅识别 `feat(plan-XX/TY):` 前缀作为"已完成业务 task"（§6.1 识别约定）。workflow 自身基建改动（lib.js / run-plans.js / tests / workflow.config.json）**不得**用 `feat(plan-` 前缀——否则会被误识别为同号业务 plan 的已完成 task → bootstrap 跳过 → 漏做。基建提交约定用 `chore(workflow-NN/TN):`：`extractTaskKey` 对此前缀返回 `null` → 对 bootstrap 不可见，零碰撞风险。此约定是 `extractTaskKey` 单一识别源的对称面（emission ↔ recognition）。
+
 ### 6.2 半提交状态清理（DX5）
 
 崩溃在 implementor 完成但 commit 未执行时，working tree 有半成品。**native resume 会重跑未完成的 implementor**，TDD 重写自然覆盖半成品，无需显式 `git reset`。兜底：bootstrap 检测 `dirty_tree` 且该 task 无对应 commit → 视为半提交，`git reset --hard HEAD` 清理后由 native resume 重派。**commit 是状态原子转换**：commit subagent 返回 `{commit_sha}` 即 git commit 已落盘；崩在此点之后 → git log 有 commit → 视为 completed 跳过。
@@ -386,13 +388,17 @@ runs/<run-id>/
   "language": "python",
   "extra_lint_commands": ["uv run lint-imports"],
   "reference_paths": ["docs/reference/lottery-rules.md"],
-  "silent_failure_context": ["<项目特定静默失败纪律数组>"]
+  "silent_failure_context": ["<项目特定静默失败纪律数组>"],
+  "lessons_path": "docs/superpowers/lessons.md",
+  "schema_tool": "alembic",
+  "model_paths": ["app/models/"],
+  "migration_paths": ["alembic/versions/"]
 }
 ```
 
 启动 config smoke：`test_command --collect-only`（fail loud，2 秒发现 typo 而非 20 分钟）。
 
-> **可选字段**：`extra_lint_commands`（架构纪律 lint，如 domain 层纯度护栏）/ `reference_paths`（spec 外权威文档）/ `silent_failure_context`（项目特定静默失败纪律，hunter 优先核查）均可选，不配即对应 prompt 段消失（条件渲染）。通用性原则：项目特有内容只走 config，不写进 prompt。
+> **可选字段**：`extra_lint_commands`（架构纪律 lint，如 domain 层纯度护栏）/ `reference_paths`（spec 外权威文档）/ `silent_failure_context`（项目特定静默失败纪律，hunter 优先核查）/ `lessons_path`（跨任务失败知识库，bootstrap 按 task 关键词匹配注入 implementor，halt 时 finalReport 自动追加新 lesson）/ `schema_tool` + `model_paths` + `migration_paths`（schema 迁移一致性检查三件套，gate 用 `git diff --name-only HEAD~1..HEAD` 查 model 有变更但无迁移文件 → `migration_missing=true` 触发 gate failed）均可选，不配即对应 prompt 段消失（条件渲染）。通用性原则：项目特有内容只走 config，不写进 prompt。
 
 ### 11.2 plan frontmatter（YAML，writing-plans 产出约定）
 
