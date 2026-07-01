@@ -188,6 +188,7 @@ let state = {
   review_round: 0,          // 当前 task 的 review round 计数
   simplify_invoked: false,  // 当前 task simplify 是否已触发
   files_touched_per_round: [], // [[file1,file2], [file2,file3], ...] 用于振荡检测
+  review_history: [],          // 每轮 review findings 摘要 [{round, spec/quality/hunter:{status, findings:[{title,severity}]}}] —— halt 后定位振荡点（§4.4 末）
 }
 
 // 路由逻辑
@@ -224,6 +225,10 @@ if (state.files_touched_per_round.length >= 2) {
 ```
 
 **orchestrator 不"理解"返回值语义**——它只做模式匹配（status enum → 路由）。诊断（为什么 blocked、是否振荡）由 agent 在 `diagnostics` 字段预计算，orchestrator 据此路由。
+
+**review_history（可观测性，2026-07-01）**：每轮 review 后 `summarizeReviewRound(round, spec, qual, hunt)` 把三类 reviewer 的 `{status, findings:[{title,severity}]}` 摘要 push 进 `state.perTask[task].review_history`（复用 `findingsOf` 归一化，丢 fix/file/source 控体积），随 manifest 持久化。**动机**：OSCILLATING / 收敛 halt 后需精确定位振荡点（哪个 reviewer 在哪点 flip-flop）；旧 `review_rounds` 只存 int 计数，T3 halt 时无法还原分歧点、需考古推断。摘要只留 title+severity（诊断定位所需），完整 findings（含 fix/file）走 implementor 反馈管道不持久化。`summarizeReviewRound` 是 lib.js 纯函数（`node --test` 单测）+ run-plans.js inline（sync.test 守护）。
+
+**halt 不再自动写 lesson（2026-07-01）**：旧 finalReport step5 在 halt 时自动追加 `lessons_path` 条目（`title=halt reason, detail=last_error, status=active`）——但 halt reason（如 `OSCILLATING`）是事件标识、非可复用知识，自动写入产生废条目（title/detail 均为 `OSCILLATING`）污染知识库、被 bootstrap 匹配注入 implementor 噪音。修复：删除自动追加；halt 事件由 `blocked.md` 完整记录（reason/file/likely_source/working tree/接手指引），`lessons_path` 只承载人工复盘提炼的可复用知识。
 
 ## 5. Task 执行流程（bounded review rounds）
 

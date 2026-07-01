@@ -119,6 +119,24 @@ export function formatFindings(findings) {
   }).join('\n')
 }
 
+// review_history 存档：单轮 review 的 findings 归一化为 manifest 摘要（只留 title+severity）。
+// 复用 findingsOf 归一化；丢 fix/file/source（implementor 反馈字段，manifest 摘要控体积不需要）。
+// OSCILLATING/收敛 halt 后凭此精确定位振荡点（哪个 reviewer 在哪点 flip-flop），无需考古
+// （旧 review_rounds 只存 int 计数，T3 halt 时无法还原分歧点）。
+function summarizeFinding(r, source, key) {
+  return { status: r?.status, findings: findingsOf(r, source, key).map(f => ({ title: f.title, severity: f.severity })) }
+}
+
+// 单轮三类 review 的摘要（进 manifest.per_task.<task>.review_history）。
+export function summarizeReviewRound(round, spec, qual, hunt) {
+  return {
+    round,
+    spec: summarizeFinding(spec, 'spec', 'issues'),
+    quality: summarizeFinding(qual, 'quality', 'issues'),
+    hunter: summarizeFinding(hunt, 'hunter', 'silent_failures'),
+  }
+}
+
 // 判断错误是否 model 限额耗尽（§2.4 双重检测的捕获路径）
 export function isQuotaError(e) {
   const s = String(e?.message || e || '').toLowerCase()
@@ -609,12 +627,12 @@ Inputs: mode={{mode}} state={{stateJson}} blockedInfo={{blockedInfo}} runsDir={{
 
 Steps:
 1. mkdir -p {{runsDir}}.
-2. Write {{runsDir}}/manifest.json = {run_ts:{{runTs}}, mode:{{mode}}, plans:[...], per_task:{<taskId>:{status,model,review_rounds,files_touched_per_round,commit_sha,blocked_info}}, result}.
+2. Write {{runsDir}}/manifest.json = {run_ts:{{runTs}}, mode:{{mode}}, plans:[...], per_task:{<taskId>:{status,model,review_rounds,files_touched_per_round,review_history,commit_sha,blocked_info}}, result}.
 3. If mode=halted: write {{runsDir}}/blocked.md from {{blockedInfo}} (the blocked task's blocked_info JSON — render EACH field human-readably: plan, task, reason, category, last_error, suggested_fix, quota_exhausted, likely_source, failed_approach). For failed_approach, render as: "Failed Approach: <failed_approach.task_id>: <failed_approach.reason> — <failed_approach.error>". Do NOT hunt for these fields in state — they are provided inline in blockedInfo.
 4. If mode=halted: run "git status --porcelain" and "git diff --stat". BEST-EFFORT — if git fails (not a repo / index corrupt), skip this section (do NOT block manifest.json write).
    If "git status --porcelain" output is non-empty, append a "## Working Tree (dirty)" section to blocked.md with: the porcelain output (file list) + the diff --stat output (change summary) + 接手指引（implementor 改动未提交，留在工作树。选项：git diff <file> 查看 / git checkout -- <file> 丢弃 / 手动修后 git commit -m "feat(plan-X/T-Y): ..." 再全新跑续，见 USAGE.md §7.1）。
    If output is empty, append "## Working Tree (clean)" — no uncommitted changes（likely_source=gate restored 时预期如此）。
-5. If mode=halted AND lessonsPath is non-empty AND blockedInfo has reason+last_error: append a new lesson entry to the lessonsPath file. Format: "## L-<timestamp>\ntitle: <reason>\ndetail: <last_error>\nstatus: active\n". Use append mode (do not overwrite). If file does not exist, create it with a header "# Lessons Learned".
+5. Lessons: DO NOT auto-append halt reason as a lesson. halt events are fully recorded in blocked.md (steps 3-4); lessonsPath holds human-distilled reusable knowledge only. halt reasons (e.g. "OSCILLATING") are event labels, not reusable lessons — auto-writing previously produced useless entries (title/detail both "OSCILLATING"). Leave lessonsPath untouched; add lessons by manual retrospective only.
 6. Print a digest summary (counts: done/blocked, total tasks, per-plan gate result).
 
 Return {evidence:{manifest_path}, summary: <digest>}.

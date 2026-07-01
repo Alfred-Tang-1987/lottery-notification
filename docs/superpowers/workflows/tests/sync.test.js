@@ -28,7 +28,7 @@ for (const role of ROLES) {
 }
 
 test('run-plans.js inlines the new conditional-render helpers', () => {
-  for (const fn of ['formatReferencePaths', 'formatSilentFailureContext', 'formatFailedApproaches', 'formatLessons', 'formatWriteFilesScope', 'formatSchemaCheck', 'languageChecklist', 'LANGUAGE_CHECKLISTS', 'gateCommands', 'collectReviewFindings', 'formatFindings', 'matchesPlanFilter', 'classifyThrown', 'reviewHaltReason', 'reviewHaltForEmptyFailed', 'haltLikelySource']) {
+  for (const fn of ['formatReferencePaths', 'formatSilentFailureContext', 'formatFailedApproaches', 'formatLessons', 'formatWriteFilesScope', 'formatSchemaCheck', 'languageChecklist', 'LANGUAGE_CHECKLISTS', 'gateCommands', 'collectReviewFindings', 'formatFindings', 'matchesPlanFilter', 'classifyThrown', 'reviewHaltReason', 'reviewHaltForEmptyFailed', 'haltLikelySource', 'summarizeReviewRound']) {
     assert.match(runSrc, new RegExp(`function ${fn}|const ${fn}`), `missing helper: ${fn}`)
   }
 })
@@ -131,4 +131,33 @@ test('行尾一致性：lib.js 与 run-plans.js 不得含 bare LF（CRLF 根因�
 test('run-plans.js 不得残留 budget 死引用（runtime 未注入此全局，提及会误导维护者）', () => {
   // budget 在代码中未使用，文件头注释提及会让人误以为 runtime 注入了它。
   assert.doesNotMatch(runSrc, /\bbudget\b/, 'run-plans.js 残留 budget 死引用——runtime 未注入此全局，应从注释删除')
+})
+
+test('review_history 存档：每轮 findings 摘要进 manifest（OSCILLATING halt 后可定位振荡点）', () => {
+  // T3 OSCILLATING halt 暴露：review_rounds 只存 int 计数，findings 不持久化 →
+  // halt 后无法精确还原哪个 reviewer 在哪点 flip-flop，需考古推断。review_history 修复。
+  // summarizeReviewRound 纯函数两副本一致（lib.js 真源 + run-plans.js inline）
+  assert.match(libSrc, /export function summarizeReviewRound/, 'lib.js 须有 summarizeReviewRound 真源')
+  assert.match(runSrc, /function summarizeReviewRound/, 'run-plans.js 须 inline summarizeReviewRound')
+  // perTask 初始化含 review_history: []
+  assert.match(runSrc, /review_history:\s*\[\]/, 'perTask 初始化须含 review_history: []')
+  // review 循环每轮 push 摘要（须在 allGreen break 之前，确保 halt 轮/收敛轮也被记录）
+  const pushIdx = runSrc.indexOf('review_history.push(summarizeReviewRound(round, spec, qual, hunt))')
+  const allGreenIdx = runSrc.indexOf('if (allGreen(spec, qual, hunt)) break')
+  assert.notEqual(pushIdx, -1, 'review 循环须每轮 push summarizeReviewRound')
+  assert.ok(pushIdx < allGreenIdx, 'review_history.push 必须在 allGreen break 之前（halt/收敛轮也要被记）')
+  // finalReport prompt per_task 结构含 review_history
+  const finalP = promptBody(runSrc, 'finalReport')
+  assert.match(finalP, /review_history/, 'finalReport manifest per_task 须含 review_history 字段')
+})
+
+test('halt 不再自动写 lesson（废条目根因：把 halt reason 当 lesson title）', () => {
+  // 旧 finalReport step5：halt 时 append lesson title:<reason> detail:<last_error> status:active
+  // → reason=OSCILLATING 时 title/detail 都是 "OSCILLATING"，无信息量，且混进 active lesson 污染知识库。
+  // 修复：halt 事件由 blocked.md 完整记录；lesson 只由人/复盘提炼。删除自动追加逻辑。
+  for (const [name, src] of [['lib.js', libSrc], ['run-plans.js', runSrc]]) {
+    const p = promptBody(src, 'finalReport')
+    assert.doesNotMatch(p, /append a new lesson entry/, `${name} finalReport 不得再 halt 自动写 lesson`)
+    assert.doesNotMatch(p, /title: <reason>/, `${name} finalReport 不得把 halt reason 当 lesson title`)
+  }
 })

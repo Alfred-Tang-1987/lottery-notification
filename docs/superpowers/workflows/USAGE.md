@@ -195,6 +195,7 @@ review 链 max-rounds halt 后，task 留在「未 commit」状态（implementor
       "model": "sonnet",
       "review_rounds": 1,
       "files_touched_per_round": [...],
+      "review_history": [{ "round": 1, "spec": { "status": "ok", "findings": [] }, "quality": { "status": "failed", "findings": [{ "title": "...", "severity": "high" }] }, "hunter": { "status": "ok", "findings": [] } }],
       "commit_sha": "abc1234",
       "blocked_info": { "reason": "...", "quota_exhausted": false, "last_error": "...", "suggested_fix": "...", "likely_source": "implementor changes | gate restored | bootstrap frontmatter | unknown" }
     }
@@ -239,7 +240,7 @@ plan frontmatter 的 `model` 字段决定 implementor 用 sonnet 还是 opus：
 |---|---|
 | workflow paused | `/workflows` 看卡在哪个 agent；读 `runs/<ts>/manifest.json` 或 transcript |
 | implementor 反复失败 | 看 `blocked_info.last_error` + `suggested_fix`；可能 plan 顺序错（依赖前序 task） |
-| review 振荡 halt | `blocked_info.reason: OSCILLATING`——reviewer 持续分歧，同文件多 round 反复改不收敛。**2026-07-01 allGreen 修复后**：r3 全 ok 会先放行（不再收敛误报），故 OSCILLATING 现在意味**真矛盾**（如 CLAUDE.md 两规则冲突、reviewer 反向报）。看 review findings 找分歧点，人工裁定一侧 → 手动 commit `feat(plan-X/T-Y)` → 全新跑续（见 §7.1） |
+| review 振荡 halt | `blocked_info.reason: OSCILLATING`——reviewer 持续分歧，同文件多 round 反复改不收敛。**2026-07-01 allGreen 修复后**：r3 全 ok 会先放行（不再收敛误报），故 OSCILLATING 现在意味**真矛盾**（如 CLAUDE.md 两规则冲突、reviewer 反向报）。看 manifest 的 `per_task.<task>.review_history`（每轮每 reviewer 的 findings title+severity，2026-07-01 起存档）找分歧点，人工裁定一侧 → 手动 commit `feat(plan-X/T-Y)` → 全新跑续（见 §7.1） |
 | review 空响应 halt | `blocked_info.reason: review_empty`——某 review agent 静默空返回（thinking-only 空响应，模型瞬态 hiccup；非限额非崩溃）。**全新跑续即可**（见 §7.1，勿用 resumeFromRunId）；频繁复发则换 model 槽 |
 | review 空诊断 halt | `blocked_info.reason: review_failed_no_findings`——某 review agent 明确判 `failed` 但 `issues`/`silent_failures` 为空（无可执行发现）。implementor 无法据空反馈修复，halt 暴露而非跑空循环误报 max rounds。多为 prompt/schema 与 model 不匹配（如 LLM 用错字段名）——看该 review 的 diag，**全新跑续**（见 §7.1） |
 | 限额 halt | `blocked_info.quota_exhausted: true`——等额度恢复后**全新跑**续跑（见 §7.1，勿用 resumeFromRunId） |
