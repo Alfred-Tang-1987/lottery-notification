@@ -13,5 +13,6 @@
     "批量循环里单行故障不得中断整批：per-row try/except + log（含 exc_info=True），不阻断后续行；批末兜底标记（如 expired/unresolved）须无条件执行（独立方法/finally），不依赖循环不抛。",
     "更正路径重置终态标记：行被标 unresolved=True 后经官方更正重比，须在 upsert existing 分支重置 unresolved=False，否则永久卡死、永不再查官方金额。",
     "datetime 时区对齐：SQLite 对 datetime 做字符串比较且存取会剥离 tzinfo。模型里凡与其他 datetime 字段比较/排序的写入值，须与项目主流惯例（created_at = naive UTC）同时区同数值。用 datetime.now(timezone.utc).replace(tzinfo=None)，非 aware CST、非弃用 utcnow()。"
-  ]
+  ],
+  "lessons_path": "docs/superpowers/lessons.md"
 }

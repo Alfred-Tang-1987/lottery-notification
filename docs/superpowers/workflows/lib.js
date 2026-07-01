@@ -248,6 +248,16 @@ ${lines}
 If your plan is similar to any above, explicitly state the difference.`
 }
 
+// LESSONS.md 跨任务失败知识库：config 可选声明 lessons_path，
+// bootstrap 读取并匹配 task 关键词注入 implementor。不填 → 空串 → prompt 段消失。
+export function formatLessons(items) {
+  if (!Array.isArray(items) || items.length === 0) return ''
+  const lines = items.map(it => `- [${it.id}] ${it.title} — ${it.detail}`).join('\n')
+  return `## Lessons Learned (check against these before implementing)
+${lines}
+If your plan is similar to any lesson above, explicitly state why your approach differs.`
+}
+
 // write_files 边界控制：plan frontmatter 可选声明 write_files，
 // commit agent 提交前检查 git diff 是否越界。不声明 → 空串 → 检查跳过。
 export function formatWriteFilesScope(files) {
@@ -297,7 +307,7 @@ export const SCHEMAS = {
     properties: {
       status: { type: 'string', enum: ['ok', 'failed', 'blocked'] },
       evidence: { type: 'object', required: ['config', 'plans', 'completed', 'dirty_tree'],
-        properties: { config: { type: 'object' }, plans: { type: 'array' }, completed: { type: 'array' }, dirty_tree: { type: 'boolean' }, failed_approaches: { type: 'array' }, task_write_files: { type: 'array' } } },
+        properties: { config: { type: 'object' }, plans: { type: 'array' }, completed: { type: 'array' }, dirty_tree: { type: 'boolean' }, failed_approaches: { type: 'array' }, task_write_files: { type: 'array' }, task_lessons: { type: 'array' } } },
       diagnostics: { type: 'object' }, summary: { type: 'string' },
     },
   },
@@ -373,7 +383,7 @@ export const PROMPTS = {
 Inputs: configPath={{configPath}} plansDir={{plansDir}} runTs={{runTs}}
 
 Steps:
-1. Read {{configPath}} → {test_command, full_test_command, build_command, lint_command, extra_lint_commands, spec_path, reference_paths, language, silent_failure_context}. extra_lint_commands / reference_paths / silent_failure_context are OPTIONAL (may be absent → treat as [] / [] / []).
+1. Read {{configPath}} → {test_command, full_test_command, build_command, lint_command, extra_lint_commands, spec_path, reference_paths, language, silent_failure_context, lessons_path}. extra_lint_commands / reference_paths / silent_failure_context / lessons_path are OPTIONAL (may be absent → treat as [] / [] / [] / ''). If config contains lessons_path, read that file. Extract entries (each has id, title, detail). For each task in the current plan, match lessons whose title/detail keywords overlap with the task's title. Return matched lessons per task in evidence as task_lessons: [{task_id, lessons:[{id, title, detail}]}]. Absent lessons_path → empty array.
 2. Config smoke: run test_command with --collect-only. 判断：命令本身不存在（command not found / No such file: pytest）→ status=failed（环境/typo）；命令存在但 collect 失败（no module named pytest / pyproject.toml 不存在 / no tests collected / 业务代码未初始化）→ 记录 'project not yet initialized' 到 summary，status 仍 ok（业务代码由后续 task 创建，预期）。
 3. For each {{plansDir}}/*.md: if frontmatter (starts with ---) read task models; else generate — extract LEAF ids (## Task N with ### Task NX children → only NX; else N), modelHint (title contains 安全|加密|认证|JWT|CSRF|Fernet|算法|比对|策略|边界|集成|接口 → opus, else omit), write frontmatter at file top. Idempotent. Record each plan's file (full path) and seq (last two digits of filename, e.g. 01). Also read write_files from frontmatter if present (format: "write_files:\n  T1:\n    - src/a.py\n    - src/b.py"). Return as task_write_files in evidence: [{task_id, files:[...]}]. Absent → empty array.
 4. git log → completed task ids via convention feat(plan-X/T-Y).
@@ -381,7 +391,7 @@ Steps:
 6. For each leaf task return its model (sonnet|opus|undefined→sonnet) and title (the description text from the Task header).
 7. If runs/ directory exists: scan runs/*/manifest.json files. For each, read per_task object. For each task_id in per_task that has blocked_info, extract {task_id, reason (from blocked_info.reason), error (from blocked_info.last_error)}. Filter to task_ids that match leaf tasks in the current plans. Return as failed_approaches in evidence. If runs/ does not exist → failed_approaches=[].
 
-Return {status, evidence:{config (include ALL fields read in step 1, even optional ones if present), plans:[{id, file, seq, tasks:[{id, model, title}]}], completed:[...], dirty_tree, failed_approaches:[{task_id, reason, error}], task_write_files:[{task_id, files:[...]}]}, summary}.
+Return {status, evidence:{config (include ALL fields read in step 1, even optional ones if present), plans:[{id, file, seq, tasks:[{id, model, title}]}], completed:[...], dirty_tree, failed_approaches:[{task_id, reason, error}], task_write_files:[{task_id, files:[...]}], task_lessons:[{task_id, lessons:[{id, title, detail}]}]}, summary}.
 RED FLAG: evidence 必须是真实读取结果，绝不编造。`,
 
   implementor: `You are the IMPLEMENTOR for {{taskId}} (plan {{planId}}). TDD strict (RED→GREEN→REFACTOR). {{retryNote}}
@@ -389,6 +399,7 @@ RED FLAG: evidence 必须是真实读取结果，绝不编造。`,
 Inputs: specPath={{specPath}} testCommand={{testCommand}} planFile={{planFilePath}} taskId={{taskId}} fixIssues={{fixIssues}} fetchedContext={{fetchedContext}}
 {{referencePaths}}
 {{failedApproaches}}
+{{lessons}}
 {{fetchedContext}}
 
 Steps:
@@ -580,7 +591,7 @@ RED FLAG: every exit_code 必须真实（你在 committed SHA 上亲跑）。必
 
   finalReport: `You are FINAL-REPORT (mode={{mode}} done|halted). Write the run manifest (the ONLY on-disk write in this workflow) and emit a digest.
 
-Inputs: mode={{mode}} state={{stateJson}} blockedInfo={{blockedInfo}} runsDir={{runsDir}} runTs={{runTs}}
+Inputs: mode={{mode}} state={{stateJson}} blockedInfo={{blockedInfo}} runsDir={{runsDir}} runTs={{runTs}} lessonsPath={{lessonsPath}}
 
 Steps:
 1. mkdir -p {{runsDir}}.
@@ -589,7 +600,8 @@ Steps:
 4. If mode=halted: run "git status --porcelain" and "git diff --stat". BEST-EFFORT — if git fails (not a repo / index corrupt), skip this section (do NOT block manifest.json write).
    If "git status --porcelain" output is non-empty, append a "## Working Tree (dirty)" section to blocked.md with: the porcelain output (file list) + the diff --stat output (change summary) + 接手指引（implementor 改动未提交，留在工作树。选项：git diff <file> 查看 / git checkout -- <file> 丢弃 / 手动修后 git commit -m "feat(plan-X/T-Y): ..." 再全新跑续，见 USAGE.md §7.1）。
    If output is empty, append "## Working Tree (clean)" — no uncommitted changes（likely_source=gate restored 时预期如此）。
-5. Print a digest summary (counts: done/blocked, total tasks, per-plan gate result).
+5. If mode=halted AND lessonsPath is non-empty AND blockedInfo has reason+last_error: append a new lesson entry to the lessonsPath file. Format: "## L-<timestamp>\ntitle: <reason>\ndetail: <last_error>\nstatus: active\n". Use append mode (do not overwrite). If file does not exist, create it with a header "# Lessons Learned".
+6. Print a digest summary (counts: done/blocked, total tasks, per-plan gate result).
 
 Return {evidence:{manifest_path}, summary: <digest>}.
 RED FLAG: manifest 必须真实写入磁盘（你 ls 确认）。stateJson 是 orchestrator 传入的完整状态，照实记录。`,
