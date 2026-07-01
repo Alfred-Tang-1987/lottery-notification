@@ -1,6 +1,14 @@
 # 行尾规范化：Windows 项目强制 CRLF，防 lib.js ↔ run-plans.js 跨平台编辑混入 LF
 # 导致 sync.test.js 的 promptBody 正则失配（T5 曾踩坑）。
 # sync.test.js 的"行尾一致性"测试是第二道保险，此文件是根因防护。
+#
+# ⚠️ 规则顺序关键：git 对同一属性取「最后匹配的规则」生效。
+# 通配兜底（*）必须在最前，具体后缀（*.js 等）在后才能覆盖；
+# 写反了 `* binary`(=-text) 会盖掉前面的 `*.js text`，CRLF 强制全失效
+# （commit 1737a72 曾踩此坑 → sync.test 11 fail 报警，run-plans/lib 行尾分裂）。
+
+# 兜底：未明确指定的文件视为 binary（必须在最前，让后面具体规则覆盖）
+* binary
 
 # 源码 / 配置 / 文档：强制 CRLF（checkout 与 commit 均保留 CRLF）
 *.js   text eol=crlf
@@ -8,6 +16,3 @@
 *.md   text eol=crlf
 *.yaml text eol=crlf
 *.yml  text eol=crlf
-
-# 二进制 / 其他：不强制
-* binary
