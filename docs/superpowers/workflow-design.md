@@ -668,4 +668,6 @@ function detectOscillation(filesTouchedPerRound) {
 - §4.4 in-memory state 是执行期间的事实来源；native resume 重跑 bootstrap 重建之
 - §6/§9/§13d 已据此收敛
 
-**代价**：崩溃中途无盘上 manifest（靠 `/workflows` 面板 + native resume + git log）。可接受——native resume 比自建 manifest 更可靠（journal 是 Workflow 内置、自动维护，改 prompt 才失效缓存，而改 prompt 本就期望重跑）。
+**代价**：崩溃中途无盘上 manifest（靠 `/workflows` 面板 + native resume + git log）。
+
+**Resume 能力边界（与 Claude Code 官方规范对齐）**：native `resumeFromRunId` **仅在同一个 Claude Code session 内有效**——退出 CC 后再启动会 fresh start（规范原文："Resume works within the same Claude Code session. If you exit Claude Code while a workflow is running, the next session starts the workflow fresh."）。故跨 session 重启时 journal 缓存失效，但 **bootstrap 以 git log 为 ground truth 识别已完成 task**（§6.1），fresh start 也能正确跳过已 commit 的 task，韧性不依赖 resume。manifest 仅供人读观测，不参与 resume 决策——这与规范的"runtime tracks each agent's result"不冲突，因为我们不读 manifest 做 resume。

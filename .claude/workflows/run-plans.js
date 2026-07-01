@@ -1,6 +1,6 @@
 // workflow orchestrator —— 多 plan 自动执行（workflow-design.md §4/§5/§13）
 // 纯函数/SCHEMAS/PROMPTS inline 自 docs/superpowers/workflows/lib.js —— 改 lib 必须同步改这里。
-// 顶层 await = Workflow 入口；agent/parallel/phase/log/args/budget 为 Workflow runtime 注入的全局。
+// 顶层 await = Workflow 入口；agent/parallel/phase/log/args 为 Workflow runtime 注入的全局。
 // 分层：纯决策（classifyThrown/reviewHaltReason/collectReviewFindings 等）进 lib.js 可 node:test 测；
 //   runtime 胶水（safeAgent/dispatchImpl，调 agent()）只能留此文件（lib.js 是纯模块不能调 runtime 全局）。
 

@@ -118,3 +118,17 @@ test('no彩票硬编码残留在通用 prompt（bootstrap 中性化 + qualityRev
   const qual = promptBody(runSrc, 'qualityReviewer')
   assert.doesNotMatch(qual, /domain-layer-zero-IO/, 'domain 纯度纪律应靠 gate extra_lint_commands 强制，不硬编码进 qualityReviewer')
 })
+
+test('行尾一致性：lib.js 与 run-plans.js 不得含 bare LF（CRLF 根因防护）', () => {
+  // T5 曾因 LF 混入导致 promptBody 正则失配 → sync 测试误报。.gitattributes 强制 CRLF 后，
+  // 此测试守护"两文件均无 bare LF"——任一文件出现 \n 未配对 \r 即回归。
+  for (const [name, src] of [['lib.js', libSrc], ['run-plans.js', runSrc]]) {
+    const bareLf = (src.match(/(?<!\r)\n/g) || []).length
+    assert.equal(bareLf, 0, `${name} 含 ${bareLf} 个 bare LF（应全 CRLF）——检查 .gitattributes 是否生效 / 编辑器是否混入 LF`)
+  }
+})
+
+test('run-plans.js 不得残留 budget 死引用（runtime 未注入此全局，提及会误导维护者）', () => {
+  // budget 在代码中未使用，文件头注释提及会让人误以为 runtime 注入了它。
+  assert.doesNotMatch(runSrc, /\bbudget\b/, 'run-plans.js 残留 budget 死引用——runtime 未注入此全局，应从注释删除')
+})
