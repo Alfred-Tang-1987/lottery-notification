@@ -213,6 +213,21 @@ from app.api.claims import router as claims_router  # noqa: E402
 
 app.include_router(claims_router)
 
+# Dashboard 聚合 API（Plan 06 / T6）：首屏数据快照。
+from app.api.dashboard import router as dashboard_router  # noqa: E402
+
+app.include_router(dashboard_router)
+
+# 开奖历史 API（Plan 06 / T6）：开奖查询 / 走势。
+from app.api.draws import router as draws_router  # noqa: E402
+
+app.include_router(draws_router)
+
+# 比对记录 API（Plan 06 / T6）：中奖记录。
+from app.api.comparisons import router as comparisons_router  # noqa: E402
+
+app.include_router(comparisons_router)
+
 
 @app.get('/health')
 def health(db: Engine = Depends(get_db_for_health)):
