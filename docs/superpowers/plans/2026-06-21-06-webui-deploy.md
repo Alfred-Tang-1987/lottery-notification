@@ -5,7 +5,12 @@ models:
   T3: opus
   T4: sonnet
   T5: sonnet
-  T6: sonnet
+  T6b: sonnet
+  T6c: sonnet
+  T6d: sonnet
+  T6e: sonnet
+  T6f: sonnet
+  T6g: sonnet
   T7: sonnet
   T8: sonnet
   T9: sonnet
@@ -391,11 +396,13 @@ git commit -m "feat(web): 响应式布局（sidebar/底部tab bar/用户区）+ 
 
 ---
 
-## Task 6: 各页面（按 prototype）+ dashboard 首屏优先级
+## Task 6: 9 页面 UI（基础已完成；完整功能拆 6b–6g 子 task）
 
 **Files:** `web/src/pages/*.vue`
 
-> 按 `docs/superpowers/prototypes/*.html` 实现 9 页，用 DESIGN.md token + State 组件 + API client。**dashboard 首屏优先级（D5）**：待兑奖 > 我的命中 > 盈亏速览 > 开奖概览 > 日历/代销点（次屏）。
+> **基础已完成并 commit（`feat(plan-06/T6)` × 2）**：9 页骨架（Login/Dashboard/MyNumbers/DrawQuery/WinRecords/MyStats/Trend/Settings/Admin）+ Dashboard/Draws/Comparisons 后端聚合 API + quality 修复（pending_amount/days_left/N+1）+ spec §12.2 部分补充。下方原 Step 1–3 是功能蓝图（已部分实现）。
+>
+> **OSCILLATING 根因**：spec §12.2 每页完整功能（选号系统 / 走势矩阵 / 统计图表 / 推送策略 / 后台管理）范围过大，原 T6 单 task 在 review 循环内无法收敛。拆成 6b–6g 各自独立 leaf task，每个聚焦一个功能域（详见下方 `### Task 6b–6g`）。**本父 task 不再派 implementor**（bootstrap 识别 ### 子为 leaf）。
 
 - [ ] **Step 1: Login.vue（登录/注册 tab + 邀请码 + 主题）**
 
@@ -457,6 +464,90 @@ async function submit() {
 git add web/src/pages/
 git commit -m "feat(web): 9 页实现（按 prototype + DESIGN.md token + State + 首屏优先级）"
 ```
+
+---
+
+### Task 6b: MyNumbers 选号系统（spec §12.2 row 3）
+
+**Files:** `web/src/pages/MyNumbers.vue`, `web/src/components/NumberPad.vue`（新建）, `web/src/lib/lotteries.ts`
+
+> spec §12.2 row 3 + `docs/reference/lottery-rules.md`：每彩种玩法词汇不同（分区型单式/复式/胆拖；按位型单选/直选/组选三/组选六）。原 T6 `play_type` 是 flat hardcode（违反 per-lottery 词汇）。
+
+- [ ] **Step 1:** `NumberPad.vue` 通用号码盘——按 `LotterySpec` 渲染分区（红/蓝）或按位（0-9），点击选号 + 已选展示 + 越界校验
+- [ ] **Step 2:** MyNumbers 接入：彩种切换 → 号码盘 + 玩法按 spec 切；机选一注（复式/胆拖可配红蓝数）；倍投 2-99；大乐透追加 checkbox（仅 dlt）
+- [ ] **Step 3:** 批量导入 CSV（格式：`彩种,期号,号码...`）→ 调 `/api/tickets`；逐行校验 + 错误反馈（不静默丢行）
+- [ ] **Step 4:** vitest 覆盖选号/机选/CSV 解析（含 7 彩种玩法分支）；spec §12.2 row 3 全勾
+- [ ] **Step 5:** Commit `feat(plan-06/T6b): MyNumbers 选号系统（号码盘+机选+追加+CSV）`
+
+---
+
+### Task 6c: Trend 综合分布图完善（spec §12.2 row 7）
+
+**Files:** `web/src/pages/Trend.vue`, `web/src/lib/miss.ts`（抽取遗漏算法，可单测）
+
+> prototype 08 经验：**红/蓝区遗漏须独立计数**（双色球红蓝 01-16 数值重叠，共享 miss 互相干扰）。
+
+- [ ] **Step 1:** `miss.ts` 纯函数——按区独立算遗漏次数（输入开奖序列 + 区间，输出每号 miss 计数）；vitest 覆盖（含双色球红蓝重叠 case）
+- [ ] **Step 2:** Trend 综合分布图矩阵（期从远到近 · 号码按列 · 开出标圆 · 遗漏次数同区独立）；表头 sticky + cell 自适应
+- [ ] **Step 3:** 频次统计 + **显著随机性声明**（走势不预测，spec §9 合规红线）
+- [ ] **Step 4:** 选号面板默认折叠（确认门抽屉 Task 7 接入，本 task 只做分布图）
+- [ ] **Step 5:** Commit `feat(plan-06/T6c): Trend 综合分布图（矩阵+标圆+遗漏同区独立）`
+
+---
+
+### Task 6d: MyStats 统计图表完善（spec §12.2 row 6）
+
+**Files:** `web/src/pages/MyStats.vue`
+
+> 原 T6 ECharts 实例未 dispose（内存泄漏）；双饼/月柱缺维度，中奖率/公益卡缺。
+
+- [ ] **Step 1:** 中奖等级双饼图（笔数 + 金额双维度切换）；月度投入/中奖双柱图
+- [ ] **Step 2:** 中奖率 + 公益贡献（按各彩种 `welfare_rate`）统计卡
+- [ ] **Step 3:** ECharts 实例 `onUnmounted` dispose（防内存泄漏）；浮奖未回填显示「待派奖」非 0
+- [ ] **Step 4:** vitest 覆盖数据聚合（双饼维度切换/月柱聚合）；spec §12.2 row 6 全勾
+- [ ] **Step 5:** Commit `feat(plan-06/T6d): MyStats 双饼图+月柱图+中奖率/公益卡（ECharts dispose）`
+
+---
+
+### Task 6e: Settings 推送策略 + 时机 + 模板 + 主题（spec §12.2 row 8）
+
+**Files:** `web/src/pages/Settings.vue`
+
+> 原 T6 仅渠道配置（Bark/飞书/邮箱）；DND 是 client-only ref 未持久化；缺每彩种策略/时机/模板/主题。
+
+- [ ] **Step 1:** 每彩种推送策略（`every`/`win_only`）+ 推送时机（大奖即时 + 次日汇总时间可配）→ 调 `/api/channels`/settings
+- [ ] **Step 2:** 模板预览（路径 A 即时简讯 / 路径 B 汇总，spec §8.3）
+- [ ] **Step 3:** 主题切换（亮/暗/自动，`localStorage` 持久化）；DND 时段持久化到后端（非 client-only ref）
+- [ ] **Step 4:** vitest 覆盖策略/时机表单 + 持久化；spec §12.2 row 8 全勾
+- [ ] **Step 5:** Commit `feat(plan-06/T6e): Settings 推送策略+时机+模板+主题（DND 持久化）`
+
+---
+
+### Task 6f: Admin 后台管理 UI（spec §12.2 row 9）
+
+**Files:** `web/src/pages/Admin.vue`
+
+> 原 T6 只读（渲染 users/health/push-log）；缺 SMTP/邀请码/彩种启停/审计/push-log filter。
+
+- [ ] **Step 1:** SMTP 发件配置 UI + 测试发送（调 `/api/admin/smtp`）
+- [ ] **Step 2:** 邀请码创建 + 列表 + 彩种启用/停用 toggle
+- [ ] **Step 3:** 审计日志查看 + push-log 6-dim filter（彩种/渠道/时间/状态/用户/模板）+ 分页
+- [ ] **Step 4:** vitest 覆盖 filter/分页逻辑；spec §12.2 row 9 全勾
+- [ ] **Step 5:** Commit `feat(plan-06/T6f): Admin 后台管理（SMTP+邀请码+彩种+审计+push-log filter）`
+
+---
+
+### Task 6g: Dashboard 收尾 + WinRecords 收尾（spec §12.2 row 2 + row 4）
+
+**Files:** `web/src/pages/Dashboard.vue`, `web/src/pages/WinRecords.vue`
+
+> 原 T6 Dashboard D5 顺序错（我的命中在盈亏速览下）、缺公益卡/日历/代销点；WinRecords 缺时段筛选/税务提示。
+
+- [ ] **Step 1:** Dashboard **D5 首屏优先级**（待兑奖 > 我的命中 > 盈亏速览 > 开奖概览 > 日历/代销点）
+- [ ] **Step 2:** 盈亏速览含公益贡献卡（按 `welfare_rate`）；开奖日历（按启用彩种过滤 + 预告，MVP mock 可）+ 附近代销点（📍定位 + 福彩/体彩区分，MVP mock 可）
+- [ ] **Step 3:** WinRecords 时段筛选 + 4-card stats（金额维度）+ 税务提示（≥1万元）
+- [ ] **Step 4:** vitest 覆盖 D5 排序 + 税务阈值；spec §12.2 row 2 + row 4 全勾
+- [ ] **Step 5:** Commit `feat(plan-06/T6g): Dashboard 收尾（D5+公益卡+日历+代销点）+ WinRecords（筛选+税务）`
 
 ---
 
