@@ -226,6 +226,16 @@ function formatFailedApproaches(items) {
 ${lines}
 If your plan is similar to any above, explicitly state the difference.`
 }
+
+// write_files 边界控制：plan frontmatter 可选声明 write_files，
+// commit agent 提交前检查 git diff 是否越界。不声明 → 空串 → 检查跳过。
+function formatWriteFilesScope(files) {
+  if (!Array.isArray(files) || files.length === 0) return ''
+  const lines = files.map(f => `- ${f}`).join('\n')
+  return `## Write Files Boundary (commit agent will verify)
+${lines}
+Before committing, run git diff --name-only. If any file is NOT in the list above, you MUST either: 1. revert the out-of-scope change, or 2. report status=failed with out_of_scope in diagnostics.`
+}
 const LANGUAGE_CHECKLISTS = {
   python: `## Language-specific checks (Python / FastAPI / SQLModel)
 - SQL injection: f-strings/concat in queries → parameterized queries
@@ -291,7 +301,7 @@ const SCHEMAS = {
     properties: {
       status: { type: 'string', enum: ['ok', 'failed', 'blocked'] },
       evidence: { type: 'object', required: ['config', 'plans', 'completed', 'dirty_tree'],
-        properties: { config: { type: 'object' }, plans: { type: 'array' }, completed: { type: 'array' }, dirty_tree: { type: 'boolean' }, failed_approaches: { type: 'array' } } },
+        properties: { config: { type: 'object' }, plans: { type: 'array' }, completed: { type: 'array' }, dirty_tree: { type: 'boolean' }, failed_approaches: { type: 'array' }, task_write_files: { type: 'array' } } },
       diagnostics: { type: 'object' }, summary: { type: 'string' },
     },
   },
@@ -322,7 +332,7 @@ const SCHEMAS = {
     properties: { status: { type: 'string', enum: ['ok', 'failed', 'model_unavailable'] },
       evidence: { type: 'object', required: ['commit_sha', 'committed_files'],
         properties: { commit_sha: { type: 'string' }, committed_files: { type: 'array' }, tests_at_commit: { type: 'integer' } } },
-      diagnostics: { type: 'object' }, summary: { type: 'string' } } },
+      diagnostics: { type: 'object', properties: { out_of_scope: { type: 'array' } } }, summary: { type: 'string' } } },
   contextFetcher: { type: 'object', required: ['diagnostics'], additionalProperties: true,
     properties: { diagnostics: { type: 'object', required: ['context'], properties: { context: { type: 'string' } } }, summary: { type: 'string' } } },
   gate: { type: 'object', required: ['status', 'evidence'], additionalProperties: true,
@@ -342,13 +352,13 @@ Inputs: configPath={{configPath}} plansDir={{plansDir}} runTs={{runTs}}
 Steps:
 1. Read {{configPath}} → {test_command, full_test_command, build_command, lint_command, extra_lint_commands, spec_path, reference_paths, language, silent_failure_context}. extra_lint_commands / reference_paths / silent_failure_context are OPTIONAL (may be absent → treat as [] / [] / []).
 2. Config smoke: run test_command with --collect-only. 判断：命令本身不存在（command not found / No such file: pytest）→ status=failed（环境/typo）；命令存在但 collect 失败（no module named pytest / pyproject.toml 不存在 / no tests collected / 业务代码未初始化）→ 记录 'project not yet initialized' 到 summary，status 仍 ok（业务代码由后续 task 创建，预期）。
-3. For each {{plansDir}}/*.md: if frontmatter (starts with ---) read task models; else generate — extract LEAF ids (## Task N with ### Task NX children → only NX; else N), modelHint (title contains 安全|加密|认证|JWT|CSRF|Fernet|算法|比对|策略|边界|集成|接口 → opus, else omit), write frontmatter at file top. Idempotent. Record each plan's file (full path) and seq (last two digits of filename, e.g. 01).
+3. For each {{plansDir}}/*.md: if frontmatter (starts with ---) read task models; else generate — extract LEAF ids (## Task N with ### Task NX children → only NX; else N), modelHint (title contains 安全|加密|认证|JWT|CSRF|Fernet|算法|比对|策略|边界|集成|接口 → opus, else omit), write frontmatter at file top. Idempotent. Record each plan's file (full path) and seq (last two digits of filename, e.g. 01). Also read write_files from frontmatter if present (format: "write_files:\n  T1:\n    - src/a.py\n    - src/b.py"). Return as task_write_files in evidence: [{task_id, files:[...]}]. Absent → empty array.
 4. git log → completed task ids via convention feat(plan-X/T-Y).
 5. git status --porcelain → dirty_tree.
 6. For each leaf task return its model (sonnet|opus|undefined→sonnet) and title (the description text from the Task header).
 7. If runs/ directory exists: scan runs/*/manifest.json files. For each, read per_task object. For each task_id in per_task that has blocked_info, extract {task_id, reason (from blocked_info.reason), error (from blocked_info.last_error)}. Filter to task_ids that match leaf tasks in the current plans. Return as failed_approaches in evidence. If runs/ does not exist → failed_approaches=[].
 
-Return {status, evidence:{config (include ALL fields read in step 1, even optional ones if present), plans:[{id, file, seq, tasks:[{id, model, title}]}], completed:[...], dirty_tree, failed_approaches:[{task_id, reason, error}]}, summary}.
+Return {status, evidence:{config (include ALL fields read in step 1, even optional ones if present), plans:[{id, file, seq, tasks:[{id, model, title}]}], completed:[...], dirty_tree, failed_approaches:[{task_id, reason, error}], task_write_files:[{task_id, files:[...]}]}, summary}.
 RED FLAG: evidence 必须是真实读取结果，绝不编造。`,
 
   implementor: `You are the IMPLEMENTOR for {{taskId}} (plan {{planId}}). TDD strict (RED→GREEN→REFACTOR). {{retryNote}}
@@ -490,7 +500,7 @@ RED FLAG: changed 必须如实。orchestrator 不信任自报，会无条件重�
 
   commit: `You are COMMIT. Create one atomic commit for task {{taskId}}. {{simplifyRevertNote}}
 
-Inputs: taskId={{taskId}} planId={{planId}} testCommand={{testCommand}} simplifyFailed={{simplifyFailed}} simplifyFiles={{simplifyFiles}} commitMsg={{commitMsg}}
+Inputs: taskId={{taskId}} planId={{planId}} testCommand={{testCommand}} simplifyFailed={{simplifyFailed}} simplifyFiles={{simplifyFiles}} commitMsg={{commitMsg}} writeFilesScope={{writeFilesScope}}
 
 ## 提交约定（HARD REQUIREMENT — 违反会导致 OSCILLATING halt）
 git 提交消息**必须**严格等于下面这条（orchestrator 已按 feat(plan-XX/TY): title 格式预计算好，原样使用，不要改写 scope、不要自拟标题）：
@@ -502,6 +512,7 @@ Steps:
 1. If simplifyFailed=true: first git checkout -- each file in simplifyFiles (revert bad simplify), then proceed.
 2. git status --porcelain → see staged/unstaged.
 3. Run {{testCommand}} on current tree; confirm exit 0. If fail → status=failed (do NOT commit).
+3.5. If writeFilesScope is non-empty: run git diff --name-only. Compare with writeFilesScope. If any file is out of scope → status=failed, diagnostics.out_of_scope=[<files>]. Do NOT commit.
 4. git add -A; git commit -m "{{commitMsg}}"。
 5. **强制校验 + 纠偏**：git log -1 --format=%s 取 HEAD 主体，与 {{commitMsg}} 比对。若不符（任何原因——比如实现 agent 之前已用错误 scope 提交过、或 HEAD 已存在但消息不对）：git commit --amend -m "{{commitMsg}}" 纠正。这是确定性的：无论谁提交、提交了什么，最终 HEAD 消息必为 {{commitMsg}}。
 6. git rev-parse HEAD → commit_sha。
@@ -738,8 +749,9 @@ async function runTask(plan, task) {
 
   // —— commit（§5：状态原子转换；simplify 回退委托此 agent）——
   let commit
-  commit = await dispatchImpl(buildPrompt('commit', { taskId: task.id, planId: plan.id, planIdShort, taskTitle: task.title || task.id, commitMsg: commitSubject(plan.seq, task.id, task.title || task.id), testCommand: cfg.test_command, simplifyFailed: String(simplifyFailed), simplifyFiles: simplifyFiles.join(','), simplifyRevertNote: simplifyFailed ? `Simplify 回退：重跑 review 失败，还原 ${simplifyFiles.length} 个文件。` : '' }), { schema: SCHEMAS.commit, label: `commit:${task.id}` }, model)
+  commit = await dispatchImpl(buildPrompt('commit', { taskId: task.id, planId: plan.id, planIdShort, taskTitle: task.title || task.id, commitMsg: commitSubject(plan.seq, task.id, task.title || task.id), testCommand: cfg.test_command, simplifyFailed: String(simplifyFailed), simplifyFiles: simplifyFiles.join(','), simplifyRevertNote: simplifyFailed ? `Simplify 回退：重跑 review 失败，还原 ${simplifyFiles.length} 个文件。` : '', writeFilesScope: formatWriteFilesScope(state.taskWriteFiles?.[task.id] || []) }), { schema: SCHEMAS.commit, label: `commit:${task.id}` }, model)
   if (commit.halted) return commit
+  if (commit.status === 'failed' && Array.isArray(commit.diagnostics?.out_of_scope) && commit.diagnostics.out_of_scope.length) return { halted: true, reason: 'commit out_of_scope', diag: commit.diagnostics }
   if (commit.status !== 'ok') return { halted: true, reason: 'commit failed', diag: commit.diagnostics }
   state.perTask[task.id].status = 'committed'
   state.perTask[task.id].commit_sha = commit.evidence.commit_sha
@@ -772,6 +784,12 @@ if (Array.isArray(boot.evidence.failed_approaches)) {
   for (const fa of boot.evidence.failed_approaches) {
     if (!state.failedApproaches[fa.task_id]) state.failedApproaches[fa.task_id] = []
     state.failedApproaches[fa.task_id].push(fa)
+  }
+}
+// write_files 边界控制：按 task_id 索引存入 state，供 commit agent 边界检查
+if (Array.isArray(boot.evidence.task_write_files)) {
+  for (const twf of boot.evidence.task_write_files) {
+    state.taskWriteFiles[twf.task_id] = twf.files || []
   }
 }
 
