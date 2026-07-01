@@ -21,8 +21,19 @@ const data = computed<ParsedNumbers>(() => {
       front: Array.isArray(parsed.front) ? parsed.front : [],
       back: Array.isArray(parsed.back) ? parsed.back : undefined,
     };
-  } catch {
+  } catch (e) {
+    // Intentional dev diagnostic: parse failures surface data corruption in console (not production logger)
+    console.warn('BallNumber parse error', props.numbersJson, e);
     return { front: [] };
+  }
+});
+
+const parseOk = computed(() => {
+  try {
+    JSON.parse(props.numbersJson);
+    return true;
+  } catch {
+    return false;
   }
 });
 
@@ -40,7 +51,8 @@ function fmt(n: number): string {
 
 <template>
   <div class="ball-row" aria-label="开奖号码">
-    <template v-if="variant === 'partition'">
+    <span v-if="!parseOk" class="parse-error">号码加载异常</span>
+    <template v-else-if="variant === 'partition'">
       <span
         v-for="(n, idx) in data.front"
         :key="`f-${idx}`"
@@ -87,6 +99,11 @@ function fmt(n: number): string {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.parse-error {
+  color: var(--danger);
+  font-size: var(--text-sm);
 }
 
 .ball {
