@@ -328,7 +328,7 @@ export const SCHEMAS = {
     properties: { status: { type: 'string', enum: ['ok', 'failed', 'model_unavailable'] },
       evidence: { type: 'object', required: ['commit_sha', 'committed_files'],
         properties: { commit_sha: { type: 'string' }, committed_files: { type: 'array' }, tests_at_commit: { type: 'integer' } } },
-      diagnostics: { type: 'object', properties: { out_of_scope: { type: 'array' } } }, summary: { type: 'string' } } },
+      diagnostics: { type: 'object', properties: { out_of_scope: { type: 'array' }, destructive_changes: { type: 'array' } } }, summary: { type: 'string' } } },
   contextFetcher: { type: 'object', required: ['diagnostics'], additionalProperties: true,
     properties: { diagnostics: { type: 'object', required: ['context'], properties: { context: { type: 'string' } } }, summary: { type: 'string' } } },
   gate: { type: 'object', required: ['status', 'evidence'], additionalProperties: true,
@@ -536,6 +536,11 @@ Steps:
 2. git status --porcelain → see staged/unstaged.
 3. Run {{testCommand}} on current tree; confirm exit 0. If fail → status=failed (do NOT commit).
 3.5. If writeFilesScope is non-empty: run git diff --name-only. Compare with writeFilesScope. If any file is out of scope → status=failed, diagnostics.out_of_scope=[<files>]. Do NOT commit.
+3.6. Destructive Change Detection: run git diff --cached --numstat. For each file:
+  a. If column 2 (deletions) >= 5 AND file is not a test file → record {type:'deleted_code', file, detail:'<N> lines deleted'}
+  b. If file is deleted (git diff --cached --name-status shows D) → record {type:'file_deletion', file, detail:'file deleted'}
+  c. For exported symbol signature changes: read the diff hunks. If a function/class exported symbol's params or return type changed → record {type:'signature_change', file, detail:'<symbol> signature changed'}
+  If any hit → record in diagnostics.destructive_changes: [{type, file, detail}]. Still proceed to commit (status=ok), but orchestrator will trigger an extra review round.
 4. git add -A; git commit -m "{{commitMsg}}"。
 5. **强制校验 + 纠偏**：git log -1 --format=%s 取 HEAD 主体，与 {{commitMsg}} 比对。若不符（任何原因——比如实现 agent 之前已用错误 scope 提交过、或 HEAD 已存在但消息不对）：git commit --amend -m "{{commitMsg}}" 纠正。这是确定性的：无论谁提交、提交了什么，最终 HEAD 消息必为 {{commitMsg}}。
 6. git rev-parse HEAD → commit_sha。

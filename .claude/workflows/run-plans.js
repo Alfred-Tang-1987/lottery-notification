@@ -332,7 +332,7 @@ const SCHEMAS = {
     properties: { status: { type: 'string', enum: ['ok', 'failed', 'model_unavailable'] },
       evidence: { type: 'object', required: ['commit_sha', 'committed_files'],
         properties: { commit_sha: { type: 'string' }, committed_files: { type: 'array' }, tests_at_commit: { type: 'integer' } } },
-      diagnostics: { type: 'object', properties: { out_of_scope: { type: 'array' } } }, summary: { type: 'string' } } },
+      diagnostics: { type: 'object', properties: { out_of_scope: { type: 'array' }, destructive_changes: { type: 'array' } } }, summary: { type: 'string' } } },
   contextFetcher: { type: 'object', required: ['diagnostics'], additionalProperties: true,
     properties: { diagnostics: { type: 'object', required: ['context'], properties: { context: { type: 'string' } } }, summary: { type: 'string' } } },
   gate: { type: 'object', required: ['status', 'evidence'], additionalProperties: true,
@@ -513,6 +513,11 @@ Steps:
 2. git status --porcelain → see staged/unstaged.
 3. Run {{testCommand}} on current tree; confirm exit 0. If fail → status=failed (do NOT commit).
 3.5. If writeFilesScope is non-empty: run git diff --name-only. Compare with writeFilesScope. If any file is out of scope → status=failed, diagnostics.out_of_scope=[<files>]. Do NOT commit.
+3.6. Destructive Change Detection: run git diff --cached --numstat. For each file:
+  a. If column 2 (deletions) >= 5 AND file is not a test file → record {type:'deleted_code', file, detail:'<N> lines deleted'}
+  b. If file is deleted (git diff --cached --name-status shows D) → record {type:'file_deletion', file, detail:'file deleted'}
+  c. For exported symbol signature changes: read the diff hunks. If a function/class exported symbol's params or return type changed → record {type:'signature_change', file, detail:'<symbol> signature changed'}
+  If any hit → record in diagnostics.destructive_changes: [{type, file, detail}]. Still proceed to commit (status=ok), but orchestrator will trigger an extra review round.
 4. git add -A; git commit -m "{{commitMsg}}"。
 5. **强制校验 + 纠偏**：git log -1 --format=%s 取 HEAD 主体，与 {{commitMsg}} 比对。若不符（任何原因——比如实现 agent 之前已用错误 scope 提交过、或 HEAD 已存在但消息不对）：git commit --amend -m "{{commitMsg}}" 纠正。这是确定性的：无论谁提交、提交了什么，最终 HEAD 消息必为 {{commitMsg}}。
 6. git rev-parse HEAD → commit_sha。
@@ -756,6 +761,37 @@ async function runTask(plan, task) {
   state.perTask[task.id].status = 'committed'
   state.perTask[task.id].commit_sha = commit.evidence.commit_sha
   log(`✓ ${task.id} committed @ ${commit.evidence.commit_sha}`)
+
+  // —— Destructive Change Detection 触发额外 review round（T4 sync）——
+  // commit agent 在 step 3.6 已把 deleted_code/file_deletion/signature_change 写入
+  // diagnostics.destructive_changes。非空 → 触发 spec+quality+hunter 并行额外 review。
+  // 不计入 review_rounds 限额；失败不 halt，记录 destructive_review_failed + findings 继续。
+  const destructive = commit.diagnostics?.destructive_changes
+  if (Array.isArray(destructive) && destructive.length) {
+    log(`⚠ ${task.id} destructive_changes detected (${destructive.length}): ${destructive.map(d => `${d.type}:${d.file}`).join(', ')} — 触发额外 review round`)
+    const fc = (commit.evidence.committed_files || []).join(',')
+    const [dSpec, dQual, dHunt] = await parallel([
+      async () => safeAgent(buildPrompt('specReview', { taskId: task.id, specPath: cfg.spec_path, planFilePath: plan.file, filesChanged: fc, concernsHint: '', referencePaths: formatReferencePaths(cfg.reference_paths) }), { schema: SCHEMAS.specReview, model: 'opus', phase: `Plan ${plan.id}`, label: `spec:${task.id}:destructive` }),
+      async () => safeAgent(buildPrompt('qualityReviewer', { taskId: task.id, filesChanged: fc, languageChecklist: languageChecklist(cfg.language) }), { schema: SCHEMAS.qualityReviewer, model: 'opus', label: `qual:${task.id}:destructive` }),
+      async () => safeAgent(buildPrompt('hunter', { taskId: task.id, filesChanged: fc, silentFailureContext: formatSilentFailureContext(cfg.silent_failure_context) }), { schema: SCHEMAS.hunter, model: 'sonnet', label: `hunt:${task.id}:destructive` }),
+    ])
+    const dReason = reviewHaltReason(dSpec, dQual, dHunt)
+    const dEmptyFailed = reviewHaltForEmptyFailed(dSpec, dQual, dHunt)
+    if (dReason || dEmptyFailed) {
+      // model 不可用/空响应：不 halt，记录失败继续（destructive review 是增强保护，非阻断）
+      state.perTask[task.id].destructive_review_failed = true
+      state.perTask[task.id].destructive_review_findings = [{ source: 'destructive-review', title: dReason || dEmptyFailed }]
+      log(`⚠ ${task.id} destructive review 异常 (${dReason || dEmptyFailed}) — 记录并继续`)
+    } else if (!allGreen(dSpec, dQual, dHunt)) {
+      // 不全绿：不 halt，记录 destructive_review_failed + findings 到 perTask，继续下一 task
+      state.perTask[task.id].destructive_review_failed = true
+      state.perTask[task.id].destructive_review_findings = collectReviewFindings(dSpec, dQual, dHunt)
+      log(`⚠ ${task.id} destructive review NOT green — 记录 ${state.perTask[task.id].destructive_review_findings.length} 项 findings 并继续（不 halt）`)
+    } else {
+      log(`✓ ${task.id} destructive review green — 继续正常流程`)
+    }
+  }
+
   return { halted: false }
 }
 

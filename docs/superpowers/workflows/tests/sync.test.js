@@ -87,6 +87,8 @@ test('run-plans.js orchestrator wires new placeholders + gate lint loop', () => 
   assert.match(runSrc, /writeFilesScope: formatWriteFilesScope/, 'commitCtx 须注入 writeFilesScope')
   assert.match(runSrc, /task_write_files/, 'SCHEMAS.bootstrap 须含 task_write_files')
   assert.match(runSrc, /out_of_scope/, 'SCHEMAS.commit 须含 out_of_scope')
+  assert.match(runSrc, /destructive_changes/, 'SCHEMAS.commit 须含 destructive_changes')
+  assert.match(runSrc, /destructive_review_failed/, 'orchestrator 须检测 destructive_changes 并记录结果')
 })
 
 test('finalReport prompt 探查工作树脏状态（halt 时记录，防回归）', () => {
