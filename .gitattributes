@@ -11,8 +11,26 @@
 * binary
 
 # 源码 / 配置 / 文档：强制 CRLF（checkout 与 commit 均保留 CRLF）
+# 后端 Python
+*.py   text eol=crlf
+*.toml text eol=crlf
+*.ini  text eol=crlf
+*.mako text eol=crlf
+# 前端 Vue3 + TypeScript
 *.js   text eol=crlf
+*.jsx  text eol=crlf
+*.mjs  text eol=crlf
+*.cjs  text eol=crlf
+*.ts   text eol=crlf
+*.tsx  text eol=crlf
+*.vue  text eol=crlf
+*.css  text eol=crlf
+*.scss text eol=crlf
+*.less text eol=crlf
+*.html text eol=crlf
+*.htm  text eol=crlf
+# 数据 / 文档
 *.json text eol=crlf
-*.md   text eol=crlf
 *.yaml text eol=crlf
 *.yml  text eol=crlf
+*.md   text eol=crlf
