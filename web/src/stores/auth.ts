@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
-import { apiGet, apiPost } from '../api/client';
+import { apiGet, apiPost, ApiError } from '../api/client';
 
 export interface User {
   id: number;
@@ -20,8 +20,14 @@ export const useAuthStore = defineStore('auth', () => {
     loading.value = true;
     try {
       user.value = await apiGet('/auth/me');
-    } catch {
-      user.value = null;
+    } catch (err) {
+      // 401/403 表示会话已失效/无权限，UI 应进入未登录态；
+      // 其余错误（网络/5xx/超时）属于瞬态故障，不能静默把已登录用户刷成“未登录”。
+      if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+        user.value = null;
+      } else {
+        throw err;
+      }
     } finally {
       loading.value = false;
       initialized.value = true;
