@@ -22,6 +22,8 @@ models:
 
 **Tech Stack:** Vue3 + Vite + UnoCSS + ECharts（前端）；Docker + docker-compose（部署）；Plan 01-05。
 
+**前端测试策略（T3–T7 适用，review 权威依据）：** workflow `test_command=uv run pytest` 只覆盖 Python 后端；前端 `.ts/.vue` 代码须用 **vitest + jsdom** 做自动化测试（`cd web && npm test`）——plan 原文里的「手动 dev 启动 / 浏览器验证」仅作冒烟，不满足 TDD 自动化回归。故各前端 task 的 implementor 引入 vitest 依赖 + `web/vitest.config.ts`（独立于 `vite.config.ts`，避免 jsdom test env 耦合 production build）+ `npm test` script 属于 **plan 认可的必要 scope**，review 不得以「超出 plan 字面」否定。**已知 gate 盲区**：plan-06 gate 只重跑 `uv run pytest`（Python），前端 vitest 测试不进 gate；手动验收务必补跑 `cd web && npm test`。
+
 ---
 
 ## File Structure
