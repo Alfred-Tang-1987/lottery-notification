@@ -32,7 +32,8 @@
   "spec_path": "docs/superpowers/specs/2026-06-16-lottery-notification-design.md",
   "reference_paths": ["docs/reference/lottery-rules.md"],
   "language": "python",
-  "silent_failure_context": ["<项目特定静默失败纪律条目，见下>"]
+  "silent_failure_context": ["<项目特定静默失败纪律条目，见下>"],
+  "review_max_rounds": 4
 }
 ```
 
@@ -49,6 +50,7 @@
 | `reference_paths` | 否 | **额外权威文档数组**（implementor/specReview 对照）。承载 spec 之外的硬规则——如本项目的彩种规则参考。不配即该 prompt 段消失 |
 | `language` | 否 | `python` / `general`（可扩展 ts/go…）。决定 qualityReviewer 的语言专项清单。未知值 → 通用清单 |
 | `silent_failure_context` | 否 | **项目特定静默失败纪律数组**（hunter 优先核查）。承载本项目反复踩的领域致命点——如 DB split-commit / savepoint 隔离 / 批量循环兜底 / 更正重置终态 / datetime 时区对齐。hunter 先查这些再查通用 `except:pass` 模式。不配即 hunter 退化为通用清单 |
+| `review_max_rounds` | 否 | **review 最大轮数**（默认 4）。正整数 N → N 轮仍有 ❌ 则 halt；`0`/负数 → 无限模式（永不因轮数 halt，仅靠 `detectOscillation` 同文件 ≥3 round halt）。**最后 1 轮 fix 强制 opus**：有限模式 `round===maxRounds-1`、无限模式 `round>=4`。未配/null/非数字 → 默认 4。详见设计文档 §5.3 |
 
 > **通用性原则**：项目特有内容（彩种规则、domain 纯度纪律）只走 config，不写进 prompt。换一个非彩票 Python 项目，改几个路径即可复用；换 TS 项目加 `language: "typescript"` 清单即可。新字段全部可选——旧 config 无它们照跑（条件渲染：orchestrator 传空串，相关 prompt 段消失）。
 
@@ -97,8 +99,9 @@ get-ts（取时间戳）
               → needs_context → contextFetcher → 重试
               → failed → 重试一次 → halt
               → done_with_concerns → 记疑虑，继续进 review（不 halt）
-            review rounds (max 3): spec ‖ quality ‖ hunter 并行
-              → 全绿 break / 任一❌→ implementor 修复 → 下轮 / max3 → halt
+            review rounds (max N，默认 4，可配 0=无限): spec ‖ quality ‖ hunter 并行
+              → 全绿 break / 任一❌→ implementor 修复 → 下轮 / maxN → halt（0=无限仅靠振荡检测）
+              → 最后 1 轮 fix 强制 opus（有限 round===maxRounds-1 / 无限 round>=4）
               → 任一 review 空响应/异常（agent_error|model_unavailable|review_empty）→ halt
               → 任一 review failed 但 0 findings（review_failed_no_findings）→ halt
               → 振荡检测（同文件≥3 round）

@@ -188,12 +188,27 @@ export function haltLikelySource(reason) {
 }
 
 // fix-round implementor 的 model 选择（§5.1 难度递增：最后 1 轮 fix 用最强 model）。
-// review rounds 循环：round 1 failed → fix(用 baseModel) → round 2 failed → fix(最后 1 次) → round 3 failed → halt。
-// 故 round=2 的 fix 是最后机会，强制 opus 降低 halt 概率（halt 后人工介入成本 >> opus 调用）。
-// 已是 opus 的 task 返回 'opus'（语义等价，不重复升级）。
-// 是升级而非降级，与 §2.4「限额 halt 不降级」纪律一致。
-export function fixModelForRound(round, baseModel) {
-  return round === 2 ? 'opus' : baseModel
+// 有限模式（maxRounds > 0）：round === maxRounds - 1 是最后 1 轮 fix，强制 opus。
+//   默认 maxRounds=4 → round=3 的 fix 升级 opus。
+// 无限模式（maxRounds=0）：前 3 轮用 baseModel 给 sonnet 充分尝试；从第 4 轮起强制 opus
+//   （前 3 轮没修好说明问题复杂，后续用 opus 提升修复质量，直到 detectOscillation halt 或全绿）。
+// maxRounds 未传（向后兼容）→ 默认 3（旧行为：round=2 升级 opus）。
+// 已是 opus 的 task 返回 'opus'（语义等价，不重复升级）。是升级而非降级，与 §2.4「限额 halt 不降级」纪律一致。
+export function fixModelForRound(round, baseModel, maxRounds) {
+  const max = (maxRounds === undefined) ? 3 : maxRounds
+  if (max === 0) return round >= 4 ? 'opus' : baseModel   // 无限模式：round>=4 升级 opus
+  if (round === max - 1) return 'opus'                     // 有限模式：最后 1 轮 fix 强制 opus
+  return baseModel
+}
+
+// 从 config 解析 review max rounds。默认 4。0/负数 → 0（无限模式）。非数字/null/未配 → 4。
+// 无限模式靠 detectOscillation（同文件 ≥3 round）独立防线 halt，防无限循环。
+export function resolveMaxRounds(config) {
+  const v = config?.review_max_rounds
+  if (v === undefined || v === null) return 4              // 未配 → 默认 4
+  if (typeof v !== 'number' || !Number.isFinite(v)) return 4  // 非数字 → 默认 4（容错）
+  if (v <= 0) return 0                                      // 0/负数 → 无限
+  return Math.floor(v)
 }
 
 // 把 bootstrap 从 git log 解析的 completed id 归一化为 plan-scoped key "plan-{seq}/T-{id}"。

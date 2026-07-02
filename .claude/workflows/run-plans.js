@@ -152,10 +152,25 @@ function haltLikelySource(reason) {
 }
 
 // fix-round implementor 的 model 选择（§5.1 难度递增：最后 1 轮 fix 用最强 model）—— inline 自 lib.js
-// round 1 failed → fix(用 baseModel) → round 2 failed → fix(最后 1 次，强制 opus) → round 3 failed → halt。
-// 已是 opus 的 task 返回 'opus'（语义等价）。是升级而非降级，与 §2.4「限额 halt 不降级」纪律一致。
-function fixModelForRound(round, baseModel) {
-  return round === 2 ? 'opus' : baseModel
+// 有限模式（maxRounds > 0）：round === maxRounds - 1 是最后 1 轮 fix，强制 opus（默认 maxRounds=4 → round=3 升级）。
+// 无限模式（maxRounds=0）：前 3 轮用 baseModel；round>=4 强制 opus（前 3 轮没修好说明问题复杂）。
+// maxRounds 未传（向后兼容）→ 默认 3（round=2 升级 opus）。已是 opus 返回 'opus'（语义等价）。
+function fixModelForRound(round, baseModel, maxRounds) {
+  const max = (maxRounds === undefined) ? 3 : maxRounds
+  if (max === 0) return round >= 4 ? 'opus' : baseModel   // 无限模式：round>=4 升级 opus
+  if (round === max - 1) return 'opus'                     // 有限模式：最后 1 轮 fix 强制 opus
+  return baseModel
+}
+
+// 从 config 解析 review max rounds—— inline 自 lib.js
+// 默认 4。0/负数 → 0（无限模式）。非数字/null/未配 → 4（容错默认）。
+// 无限模式靠 detectOscillation（同文件 ≥3 round）独立防线 halt，防无限循环。
+function resolveMaxRounds(config) {
+  const v = config?.review_max_rounds
+  if (v === undefined || v === null) return 4
+  if (typeof v !== 'number' || !Number.isFinite(v)) return 4
+  if (v <= 0) return 0
+  return Math.floor(v)
 }
 
 // ===== runtime helper（调 agent()，故留此文件不进 lib.js；决策逻辑走上面的纯函数）=====
@@ -670,8 +685,8 @@ async function halt(plan, task, r) {
 //              └─failed──→ retry once ─→ halt 'implementor X after retry'
 //              └─ok/done_with_concerns──→ REVIEW rounds(spec‖qual‖hunt 并行)
 //   REVIEW ──全绿──→ SIMPLIFY ──changed──→ re-review ──失败──→ simplifyFailed(commit 回退)
-//         └─任一❌──→ IMPL(fix-round, round=2 强制 opus) ──blocked/failed/needs_context──→ halt 'implementor X in fix-round N'
-//         └─max 3 轮──→ halt 'review max rounds'；振荡──→ halt 'OSCILLATING'
+//         └─任一❌──→ IMPL(fix-round, 最后 1 轮强制 opus) ──blocked/failed/needs_context──→ halt 'implementor X in fix-round N'
+//         └─max N 轮（默认 4，可配 0=无限）──→ halt 'review max rounds'；振荡──→ halt 'OSCILLATING'
 //   SIMPLIFY ──→ COMMIT ──非 ok──→ halt 'commit failed'
 // 任一 agent 限额/异常──→ halt 'model_unavailable' / 'agent_error'（reviewHaltReason 判定）
 async function runTask(plan, task) {
@@ -739,8 +754,9 @@ async function runTask(plan, task) {
   const concernsHint = concerns.length ? `\n## Implementor Concerns (verify these)\n${concerns.map(c => '- ' + c).join('\n')}` : ''
   let filesChanged = impl.evidence.files_changed || []
 
-  // —— review rounds（max 3，§5）——
-  for (let round = 1; round <= 3; round++) {
+  // —— review rounds（max 可配，默认 4；0=无限靠 detectOscillation 防线，§5）——
+  const maxRounds = resolveMaxRounds(cfg)
+  for (let round = 1; maxRounds === 0 ? true : round <= maxRounds; round++) {
     state.perTask[task.id].review_rounds = round
     const fc = filesChanged.join(',')
     const [spec, qual, hunt] = await parallel([
@@ -766,10 +782,12 @@ async function runTask(plan, task) {
     if (allGreen(spec, qual, hunt)) break
     const osc = detectOscillation(state.perTask[task.id].files_touched_per_round)
     if (osc.oscillating) return { halted: true, reason: 'OSCILLATING', diag: osc }
-    if (round === 3) return { halted: true, reason: 'review max rounds', diag: { spec: spec.diagnostics, qual: qual.diagnostics, hunt: hunt.diagnostics } }
+    // maxRounds=0（无限）永不因轮数上限 halt，只靠 detectOscillation halt
+    if (maxRounds !== 0 && round === maxRounds) return { halted: true, reason: 'review max rounds', diag: { spec: spec.diagnostics, qual: qual.diagnostics, hunt: hunt.diagnostics } }
     const findings = collectReviewFindings(spec, qual, hunt)
-    // 最后 1 轮 fix（round=2）强制 opus：难度递增，最后机会用最强 model 降低 halt 概率。
-    const fixModel = fixModelForRound(round, model)
+    // 最后 1 轮 fix 强制 opus（有限模式 round===maxRounds-1 / 无限模式 round>=4）：
+    // 难度递增，最后机会用最强 model 降低 halt 概率。maxRounds 未传向后兼容默认 3（round=2 升级）。
+    const fixModel = fixModelForRound(round, model, maxRounds)
     impl = await dispatchImpl(buildPrompt('implementor', implCtx(formatFindings(findings), `修复 review round ${round} 问题（${findings.length} 项发现：spec/quality/hunter）。`)), { schema: SCHEMAS.implementor, model: fixModel, label: `impl:${task.id}:fix${round}` }, fixModel)
     if (impl.halted) return impl
     // Bug 4: fix-round implementor 返回 blocked/failed/needs_context 时不能静默忽略——

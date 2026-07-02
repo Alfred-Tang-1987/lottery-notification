@@ -17,5 +17,6 @@
   "lessons_path": "docs/superpowers/lessons.md",
   "schema_tool": "alembic",
   "model_paths": ["app/models/"],
-  "migration_paths": ["alembic/versions/"]
+  "migration_paths": ["alembic/versions/"],
+  "review_max_rounds": 4
 }

@@ -230,7 +230,7 @@ if (state.files_touched_per_round.length >= 2) {
 
 **halt 不再自动写 lesson（2026-07-01）**：旧 finalReport step5 在 halt 时自动追加 `lessons_path` 条目（`title=halt reason, detail=last_error, status=active`）——但 halt reason（如 `OSCILLATING`）是事件标识、非可复用知识，自动写入产生废条目（title/detail 均为 `OSCILLATING`）污染知识库、被 bootstrap 匹配注入 implementor 噪音。修复：删除自动追加；halt 事件由 `blocked.md` 完整记录（reason/file/likely_source/working tree/接手指引），`lessons_path` 只承载人工复盘提炼的可复用知识。
 
-## 5. Task 执行流程（bounded review rounds）
+## 5. Task 执行流程（bounded review rounds，max 可配）
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -243,15 +243,18 @@ if (state.files_touched_per_round.length >= 2) {
               no
               ▼
 ┌─────────────────────────────────────────────────────────┐
-│ review rounds (max 3):                                   │
+│ review rounds (max N，默认 4，可配 0=无限):              │
 │   round N: spec ‖ quality ‖ hunter 并行（同 snapshot）    │
 │     全 ✅ → break                                        │
 │     任一 ❌ → implementor 修复 → round N+1（针对新 tree） │
+│       最后 1 轮 fix（有限模式 round===maxRounds-1 /      │
+│       无限模式 round>=4）强制 opus（§5.3）               │
 │     任一 review 异常/空响应 → halt（reviewHaltReason:    │
 │       agent_error > model_unavailable > review_empty）   │
 │     任一 review failed 但 0 findings → halt              │
 │       （reviewHaltForEmptyFailed: review_failed_no_...）  │
-│   max 3 耗尽仍有 ❌ → BLOCKED                            │
+│   max N 耗尽仍有 ❌ → BLOCKED（maxRounds=0 无此 halt，   │
+│     仅靠 detectOscillation 同文件 ≥3 round halt）        │
 └──────────────────────┬──────────────────────────────────┘
                        ▼
 ┌─────────────────────────────────────────────────────────┐
@@ -269,11 +272,32 @@ if (state.files_touched_per_round.length >= 2) {
 
 ### 5.1 为什么 review 是 rounds 而非独立循环（Eng C1）
 
-review 不是对静态 artifact 的独立观察，是对**当前 working tree** 的 verdict。若 spec 触发修复，tree 变，并行的 quality/hunter 的 verdict 立刻过时。"每 reviewer 独立循环直到✅"自相矛盾。正确形态：**round 内并行（同 snapshot）、round 间串行（任一 ❌ 触发新 round）、max 3**。
+review 不是对静态 artifact 的独立观察，是对**当前 working tree** 的 verdict。若 spec 触发修复，tree 变，并行的 quality/hunter 的 verdict 立刻过时。"每 reviewer 独立循环直到✅"自相矛盾。正确形态：**round 内并行（同 snapshot）、round 间串行（任一 ❌ 触发新 round）、max N（默认 4，可配）**。
 
 ### 5.2 为什么 simplify 后无条件重跑 review（Eng M10）
 
 orchestrator 无法 diff，不能信任 simplify 自报"是否改了代码"。simplify 后无条件触发 review round（若没改，3 个 review 快速 ✅；若改了，重新验证）。max 1 由 orchestrator JS 计数强制。
+
+### 5.3 review max rounds 可配 + 最后 1 轮 fix 强制 opus（2026-07-03）
+
+**配置**：`workflow.config.json` 的 `review_max_rounds` 字段，由 `resolveMaxRounds(config)` 解析：
+
+| 配置值 | maxRounds | 行为 |
+|---|---|---|
+| 未配 / null / 非数字 | 4（默认） | 4 轮后 halt |
+| 正整数 N | N | N 轮后 halt |
+| 0 / 负数 | 0（无限模式） | 永不因轮数 halt，仅靠 detectOscillation（同文件 ≥3 round）halt |
+
+**最后 1 轮 fix 强制 opus**（`fixModelForRound(round, baseModel, maxRounds)`）：
+
+- **有限模式**（maxRounds > 0）：`round === maxRounds - 1` 是最后 1 轮 fix，强制 opus。默认 maxRounds=4 → round=3 的 fix 升级 opus。
+- **无限模式**（maxRounds=0）：前 3 轮用 baseModel 给 sonnet 充分尝试；从第 4 轮起强制 opus（前 3 轮没修好说明问题复杂，后续用 opus 提升修复质量，直到 detectOscillation halt 或全绿）。
+- **向后兼容**：maxRounds 未传 → 默认 3（旧行为：round=2 升级 opus）。
+- 已是 opus 的 task 返回 'opus'（语义等价，不重复升级）。是升级而非降级，与 §2.4「限额 halt 不降级」纪律一致。
+
+**设计理由**：难度递增——round 1 没修好说明问题比预期复杂，最后 1 轮用最强 model 降低 halt 概率（halt 后人工介入成本 >> opus 调用）。无限模式前 3 轮给 sonnet 充分机会，避免过早烧 opus；第 4 轮起问题已证明复杂，持续用 opus 直到振荡 halt。
+
+**无限模式的防线**：maxRounds=0 时永不因轮数 halt，仅靠 `detectOscillation`（§13g，同文件 ≥3 round 或连续两轮完全重叠 ≥2 文件）halt。这是独立于 maxRounds 的防线，保证无限模式不会真的无限循环。
 
 ## 6. Bootstrap & Resume（崩溃恢复）
 
@@ -484,7 +508,7 @@ return {result: 'done', state}
 **runTask(plan, task) 控制流（要点）**：
 
 1. **implementor**（`model = task.model || 'sonnet'`）；`status='blocked'` → §2.3 升级链（sonnet→opus→halt，带上限）
-2. **review rounds（max 3）**：每轮 `spec ‖ quality ‖ hunter` 并行（同 tree snapshot）；收集各 `diagnostics.files_touched` → 振荡检测（§13g）；全绿 break，任一 ❌ → implementor 修复（`collectReviewFindings` 归一化三类 review 的不同 diagnostics key + `formatFindings` 序列化为可读反馈；`fetchedContext` 独立占位符传参考上下文，不混入 fixIssues）→ 下一轮；max 3 耗尽 → halt。**review 异常/空响应 → halt**：`reviewHaltReason` 扫 status，sentinel 优先级 `agent_error > model_unavailable > review_empty`——`review_empty` 守 status 缺失/为空/非法（含 thinking-only 空响应：agent() 静默返回 null/空对象，无异常），防 hunter/quality/spec 哑火（旧逻辑漏过 → 不 halt → implementor 跑空修复 → max rounds 误 halt）。**第二道守卫 `reviewHaltForEmptyFailed`**（在 `reviewHaltReason` 之后、fix-round 之前）：任一 review `status==='failed'` 但该 review 的 findings 产出 0 项（`issues`/`silent_failures` 空）→ halt `review_failed_no_findings`。堵「合法 failed + 空诊断」漏过 `reviewHaltReason`（status 合法不 halt）→ `collectReviewFindings` 空 → implementor 收「0 项发现」跑空修复 → max rounds 误 halt 的同类洞；与 `review_empty` 区分（后者 status 缺失，本守卫 status 合法但无发现）。**schema items 约束**：quality/hunter 的 `issues`/`silent_failures` 元素强制对象 `{title, fix}`（specReview 保持字符串模板走 `reviewSchema`，qualityReviewer 拆出 `qualityReviewSchema`）——防 LLM 返回纯字符串/缺 fix/用错字段名 → `collectReviewFindings` 的 `it.title||String(it)` 兜底为 `[object Object]`。
+2. **review rounds（max N，默认 4，可配 0=无限；§5.3）**：每轮 `spec ‖ quality ‖ hunter` 并行（同 tree snapshot）；收集各 `diagnostics.files_touched` → 振荡检测（§13g）；全绿 break，任一 ❌ → implementor 修复（`collectReviewFindings` 归一化三类 review 的不同 diagnostics key + `formatFindings` 序列化为可读反馈；`fetchedContext` 独立占位符传参考上下文，不混入 fixIssues）→ 下一轮；最后 1 轮 fix 强制 opus（有限模式 `round===maxRounds-1` / 无限模式 `round>=4`，§5.3）；max N 耗尽 → halt（maxRounds=0 无此 halt，仅靠 detectOscillation）。**review 异常/空响应 → halt**：`reviewHaltReason` 扫 status，sentinel 优先级 `agent_error > model_unavailable > review_empty`——`review_empty` 守 status 缺失/为空/非法（含 thinking-only 空响应：agent() 静默返回 null/空对象，无异常），防 hunter/quality/spec 哑火（旧逻辑漏过 → 不 halt → implementor 跑空修复 → max rounds 误 halt）。**第二道守卫 `reviewHaltForEmptyFailed`**（在 `reviewHaltReason` 之后、fix-round 之前）：任一 review `status==='failed'` 但该 review 的 findings 产出 0 项（`issues`/`silent_failures` 空）→ halt `review_failed_no_findings`。堵「合法 failed + 空诊断」漏过 `reviewHaltReason`（status 合法不 halt）→ `collectReviewFindings` 空 → implementor 收「0 项发现」跑空修复 → max rounds 误 halt 的同类洞；与 `review_empty` 区分（后者 status 缺失，本守卫 status 合法但无发现）。**schema items 约束**：quality/hunter 的 `issues`/`silent_failures` 元素强制对象 `{title, fix}`（specReview 保持字符串模板走 `reviewSchema`，qualityReviewer 拆出 `qualityReviewSchema`）——防 LLM 返回纯字符串/缺 fix/用错字段名 → `collectReviewFindings` 的 `it.title||String(it)` 兜底为 `[object Object]`。
 3. **simplify（max 1，§5.2）**：无条件触发一轮 review（不信任自报 `changed`）；该轮 ❌ → 标记 `simplify_failed`，**回退委托 commit subagent**（orchestrator 无 fs，commit subagent 在 commit 前按 simplify 的 `files_changed` 先 `git checkout` 回退，再走正常 commit）；simplify 视为 no-op，用 simplify 前的 review 全绿状态继续
 4. **commit**：status check → test → `git commit -m "feat(plan-X/T-Y): ..."`；返回 `commit_sha` → `state.task_status[task.id]='committed'`
 

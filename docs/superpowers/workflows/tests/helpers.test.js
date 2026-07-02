@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, isQuotaError, errStr, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound } from '../lib.js'
+import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, isQuotaError, errStr, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound, resolveMaxRounds, detectOscillation } from '../lib.js'
 
 const ok = { status: 'ok', diagnostics: { files_touched: ['a.py'] } }
 const ok2 = { status: 'ok', diagnostics: { files_touched: ['b.py'] } }
@@ -199,15 +199,90 @@ test('haltLikelySource: 未知 reason → unknown', () => {
 })
 
 // —— fixModelForRound（最后 1 轮 fix 固定 opus；§5.1 难度递增，最后机会用最强 model）——
-// review rounds 循环：round 1 failed → fix(用 baseModel) → round 2 failed → fix(最后 1 次，升级 opus) → round 3 failed → halt（无 fix）
-// 故 round=1 的 fix 是首次尝试（用 task.model），round=2 的 fix 是最后机会（强制 opus）。
-// 已是 opus 的 task 不重复升级（语义等价，但意图清晰且避免日志混淆）。
-test('fixModelForRound: round 1 用 baseModel（首次 fix，不升级）', () => {
-  assert.equal(fixModelForRound(1, 'sonnet'), 'sonnet')
-  assert.equal(fixModelForRound(1, 'opus'), 'opus')
+// review rounds 循环：round 1 failed → fix(用 baseModel) → ... → round N-1 failed → fix(最后 1 次，升级 opus) → round N failed → halt（无 fix）
+// 故「最后 1 轮 fix」对应 round === maxRounds - 1。maxRounds 默认 4（即 round=3 的 fix 升级 opus）。
+// maxRounds=0 表示无限：无「最后 1 轮」概念，永不升级 opus（防止无限 opus 烧钱）。
+// 已是 opus 的 task 返回 'opus'（语义等价，不重复升级）。
+test('fixModelForRound: 非最后轮用 baseModel（不升级）', () => {
+  assert.equal(fixModelForRound(1, 'sonnet', 4), 'sonnet')
+  assert.equal(fixModelForRound(2, 'sonnet', 4), 'sonnet')
+  assert.equal(fixModelForRound(1, 'opus', 4), 'opus')
 })
 
-test('fixModelForRound: round 2 强制 opus（最后 1 轮 fix，最后机会用最强 model）', () => {
-  assert.equal(fixModelForRound(2, 'sonnet'), 'opus')   // sonnet task 升级
-  assert.equal(fixModelForRound(2, 'opus'), 'opus')     // 已是 opus 不重复升级（语义等价）
+test('fixModelForRound: 最后 1 轮 fix（round === maxRounds - 1）强制 opus', () => {
+  // maxRounds=4 → round=3 是最后 1 轮 fix
+  assert.equal(fixModelForRound(3, 'sonnet', 4), 'opus')   // sonnet task 升级
+  assert.equal(fixModelForRound(3, 'opus', 4), 'opus')     // 已是 opus 不重复升级
+  // maxRounds=3 → round=2 是最后 1 轮 fix（兼容旧行为）
+  assert.equal(fixModelForRound(2, 'sonnet', 3), 'opus')
+  // maxRounds=5 → round=4 是最后 1 轮 fix
+  assert.equal(fixModelForRound(4, 'sonnet', 5), 'opus')
+})
+
+test('fixModelForRound: maxRounds=0（无限模式）round<4 用 baseModel', () => {
+  // 无限模式前 3 轮用 baseModel，给 sonnet 充分尝试机会
+  assert.equal(fixModelForRound(1, 'sonnet', 0), 'sonnet')
+  assert.equal(fixModelForRound(2, 'sonnet', 0), 'sonnet')
+  assert.equal(fixModelForRound(3, 'sonnet', 0), 'sonnet')
+  assert.equal(fixModelForRound(1, 'opus', 0), 'opus')
+})
+
+test('fixModelForRound: maxRounds=0（无限模式）round>=4 强制 opus', () => {
+  // 无限模式从第 4 轮起升级 opus：前 3 轮 sonnet 没修好说明问题复杂，
+  // 后续每轮用 opus 提升修复质量，直到 detectOscillation halt 或全绿
+  assert.equal(fixModelForRound(4, 'sonnet', 0), 'opus')
+  assert.equal(fixModelForRound(5, 'sonnet', 0), 'opus')
+  assert.equal(fixModelForRound(10, 'sonnet', 0), 'opus')
+  assert.equal(fixModelForRound(4, 'opus', 0), 'opus')   // 已是 opus 不重复升级
+})
+
+test('fixModelForRound: maxRounds 未传（向后兼容，默认 3）', () => {
+  // 旧调用方未传 maxRounds → 默认 3 → round=2 升级 opus（旧行为）
+  assert.equal(fixModelForRound(1, 'sonnet'), 'sonnet')
+  assert.equal(fixModelForRound(2, 'sonnet'), 'opus')
+})
+
+// —— resolveMaxRounds（从 config 解析 max rounds，0/负数/非数字 → 0=无限）——
+test('resolveMaxRounds: 默认 4（config 未配）', () => {
+  assert.equal(resolveMaxRounds(undefined), 4)
+  assert.equal(resolveMaxRounds({}), 4)
+})
+
+test('resolveMaxRounds: 显式配置覆盖默认', () => {
+  assert.equal(resolveMaxRounds({ review_max_rounds: 3 }), 3)
+  assert.equal(resolveMaxRounds({ review_max_rounds: 5 }), 5)
+  assert.equal(resolveMaxRounds({ review_max_rounds: 10 }), 10)
+})
+
+test('resolveMaxRounds: 0/负数 → 0（无限模式）；非数字/null → 4（容错默认）', () => {
+  assert.equal(resolveMaxRounds({ review_max_rounds: 0 }), 0)
+  assert.equal(resolveMaxRounds({ review_max_rounds: -1 }), 0)
+  assert.equal(resolveMaxRounds({ review_max_rounds: 'abc' }), 4)   // 非数字 → 默认 4
+  assert.equal(resolveMaxRounds({ review_max_rounds: null }), 4)    // null → 默认 4
+})
+
+// —— detectOscillation（与 maxRounds 解耦：独立阈值，无限模式也有效）——
+test('detectOscillation: 同文件 <3 round 不振荡', () => {
+  assert.equal(detectOscillation([['a'], ['a']]).oscillating, false)
+})
+
+test('detectOscillation: 同文件 ≥3 round 振荡（与 maxRounds 无关）', () => {
+  // 即便 maxRounds=10，振荡检测仍以 3 为阈值（独立防线）
+  const r = detectOscillation([['a'], ['a'], ['a']])
+  assert.equal(r.oscillating, true)
+  assert.match(r.reason, /a touched in 3 rounds/)
+})
+
+test('detectOscillation: 连续两轮完全重叠 ≥2 文件振荡（需先满足 length >= 3）', () => {
+  // 现有实现：length < 3 直接返回 false，故需 3 轮才检测连续重叠
+  const r = detectOscillation([['a', 'b'], ['a', 'b'], ['a', 'b']])
+  assert.equal(r.oscillating, true)
+  // 同文件 ≥3 round 优先匹配，故 reason 是 touched in 3 rounds
+  assert.match(r.reason, /touched in 3 rounds|consecutive rounds fix same files/)
+})
+
+test('detectOscillation: length < 3 不振荡（现有行为，无限模式靠此阈值）', () => {
+  assert.equal(detectOscillation([]).oscillating, false)
+  assert.equal(detectOscillation([['a']]).oscillating, false)
+  assert.equal(detectOscillation([['a'], ['a']]).oscillating, false)
 })
