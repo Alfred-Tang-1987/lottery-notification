@@ -67,6 +67,17 @@ describe("lotteries.ts — getLotteryRange", () => {
       back: null,
     });
   });
+
+  it("returns back range 1-30 for QLC (特别号同源 01-30 池，spec §12.2 row 7)", () => {
+    // 后端种子 app/seeds/lottery_types.py:37: back: {'min': 1, 'max': 30, 'count': 1}
+    // 原型 08-trend.html:275: qlc:{...back:[1,30]}
+    // docs/reference/lottery-rules.md:34: 特别号码**同源于 01–30 池**
+    const qlc = getLotteryRange("qlc");
+    expect(qlc).toEqual({
+      front: { min: 1, max: 30, count: 7 },
+      back: { min: 1, max: 30, count: 1 },
+    });
+  });
 });
 
 describe("lotteries.ts — getPlayTypes", () => {

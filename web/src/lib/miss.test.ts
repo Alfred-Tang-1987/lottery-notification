@@ -104,6 +104,40 @@ describe('calculateMissCounts', () => {
     expect(result.back![14]).toBe(0);
   });
 
+  it('calculates QLC miss counts with back zone sharing 01–30 pool (spec §12.2 row 7)', () => {
+    // 七乐彩：前区 01-30，特别号同源 01-30 池（不是独立分区）
+    // This is the canonical case for "同区独立" — front and back have identical range.
+    // Miss counting MUST be independent per zone even though numbers overlap.
+    const draws = [
+      { front: [1, 2, 3, 4, 5, 6, 7], back: [8] },
+      { front: [9, 10, 11, 12, 13, 14, 15], back: [1] },
+      { front: [16, 17, 18, 19, 20, 21, 22], back: [9] },
+    ];
+    const result = calculateMissCounts(draws, {
+      front: { min: 1, max: 30 },
+      back: { min: 1, max: 30 },
+    });
+    // Front zone:
+    // Number 22: in most recent → miss = 0
+    // Number 15: last seen at idx 1, not in idx 2 → miss = 1
+    // Number 7: last seen at idx 0, not in idx 1/2 → miss = 2
+    // Number 23: never appeared → miss = 3
+    expect(result.front[22]).toBe(0);
+    expect(result.front[15]).toBe(1);
+    expect(result.front[7]).toBe(2);
+    expect(result.front[23]).toBe(3);
+
+    // Back zone (independent from front despite same number range):
+    // Number 9: in most recent → miss = 0
+    // Number 1: last seen at idx 1, not in idx 2 → miss = 1
+    // Number 8: last seen at idx 0, not in idx 1/2 → miss = 2
+    // Number 23: never appeared → miss = 3
+    expect(result.back![9]).toBe(0);
+    expect(result.back![1]).toBe(1);
+    expect(result.back![8]).toBe(2);
+    expect(result.back![23]).toBe(3);
+  });
+
   it('calculates miss from most recent to last appearance', () => {
     const draws = [
       { front: [1] }, // idx 0

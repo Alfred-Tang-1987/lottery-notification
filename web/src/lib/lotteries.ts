@@ -48,7 +48,7 @@ export interface LotteryRange {
 const RANGES: Record<string, LotteryRange> = {
   ssq: { front: { min: 1, max: 33, count: 6 }, back: { min: 1, max: 16, count: 1 } },
   dlt: { front: { min: 1, max: 35, count: 5 }, back: { min: 1, max: 12, count: 2 } },
-  qlc: { front: { min: 1, max: 30, count: 7 }, back: null },
+  qlc: { front: { min: 1, max: 30, count: 7 }, back: { min: 1, max: 30, count: 1 } },
   qxc: { front: { min: 0, max: 9, count: 6 }, back: { min: 0, max: 14, count: 1 } },
   fc3d: { front: { min: 0, max: 9, count: 3 }, back: null },
   pl3: { front: { min: 0, max: 9, count: 3 }, back: null },
