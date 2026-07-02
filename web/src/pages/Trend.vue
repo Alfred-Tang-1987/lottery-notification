@@ -2,8 +2,8 @@
 import { ref, onMounted, computed, watch } from 'vue';
 import { apiGet } from '../api/client';
 import { LOTTERIES } from '../lib/lotteries';
+import { calculateMissCounts, type DrawData } from '../lib/miss';
 import State from '../components/State.vue';
-import BallNumber from '../components/BallNumber.vue';
 import TrendSelectDrawer from '../components/TrendSelectDrawer.vue';
 
 interface Draw {
@@ -137,29 +137,21 @@ const drawNumberSets = computed(() => {
   return result;
 });
 
-/** Miss count per number: consecutive draws from top (recent) to bottom (old) without that number appearing */
+/** Miss count per number using pure function from miss.ts */
 const missCounts = computed(() => {
-  const n = chronologicalDraws.value.length;
-  const frontMiss: number[] = new Array(frontNumbers.value.length).fill(0);
-  const backMiss: number[] = new Array(backNumbers.value.length).fill(0);
+  const r = range.value;
+  if (!r) return { front: {}, back: undefined };
 
-  const sets = drawNumberSets.value;
-  // Walk from most recent (idx n-1) to oldest (idx 0)
-  for (let idx = n - 1; idx >= 0; idx--) {
-    const s = sets.get(idx);
-    if (!s) continue;
-    for (let col = 0; col < frontNumbers.value.length; col++) {
-      if (frontMiss[col] === 0 && !s.front.has(frontNumbers.value[col])) {
-        frontMiss[col] = n - idx;
-      }
+  const drawsData: DrawData[] = chronologicalDraws.value.map((d) => {
+    try {
+      const parsed = JSON.parse(d.numbers_json) as { front: number[]; back?: number[] };
+      return { front: parsed.front || [], back: parsed.back };
+    } catch {
+      return { front: [], back: undefined };
     }
-    for (let col = 0; col < backNumbers.value.length; col++) {
-      if (backMiss[col] === 0 && !s.back.has(backNumbers.value[col])) {
-        backMiss[col] = n - idx;
-      }
-    }
-  }
-  return { front: frontMiss, back: backMiss };
+  });
+
+  return calculateMissCounts(drawsData, { front: r.front, back: r.back ?? undefined });
 });
 
 watch([selected, limit], () => {
@@ -248,6 +240,16 @@ onMounted(() => {
                     </td>
                   </tr>
                 </tbody>
+                <tfoot>
+                  <tr class="miss-row">
+                    <td class="matrix-td draw-col">遗漏</td>
+                    <td
+                      v-for="n in frontNumbers"
+                      :key="`fm-${n}`"
+                      class="matrix-td num-col miss-cell"
+                    >{{ missCounts.front[n] ?? 0 }}</td>
+                  </tr>
+                </tfoot>
               </table>
             </div>
           </div>
@@ -286,6 +288,16 @@ onMounted(() => {
                     </td>
                   </tr>
                 </tbody>
+                <tfoot>
+                  <tr class="miss-row">
+                    <td class="matrix-td draw-col">遗漏</td>
+                    <td
+                      v-for="n in backNumbers"
+                      :key="`bm-${n}`"
+                      class="matrix-td num-col miss-cell"
+                    >{{ missCounts.back?.[n] ?? 0 }}</td>
+                  </tr>
+                </tfoot>
               </table>
             </div>
           </div>
@@ -533,6 +545,14 @@ onMounted(() => {
 
 .matrix-td.hit {
   background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.matrix-td.miss-cell {
+  background: var(--surface-2);
+  font-weight: 600;
+  color: var(--accent);
+  font-size: var(--text-xs);
+  border-top: 2px solid var(--border);
 }
 
 .matrix-circle {
