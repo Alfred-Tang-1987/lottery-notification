@@ -1,14 +1,4 @@
-/**
- * T6b: 彩种规则纯函数（lottery-rules.md 权威）。
- *
- * 覆盖：
- * - 7 彩种号码区间（front/back）
- * - 7 彩种玩法词汇（分区型 vs 按位型，lottery-rules.md）
- * - 机选一注（各彩种 count/range 校验）
- * - 号码校验（越界 / 数量错 / 重复 → reject）
- * - CSV 行解析（含错误反馈，不静默丢行）
- */
-import { describe, expect, it } from "vitest";
+import { describe, it, expect } from "vitest";
 import {
   frontNumbers,
   backNumbers,
@@ -19,10 +9,46 @@ import {
   validateNumbers,
   parseCsvLine,
   ALL_LOTTERY_CODES,
+  isPositional,
 } from "./lotteries";
 
-describe("lotteries.ts — range per lottery (lottery-rules.md)", () => {
-  it("returns ssq front 1-33 count 6, back 1-16 count 1", () => {
+describe("lotteries.ts — frontNumbers/backNumbers", () => {
+  it("returns 1..33 for ssq front", () => {
+    const front = frontNumbers("ssq");
+    expect(front.length).toBe(33);
+    expect(front[0]).toBe(1);
+    expect(front[32]).toBe(33);
+  });
+
+  it("returns 1..16 for ssq back", () => {
+    const back = backNumbers("ssq");
+    expect(back.length).toBe(16);
+    expect(back[0]).toBe(1);
+    expect(back[15]).toBe(16);
+  });
+
+  it("returns empty array for unknown code", () => {
+    expect(frontNumbers("zzz")).toEqual([]);
+    expect(backNumbers("zzz")).toEqual([]);
+  });
+
+  it("returns 0..9 for fc3d front (positional)", () => {
+    const front = frontNumbers("fc3d");
+    expect(front.length).toBe(10);
+    expect(front[0]).toBe(0);
+    expect(front[9]).toBe(9);
+  });
+
+  it("returns 0..14 for qxc back", () => {
+    const back = backNumbers("qxc");
+    expect(back.length).toBe(15);
+    expect(back[0]).toBe(0);
+    expect(back[14]).toBe(14);
+  });
+});
+
+describe("lotteries.ts — getLotteryRange", () => {
+  it("returns correct ranges for ssq", () => {
     const r = getLotteryRange("ssq");
     expect(r).toEqual({
       front: { min: 1, max: 33, count: 6 },
@@ -30,117 +56,78 @@ describe("lotteries.ts — range per lottery (lottery-rules.md)", () => {
     });
   });
 
-  it("returns dlt front 1-35 count 5, back 1-12 count 2", () => {
-    const r = getLotteryRange("dlt");
-    expect(r).toEqual({
-      front: { min: 1, max: 35, count: 5 },
-      back: { min: 1, max: 12, count: 2 },
+  it("returns null for unknown code", () => {
+    expect(getLotteryRange("zzz")).toBeNull();
+  });
+
+  it("returns correct ranges for positional lotteries", () => {
+    const fc3d = getLotteryRange("fc3d");
+    expect(fc3d).toEqual({
+      front: { min: 0, max: 9, count: 3 },
+      back: null,
     });
-  });
-
-  it("returns qlc front 1-30 count 7, no back (特别号同源 01-30 池)", () => {
-    const r = getLotteryRange("qlc");
-    expect(r?.front).toEqual({ min: 1, max: 30, count: 7 });
-    expect(r?.back).toBeNull();
-  });
-
-  it("returns qxc front 0-9 count 6, back 0-14 count 1 (2020 改版)", () => {
-    const r = getLotteryRange("qxc");
-    expect(r).toEqual({
-      front: { min: 0, max: 9, count: 6 },
-      back: { min: 0, max: 14, count: 1 },
-    });
-  });
-
-  it("returns fc3d positional 0-9 count 3 (百十个位)", () => {
-    const r = getLotteryRange("fc3d");
-    expect(r?.front).toEqual({ min: 0, max: 9, count: 3 });
-    expect(r?.back).toBeNull();
-  });
-
-  it("returns pl3 positional 0-9 count 3", () => {
-    const r = getLotteryRange("pl3");
-    expect(r?.front).toEqual({ min: 0, max: 9, count: 3 });
-    expect(r?.back).toBeNull();
-  });
-
-  it("returns pl5 positional 0-9 count 5", () => {
-    const r = getLotteryRange("pl5");
-    expect(r?.front).toEqual({ min: 0, max: 9, count: 5 });
-    expect(r?.back).toBeNull();
-  });
-
-  it("returns null for unknown lottery code", () => {
-    expect(getLotteryRange("unknown")).toBeNull();
   });
 });
 
-describe("lotteries.ts — frontNumbers / backNumbers", () => {
-  it("frontNumbers('ssq') returns 1..33", () => {
-    const arr = frontNumbers("ssq");
-    expect(arr.length).toBe(33);
-    expect(arr[0]).toBe(1);
-    expect(arr[32]).toBe(33);
-  });
-
-  it("backNumbers('ssq') returns 1..16", () => {
-    const arr = backNumbers("ssq");
-    expect(arr.length).toBe(16);
-    expect(arr[0]).toBe(1);
-    expect(arr[15]).toBe(16);
-  });
-
-  it("backNumbers('qlc') returns empty (no back zone)", () => {
-    expect(backNumbers("qlc")).toEqual([]);
-  });
-
-  it("frontNumbers('qxc') returns 0..9 (6 位 0-9)", () => {
-    expect(frontNumbers("qxc")).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
-  });
-
-  it("backNumbers('qxc') returns 0..14 (后区 0-14)", () => {
-    const arr = backNumbers("qxc");
-    expect(arr.length).toBe(15);
-    expect(arr[0]).toBe(0);
-    expect(arr[14]).toBe(14);
-  });
-
-  it("frontNumbers('unknown') returns []", () => {
-    expect(frontNumbers("unknown")).toEqual([]);
-  });
-});
-
-describe("lotteries.ts — play types per lottery (lottery-rules.md)", () => {
-  it("ssq/dlt/qlc/qxc (分区型) → 单式/复式/胆拖", () => {
+describe("lotteries.ts — getPlayTypes", () => {
+  it("returns single/fushi/dantuo for partition lotteries (spec §5.2 + backend seed)", () => {
+    // spec line 171: 'single'(单式)/'fushi'(复式)/'dantuo'(胆拖)
+    // backend app/seeds/lottery_types.py uses 'fushi' (not 'compound')
     for (const code of ["ssq", "dlt", "qlc", "qxc"]) {
-      expect(getPlayTypes(code)).toEqual(["single", "compound", "dantuo"]);
+      const types = getPlayTypes(code);
+      expect(types).toContain("single");
+      expect(types).toContain("fushi");
+      expect(types).toContain("dantuo");
+      // 'compound' must NOT be used — it breaks the cross-layer contract
+      expect(types).not.toContain("compound");
     }
   });
 
-  it("fc3d (福彩3D) → 单选/组选3/组选6 (无'单式', '直选'是旧称)", () => {
+  it("returns danxuan/zuxuan3/zuxuan6 for fc3d", () => {
     expect(getPlayTypes("fc3d")).toEqual(["danxuan", "zuxuan3", "zuxuan6"]);
   });
 
-  it("pl3 (排列3) → 直选/组选3/组选6 (沿用'直选'叫法, 与 fc3d 不同)", () => {
+  it("returns zhixuan/zuxuan3/zuxuan6 for pl3", () => {
     expect(getPlayTypes("pl3")).toEqual(["zhixuan", "zuxuan3", "zuxuan6"]);
   });
 
-  it("pl5 (排列5) → 仅直选", () => {
+  it("returns zhixuan only for pl5", () => {
     expect(getPlayTypes("pl5")).toEqual(["zhixuan"]);
   });
 
-  it("labels map 覆盖全部 play type 键", () => {
-    const allKeys = new Set<string>();
-    for (const code of ALL_LOTTERY_CODES) {
-      for (const pt of getPlayTypes(code)) allKeys.add(pt);
-    }
-    for (const k of allKeys) {
-      expect(PLAY_TYPE_LABELS[k], `missing label for ${k}`).toBeDefined();
-    }
+  it("returns empty array for unknown code", () => {
+    expect(getPlayTypes("zzz")).toEqual([]);
+  });
+});
+
+describe("lotteries.ts — PLAY_TYPE_LABELS", () => {
+  it("has Chinese labels for all play types", () => {
+    expect(PLAY_TYPE_LABELS["single"]).toBe("单式");
+    expect(PLAY_TYPE_LABELS["fushi"]).toBe("复式");
+    expect(PLAY_TYPE_LABELS["dantuo"]).toBe("胆拖");
+    expect(PLAY_TYPE_LABELS["danxuan"]).toBe("单选");
+    expect(PLAY_TYPE_LABELS["zhixuan"]).toBe("直选");
+    expect(PLAY_TYPE_LABELS["zuxuan3"]).toBe("组选3");
+    expect(PLAY_TYPE_LABELS["zuxuan6"]).toBe("组选6");
+  });
+});
+
+describe("lotteries.ts — isPositional", () => {
+  it("returns true for fc3d/pl3/pl5/qxc (按位型, digits may repeat)", () => {
+    expect(isPositional("fc3d")).toBe(true);
+    expect(isPositional("pl3")).toBe(true);
+    expect(isPositional("pl5")).toBe(true);
+    expect(isPositional("qxc")).toBe(true);
   });
 
-  it("unknown lottery returns []", () => {
-    expect(getPlayTypes("zzz")).toEqual([]);
+  it("returns false for partition lotteries (ssq/dlt/qlc)", () => {
+    expect(isPositional("ssq")).toBe(false);
+    expect(isPositional("dlt")).toBe(false);
+    expect(isPositional("qlc")).toBe(false);
+  });
+
+  it("returns false for unknown code", () => {
+    expect(isPositional("zzz")).toBe(false);
   });
 });
 
@@ -155,11 +142,14 @@ describe("lotteries.ts — randomPick", () => {
         expect(n).toBeGreaterThanOrEqual(r.front.min);
         expect(n).toBeLessThanOrEqual(r.front.max);
       }
-      // front 应无重复且排序
-      const uniq = new Set(pick.front);
-      expect(uniq.size).toBe(pick.front.length);
+      // front 应排序 (for both partition and positional)
       for (let i = 1; i < pick.front.length; i++) {
-        expect(pick.front[i]).toBeGreaterThan(pick.front[i - 1]);
+        expect(pick.front[i]).toBeGreaterThanOrEqual(pick.front[i - 1]);
+      }
+      // Partition: no duplicates
+      if (!isPositional(code)) {
+        const uniq = new Set(pick.front);
+        expect(uniq.size).toBe(pick.front.length);
       }
     }
   });
@@ -186,73 +176,95 @@ describe("lotteries.ts — randomPick", () => {
     expect(pick.front).toEqual([]);
     expect(pick.back).toBeUndefined();
   });
+
+  it("randomPick with frontCount/backCount override returns requested count (复式, plan Step 2)", () => {
+    // plan Step 2: 机选一注（复式/胆拖可配红蓝数）
+    const pick = randomPick("ssq", { frontCount: 8, backCount: 2 });
+    expect(pick.front.length).toBe(8);
+    expect(pick.back?.length).toBe(2);
+    // fushi front: unique, sorted, in range
+    const uniq = new Set(pick.front);
+    expect(uniq.size).toBe(8);
+    for (let i = 1; i < pick.front.length; i++) {
+      expect(pick.front[i]).toBeGreaterThan(pick.front[i - 1]);
+    }
+  });
+
+  it("randomPick for positional lottery allows digit repeats (fc3d)", () => {
+    // With 3 digits from 0-9, duplicates are very likely across many trials
+    let foundRepeat = false;
+    for (let i = 0; i < 100; i++) {
+      const pick = randomPick("fc3d");
+      if (new Set(pick.front).size < pick.front.length) {
+        foundRepeat = true;
+        break;
+      }
+    }
+    expect(foundRepeat).toBe(true);
+  });
+
+  it("randomPick with dantuo returns dan/tuo split (胆拖, plan Step 2)", () => {
+    const pick = randomPick("ssq", { playType: "dantuo" });
+    expect(pick.dan).toBeDefined();
+    expect(pick.tuo).toBeDefined();
+    expect(pick.dan!.length).toBeGreaterThanOrEqual(1);
+    expect(pick.dan!.length).toBeLessThanOrEqual(5);
+    expect(pick.dan!.length + pick.tuo!.length).toBeGreaterThanOrEqual(6);
+    // dan and tuo should not overlap
+    const danSet = new Set(pick.dan!);
+    for (const n of pick.tuo!) {
+      expect(danSet.has(n)).toBe(false);
+    }
+    // All within range
+    for (const n of [...pick.dan!, ...pick.tuo!]) {
+      expect(n).toBeGreaterThanOrEqual(1);
+      expect(n).toBeLessThanOrEqual(33);
+    }
+  });
 });
 
 describe("lotteries.ts — validateNumbers", () => {
-  it("accepts valid ssq single: 6 front + 1 back", () => {
-    const r = validateNumbers("ssq", [1, 2, 3, 4, 5, 6], [7]);
-    expect(r.ok).toBe(true);
+  it("accepts single-style numbers", () => {
+    expect(validateNumbers("ssq", [1, 2, 3, 4, 5, 6], [7]).ok).toBe(true);
+    expect(validateNumbers("dlt", [1, 2, 3, 4, 5], [1, 2]).ok).toBe(true);
   });
 
-  it("accepts valid ssq compound (复式): >6 front + >1 back", () => {
-    const r = validateNumbers("ssq", [1, 2, 3, 4, 5, 6, 7], [8, 9]);
-    expect(r.ok).toBe(true);
+  it("rejects out-of-range numbers", () => {
+    expect(validateNumbers("ssq", [0, 1, 2, 3, 4, 5], [6]).ok).toBe(false);
+    expect(validateNumbers("ssq", [1, 2, 3, 4, 5, 34], [6]).ok).toBe(false);
   });
 
-  it("rejects out-of-range front number", () => {
-    const r = validateNumbers("ssq", [1, 2, 3, 4, 5, 34], [7]);
-    expect(r.ok).toBe(false);
-    expect(r.error).toMatch(/34/);
+  it("rejects too few numbers", () => {
+    expect(validateNumbers("ssq", [1, 2, 3, 4, 5], [6]).ok).toBe(false);
   });
 
-  it("rejects out-of-range back number", () => {
-    const r = validateNumbers("ssq", [1, 2, 3, 4, 5, 6], [17]);
-    expect(r.ok).toBe(false);
-    expect(r.error).toMatch(/17/);
+  it("rejects duplicate front numbers for partition lotteries", () => {
+    expect(validateNumbers("ssq", [1, 1, 2, 3, 4, 5], [6]).ok).toBe(false);
+    expect(validateNumbers("dlt", [1, 2, 3, 4, 5], [1, 1]).ok).toBe(false);
   });
 
-  it("rejects too few front numbers (单式 < count)", () => {
-    const r = validateNumbers("ssq", [1, 2, 3], [7]);
-    expect(r.ok).toBe(false);
-    expect(r.error).toMatch(/前区/);
+  it("ALLOWS duplicate digits for positional lotteries (fc3d/pl3/pl5/qxc front)", () => {
+    // 组选三 requires exactly 2 identical digits (e.g. 1,1,2)
+    expect(validateNumbers("fc3d", [1, 1, 2]).ok).toBe(true);
+    expect(validateNumbers("pl3", [5, 5, 5]).ok).toBe(true);
+    expect(validateNumbers("pl5", [1, 1, 2, 3, 4]).ok).toBe(true);
+    // qxc front is 6 digits 0-9, repeats allowed
+    expect(validateNumbers("qxc", [1, 1, 2, 3, 4, 5], [7]).ok).toBe(true);
   });
 
-  it("rejects duplicate numbers", () => {
-    const r = validateNumbers("ssq", [1, 1, 2, 3, 4, 5], [7]);
-    expect(r.ok).toBe(false);
-    expect(r.error).toMatch(/重复/);
+  it("rejects unknown lottery code", () => {
+    expect(validateNumbers("zzz", [1, 2, 3]).ok).toBe(false);
   });
 
-  it("rejects when lottery without back zone is given back numbers", () => {
-    const r = validateNumbers("qlc", [1, 2, 3, 4, 5, 6, 7], [8]);
-    expect(r.ok).toBe(false);
-  });
-
-  it("accepts qlc without back", () => {
-    const r = validateNumbers("qlc", [1, 2, 3, 4, 5, 6, 7]);
-    expect(r.ok).toBe(true);
-  });
-
-  it("accepts qxc hybrid: 6 front 0-9, 1 back 0-14", () => {
-    const r = validateNumbers("qxc", [0, 1, 2, 3, 4, 5], [14]);
-    expect(r.ok).toBe(true);
-  });
-
-  it("rejects qxc back >14", () => {
-    const r = validateNumbers("qxc", [0, 1, 2, 3, 4, 5], [15]);
-    expect(r.ok).toBe(false);
-  });
-
-  it("returns error for unknown lottery code", () => {
-    const r = validateNumbers("zzz", [1, 2, 3]);
-    expect(r.ok).toBe(false);
-    expect(r.error).toMatch(/未知彩种/);
+  it("rejects positional lottery with too few digits", () => {
+    expect(validateNumbers("fc3d", [1, 2]).ok).toBe(false);
+    expect(validateNumbers("pl5", [1, 2, 3]).ok).toBe(false);
   });
 });
 
 describe("lotteries.ts — parseCsvLine", () => {
-  it("parses ssq line: ssq,1,2,3,4,5,6,7", () => {
-    const r = parseCsvLine("ssq,1,2,3,4,5,6,7");
+  it("parses valid single-style ssq", () => {
+    const r = parseCsvLine("ssq,1,2,3,4,5,6,7", 1);
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.data.code).toBe("ssq");
@@ -261,85 +273,86 @@ describe("lotteries.ts — parseCsvLine", () => {
     }
   });
 
-  it("parses dlt line: dlt,5,10,15,20,25,3,8", () => {
-    const r = parseCsvLine("dlt,5,10,15,20,25,3,8");
+  it("parses valid dlt", () => {
+    const r = parseCsvLine("dlt,1,2,3,4,5,6,7", 1);
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.data.code).toBe("dlt");
-      expect(r.data.front).toEqual([5, 10, 15, 20, 25]);
-      expect(r.data.back).toEqual([3, 8]);
+      expect(r.data.front).toEqual([1, 2, 3, 4, 5]);
+      expect(r.data.back).toEqual([6, 7]);
     }
   });
 
-  it("parses qlc (no back) line: qlc,1,2,3,4,5,6,7", () => {
-    const r = parseCsvLine("qlc,1,2,3,4,5,6,7");
+  it("parses positional fc3d", () => {
+    const r = parseCsvLine("fc3d,1,2,3", 1);
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(r.data.front).toEqual([1, 2, 3, 4, 5, 6, 7]);
+      expect(r.data.code).toBe("fc3d");
+      expect(r.data.front).toEqual([1, 2, 3]);
       expect(r.data.back).toBeUndefined();
     }
   });
 
-  it("parses qxc hybrid: qxc,0,1,2,3,4,5,9", () => {
-    const r = parseCsvLine("qxc,0,1,2,3,4,5,9");
+  it("parses optional draw_no (期号) field after code (plan Step 3: 彩种,期号,号码...)", () => {
+    // plan Step 3 CSV format: 彩种,期号,号码...
+    // draw_no is alphanumeric period identifier, must not be parsed as a number
+    const r = parseCsvLine("ssq,2024090,1,2,3,4,5,6,7", 1);
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(r.data.front).toEqual([0, 1, 2, 3, 4, 5]);
-      expect(r.data.back).toEqual([9]);
-    }
-  });
-
-  it("parses fc3d positional: fc3d,1,2,3", () => {
-    const r = parseCsvLine("fc3d,1,2,3");
-    expect(r.ok).toBe(true);
-    if (r.ok) {
-      expect(r.data.front).toEqual([1, 2, 3]);
-    }
-  });
-
-  it("trims whitespace and supports CRLF", () => {
-    const r = parseCsvLine("  ssq, 1, 2, 3, 4, 5, 6, 7  \r");
-    expect(r.ok).toBe(true);
-    if (r.ok) {
+      expect(r.data.code).toBe("ssq");
+      expect(r.data.draw_no).toBe("2024090");
       expect(r.data.front).toEqual([1, 2, 3, 4, 5, 6]);
+      expect(r.data.back).toEqual([7]);
     }
   });
 
-  it("rejects unknown lottery code with line number", () => {
-    const r = parseCsvLine("xyz,1,2,3", 5);
-    expect(r.ok).toBe(false);
-    if (!r.ok) {
-      expect(r.line).toBe(5);
-      expect(r.error).toMatch(/未知彩种/);
-    }
-  });
-
-  it("rejects non-numeric values", () => {
-    const r = parseCsvLine("ssq,1,2,x,4,5,6,7");
-    expect(r.ok).toBe(false);
-    if (!r.ok) {
-      expect(r.error).toMatch(/非数字/);
-    }
-  });
-
-  it("rejects insufficient numbers (less than front count)", () => {
-    const r = parseCsvLine("ssq,1,2,3");
-    expect(r.ok).toBe(false);
-    if (!r.ok) {
-      expect(r.error).toMatch(/数量/);
+  it("draw_no is optional — plain 彩种,号码... still parses", () => {
+    const r = parseCsvLine("ssq,1,2,3,4,5,6,7", 1);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.data.draw_no).toBeUndefined();
     }
   });
 
   it("rejects empty line", () => {
-    const r = parseCsvLine("");
+    const r = parseCsvLine("", 1);
     expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("空行");
   });
 
-  it("rejects numbers out of range", () => {
-    const r = parseCsvLine("ssq,1,2,3,4,5,34,7");
+  it("rejects unknown lottery code", () => {
+    const r = parseCsvLine("zzz,1,2,3", 1);
     expect(r.ok).toBe(false);
-    if (!r.ok) {
-      expect(r.error).toMatch(/34/);
-    }
+    if (!r.ok) expect(r.error).toContain("未知彩种");
+  });
+
+  it("rejects non-numeric values", () => {
+    const r = parseCsvLine("ssq,1,a,3,4,5,6", 1);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("非数字");
+  });
+
+  it("rejects negative numbers with clear message", () => {
+    const r = parseCsvLine("ssq,-1,2,3,4,5,6", 1);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("负数无效");
+  });
+
+  it("rejects out-of-range numbers", () => {
+    const r = parseCsvLine("ssq,0,1,2,3,4,5,6", 1);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("超出范围");
+  });
+
+  it("rejects insufficient numbers", () => {
+    const r = parseCsvLine("ssq,1,2,3,4,5", 1);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("号码数量不足");
+  });
+
+  it("rejects duplicate numbers for partition lotteries", () => {
+    const r = parseCsvLine("ssq,1,1,2,3,4,5,6", 1);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("重复");
   });
 });

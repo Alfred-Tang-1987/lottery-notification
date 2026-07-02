@@ -33,7 +33,7 @@ const form = ref({
   play_type: 'single',
   numbers_json: '',
   label: '',
-  multiplier: 1,
+  multiplier: 2,
   cost: 200,
   dlt_append: false,
 });
@@ -61,7 +61,9 @@ const currentRange = computed(() => {
 });
 
 function onRandomPick() {
-  const result = randomPick(form.value.lottery_code);
+  const result = randomPick(form.value.lottery_code, {
+    playType: form.value.play_type,
+  });
   padFront.value = result.front;
   padBack.value = result.back ?? [];
   syncPadToJson();
@@ -74,7 +76,7 @@ function syncPadToJson() {
     const back = [...padBack.value].sort((a, b) => a - b);
     form.value.numbers_json = JSON.stringify({ front, back });
   } else {
-    form.value.numbers_json = JSON.stringify({ front: front.length > 0 ? front : [] });
+    form.value.numbers_json = JSON.stringify({ front });
   }
 }
 
@@ -101,7 +103,7 @@ async function csvImport() {
         errors.push(`行 ${result.line ?? i + 1}: ${result.error}`);
         continue;
       }
-      const { code, front, back } = result.data;
+      const { code, front, back, draw_no } = result.data;
       const numbersJson = JSON.stringify(
         back ? { front, back } : { front },
       );
@@ -109,8 +111,10 @@ async function csvImport() {
         lottery_code: code,
         play_type: 'single',
         numbers_json: numbersJson,
-        multiplier: 1,
+        multiplier: 2,
         cost: 200,
+        // plan Step 3 CSV 期号字段：Ticket 模型无 draw_no 列，作为 label 记录（DrawQuery 页才真正用期号查开奖）
+        ...(draw_no ? { label: draw_no } : {}),
       });
       imported++;
     }
@@ -147,7 +151,7 @@ function resetForm() {
     play_type: 'single',
     numbers_json: '',
     label: '',
-    multiplier: 1,
+    multiplier: 2,
     cost: 200,
     dlt_append: false,
   };
@@ -157,6 +161,12 @@ function resetForm() {
 async function createTicket() {
   saving.value = true;
   try {
+    // lottery-rules.md §倍投: 倍投 2–99 倍（1× = 无倍投，违反语义）
+    if (!Number.isInteger(form.value.multiplier) || form.value.multiplier < 2 || form.value.multiplier > 99) {
+      error.value = '倍投必须是 2–99 之间的整数';
+      saving.value = false;
+      return;
+    }
     const body: Record<string, unknown> = {
       lottery_code: form.value.lottery_code,
       play_type: form.value.play_type,
@@ -165,11 +175,9 @@ async function createTicket() {
       multiplier: form.value.multiplier,
       cost: form.value.cost,
     };
-    // DLT append flag
+    // DLT append flag - backend calculates actual cost from numbers_json + dlt_append
     if (form.value.lottery_code === 'dlt' && form.value.dlt_append) {
       body.dlt_append = true;
-      // Append increases cost: +1元 per note (100分)
-      body.cost = (form.value.cost || 200) + 100;
     }
     await apiPost('/tickets', body);
     resetForm();
@@ -301,7 +309,7 @@ onMounted(() => {
             <textarea
               v-model="csvText"
               rows="4"
-              placeholder="每行：彩种代码,前1,前2,...,后1,后2...&#10;例: ssq,1,2,3,4,5,6,7&#10;    dlt,5,10,15,20,25,3,8"
+              placeholder="每行：彩种代码,[期号,]号码...（期号可选）&#10;例: ssq,2024090,1,2,3,4,5,6,7&#10;    ssq,1,2,3,4,5,6,7&#10;    dlt,5,10,15,20,25,3,8"
               class="csv-area"
             />
             <button type="button" class="secondary small" style="margin-top:8px" @click="csvImport()" :disabled="saving">
@@ -319,7 +327,7 @@ onMounted(() => {
 
           <label class="field">
             <span class="field-label">倍投</span>
-            <input v-model.number="form.multiplier" type="number" min="1" max="99" />
+            <input v-model.number="form.multiplier" type="number" min="2" max="99" />
           </label>
 
           <label class="field">
