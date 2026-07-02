@@ -1,40 +1,17 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue';
 import { apiGet, apiPost } from '../api/client';
-import { LOTTERIES, lotteryName } from '../lib/lotteries';
+import {
+  LOTTERIES,
+  lotteryName,
+  getLotteryRange,
+  getPlayTypes,
+  PLAY_TYPE_LABELS,
+  randomPick,
+  parseCsvLine,
+} from '../lib/lotteries';
 import State from '../components/State.vue';
-
-// Per lottery-rules.md: partition lotteries → 单式/复式/胆拖; positional → 单选/直选/组选3/组选6
-const PLAY_TYPES: Record<string, string[]> = {
-  ssq: ['single', 'compound', 'dantuo'],
-  dlt: ['single', 'compound', 'dantuo'],
-  qlc: ['single', 'compound', 'dantuo'],
-  qxc: ['single', 'compound', 'dantuo'],
-  fc3d: ['danxuan', 'zuxuan3', 'zuxuan6'],
-  pl3: ['zhixuan', 'zuxuan3', 'zuxuan6'],
-  pl5: ['zhixuan'],
-};
-
-const PLAY_TYPE_LABELS: Record<string, string> = {
-  single: '单式',
-  compound: '复式',
-  dantuo: '胆拖',
-  danxuan: '单选',
-  zhixuan: '直选',
-  zuxuan3: '组选3',
-  zuxuan6: '组选6',
-};
-
-// Known number ranges and default counts per lottery type
-const LOTTERY_RANGES: Record<string, { front: { min: number; max: number; count: number }; back: { min: number; max: number; count: number } | null }> = {
-  ssq: { front: { min: 1, max: 33, count: 6 }, back: { min: 1, max: 16, count: 1 } },
-  dlt: { front: { min: 1, max: 35, count: 5 }, back: { min: 1, max: 12, count: 2 } },
-  qlc: { front: { min: 1, max: 30, count: 7 }, back: null },
-  fc3d: { front: { min: 0, max: 9, count: 3 }, back: null },
-  pl3: { front: { min: 0, max: 9, count: 3 }, back: null },
-  pl5: { front: { min: 0, max: 9, count: 5 }, back: null },
-  qxc: { front: { min: 0, max: 9, count: 6 }, back: { min: 0, max: 14, count: 1 } },
-};
+import NumberPad from '../components/NumberPad.vue';
 
 interface Ticket {
   id: number;
@@ -60,10 +37,12 @@ const form = ref({
   cost: 200,
   dlt_append: false,
 });
-// Number pad state
-const padFront = ref<Set<number>>(new Set());
-const padBack = ref<Set<number>>(new Set());
+// Number pad state (arrays for v-model binding with NumberPad)
+const padFront = ref<number[]>([]);
+const padBack = ref<number[]>([]);
 const csvText = ref('');
+const csvError = ref('');
+const csvImported = ref(0);
 
 const grouped = computed(() => {
   const map: Record<string, Ticket[]> = {};
@@ -74,51 +53,23 @@ const grouped = computed(() => {
   return map;
 });
 
-const currentRange = computed(() => LOTTERY_RANGES[form.value.lottery_code]);
-
-const frontNumbers = computed(() => {
-  const r = currentRange.value?.front;
-  if (!r) return [] as number[];
-  return Array.from({ length: r.max - r.min + 1 }, (_, i) => r.min + i);
+/** 当前选中彩种的号码区间（查 lib/lotteries.ts） */
+const currentRange = computed(() => {
+  const code = form.value.lottery_code;
+  const r = getLotteryRange(code);
+  return r ?? null;
 });
 
-const backNumbers = computed(() => {
-  const r = currentRange.value?.back;
-  if (!r) return [] as number[];
-  return Array.from({ length: r.max - r.min + 1 }, (_, i) => r.min + i);
-});
-
-function toggleFront(n: number) {
-  const next = new Set(padFront.value);
-  if (next.has(n)) next.delete(n);
-  else next.add(n);
-  padFront.value = next;
-}
-
-function toggleBack(n: number) {
-  const next = new Set(padBack.value);
-  if (next.has(n)) next.delete(n);
-  else next.add(n);
-  padBack.value = next;
-}
-
-function randomPick() {
-  const r = currentRange.value;
-  if (!r) return;
-  const pick = (pool: number[], count: number): number[] => {
-    const shuffled = [...pool].sort(() => Math.random() - 0.5);
-    return shuffled.slice(0, count).sort((a, b) => a - b);
-  };
-  padFront.value = new Set(pick(frontNumbers.value, r.front.count));
-  if (r.back) {
-    padBack.value = new Set(pick(backNumbers.value, r.back.count));
-  }
+function onRandomPick() {
+  const result = randomPick(form.value.lottery_code);
+  padFront.value = result.front;
+  padBack.value = result.back ?? [];
   syncPadToJson();
 }
 
 function syncPadToJson() {
   const front = [...padFront.value].sort((a, b) => a - b);
-  const r = currentRange.value;
+  const r = getLotteryRange(form.value.lottery_code);
   if (r?.back) {
     const back = [...padBack.value].sort((a, b) => a - b);
     form.value.numbers_json = JSON.stringify({ front, back });
@@ -128,30 +79,31 @@ function syncPadToJson() {
 }
 
 function clearPad() {
-  padFront.value = new Set();
-  padBack.value = new Set();
+  padFront.value = [];
+  padBack.value = [];
   form.value.numbers_json = '';
 }
 
 async function csvImport() {
-  if (!csvText.value.trim()) return;
-  const lines = csvText.value.trim().split(/\r?\n/);
+  const raw = csvText.value.trim();
+  if (!raw) return;
+  const lines = raw.split(/\r?\n/);
   let imported = 0;
+  const errors: string[] = [];
   saving.value = true;
+  csvError.value = '';
+  csvImported.value = 0;
   try {
-    for (const line of lines) {
-      const parts = line.split(',').map((s) => s.trim()).filter(Boolean);
-      if (parts.length < 1) continue;
-      const code = parts[0] || form.value.lottery_code;
-      const nums = parts.slice(1).map(Number);
-      const r = LOTTERY_RANGES[code];
-      if (!r) continue;
-      const frontCount = r.front.count;
-      const front = nums.slice(0, frontCount).sort((a, b) => a - b);
-      const back = r.back ? nums.slice(frontCount, frontCount + r.back.count).sort((a, b) => a - b) : [];
-      const numbersJson = JSON.stringify(r.back
-        ? { front: front.length === frontCount ? front : [], back: back.length === r.back.count ? back : [] }
-        : { front: front.length === frontCount ? front : [] }
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const result = parseCsvLine(line, i + 1);
+      if (!result.ok) {
+        errors.push(`行 ${result.line ?? i + 1}: ${result.error}`);
+        continue;
+      }
+      const { code, front, back } = result.data;
+      const numbersJson = JSON.stringify(
+        back ? { front, back } : { front },
       );
       await apiPost('/tickets', {
         lottery_code: code,
@@ -162,11 +114,16 @@ async function csvImport() {
       });
       imported++;
     }
+    csvImported.value = imported;
+    if (errors.length > 0) {
+      csvError.value = errors.join('\n');
+    }
     csvText.value = '';
     await load();
+  } catch (err) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  } catch (err: any) {
-    error.value = `导入 ${imported} 条后失败: ${err?.message || '未知错误'}`;
+    const msg = (err as any)?.message || '未知错误';
+    csvError.value = `导入 ${imported} 条后失败: ${msg}`;
   } finally {
     saving.value = false;
   }
@@ -292,7 +249,7 @@ onMounted(() => {
             <span class="field-label">玩法</span>
             <select v-model="form.play_type">
               <option
-                v-for="pt in PLAY_TYPES[form.lottery_code] || PLAY_TYPES['ssq']"
+                v-for="pt in getPlayTypes(form.lottery_code)"
                 :key="pt"
                 :value="pt"
               >
@@ -301,37 +258,29 @@ onMounted(() => {
             </select>
           </label>
 
-          <!-- 号码盘（点击选号） -->
+          <!-- 号码盘（NumberPad 组件：点击选号） -->
           <div class="field">
             <span class="field-label">前区号码（点选）</span>
-            <div class="num-pad">
-              <button
-                v-for="n in frontNumbers"
-                :key="`fp-${n}`"
-                type="button"
-                class="num-btn"
-                :class="{ selected: padFront.has(n) }"
-                @click="toggleFront(n)"
-              >{{ n < 10 ? String(n).padStart(2, '0') : n }}</button>
-            </div>
+            <NumberPad
+              :numbers="padFront"
+              zone="front"
+              :lottery-code="form.lottery_code"
+              @update:numbers="(nums) => { padFront = nums; syncPadToJson(); }"
+            />
           </div>
 
-          <div v-if="backNumbers.length > 0" class="field">
+          <div v-if="currentRange?.back" class="field">
             <span class="field-label">后区号码（点选）</span>
-            <div class="num-pad">
-              <button
-                v-for="n in backNumbers"
-                :key="`bp-${n}`"
-                type="button"
-                class="num-btn back-btn"
-                :class="{ selected: padBack.has(n) }"
-                @click="toggleBack(n)"
-              >{{ n < 10 ? String(n).padStart(2, '0') : n }}</button>
-            </div>
+            <NumberPad
+              :numbers="padBack"
+              zone="back"
+              :lottery-code="form.lottery_code"
+              @update:numbers="(nums) => { padBack = nums; syncPadToJson(); }"
+            />
           </div>
 
           <div class="field row">
-            <button type="button" class="secondary small" @click="randomPick">机选一注</button>
+            <button type="button" class="secondary small" @click="onRandomPick">机选一注</button>
             <button type="button" class="secondary small" @click="syncPadToJson">确认选号</button>
             <button type="button" class="secondary small danger" @click="clearPad">清空</button>
           </div>
@@ -358,6 +307,8 @@ onMounted(() => {
             <button type="button" class="secondary small" style="margin-top:8px" @click="csvImport()" :disabled="saving">
               {{ saving ? '导入中…' : '导入 CSV' }}
             </button>
+            <p v-if="csvError" class="csv-error" style="color: var(--danger); font-size: 0.875rem; margin-top: 8px; white-space: pre-wrap;">{{ csvError }}</p>
+            <p v-if="csvImported > 0" class="csv-success" style="color: var(--success); font-size: 0.875rem; margin-top: 8px;">✓ 成功导入 {{ csvImported }} 条</p>
           </details>
 
           <!-- DLT 追加 -->
@@ -517,46 +468,6 @@ onMounted(() => {
 .modal-card h2 {
   margin-bottom: 16px;
   font-size: var(--text-xl);
-}
-
-/* Number pad */
-.num-pad {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-
-.num-btn {
-  width: 36px;
-  height: 36px;
-  border: 1.5px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface-2);
-  color: var(--fg);
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: unset;
-  padding: 0;
-  transition: background var(--dur), border-color var(--dur);
-}
-
-.num-btn:hover {
-  border-color: var(--accent);
-}
-
-.num-btn.selected {
-  background: var(--red-ball);
-  color: #fff;
-  border-color: var(--red-ball);
-}
-
-.back-btn.selected {
-  background: var(--blue-ball);
-  border-color: var(--blue-ball);
 }
 
 .row {
