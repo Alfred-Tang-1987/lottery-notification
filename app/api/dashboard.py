@@ -4,11 +4,11 @@ Spec §12.2：仪表盘首屏需要「待兑奖 / 我的命中 / 盈亏速览 / 
 /api/dashboard 在一次请求内返回当前用户的全部首屏数据，减少前端多次请求。
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import and_, func
 from sqlmodel import Session, select
@@ -17,6 +17,36 @@ from app.api.deps import current_user, get_session_dep
 from app.models import Comparison, DrawResult, LotteryType, PrizeClaim, Ticket, User
 
 _CST = ZoneInfo('Asia/Shanghai')
+
+
+def _build_time_filter(period: str):
+    """Build SQLAlchemy filter for time period.
+
+    Returns a callable that takes a datetime column and returns a filter expression,
+    or None for 'all' period.
+    """
+    if period == 'all':
+        return None
+
+    cst_now = datetime.now(_CST).replace(tzinfo=None)
+
+    if period == 'month':
+        # Current month: from 1st day of current month to end of current month
+        start_of_month = cst_now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        if cst_now.month == 12:
+            end_of_month = cst_now.replace(year=cst_now.year + 1, month=1, day=1)
+        else:
+            end_of_month = cst_now.replace(month=cst_now.month + 1, day=1)
+        return lambda col: and_(col >= start_of_month, col < end_of_month)
+
+    elif period == 'year':
+        # Current year: from Jan 1 to Dec 31
+        start_of_year = cst_now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+        end_of_year = cst_now.replace(year=cst_now.year + 1, month=1, day=1)
+        return lambda col: and_(col >= start_of_year, col < end_of_year)
+
+    # Unknown period defaults to all
+    return None
 
 router = APIRouter(prefix='/api/dashboard', tags=['dashboard'])
 
@@ -109,17 +139,25 @@ def _latest_draws(session: Session) -> list[LatestDrawOut]:
     return result
 
 
-def _pending_claims(session: Session, user_id: int) -> list[PendingClaimOut]:
-    """当前用户待兑奖记录，按截止日升序。"""
+def _pending_claims(session: Session, user_id: int, period: str = 'all', lottery_code: str | None = None) -> list[PendingClaimOut]:
+    """当前用户待兑奖记录，按截止日升序。支持 period 和 lottery_code 过滤。"""
+    # Build filter conditions
+    conds = [
+        Comparison.user_id == user_id,
+        PrizeClaim.status == 'pending',
+    ]
+    if lottery_code:
+        conds.append(DrawResult.lottery_code == lottery_code)
+    time_filter = _build_time_filter(period)
+    if time_filter:
+        conds.append(time_filter(Comparison.created_at))
+
     rows = session.exec(
         select(PrizeClaim, Comparison, DrawResult, LotteryType)
         .join(Comparison, PrizeClaim.comparison_id == Comparison.id)
         .join(DrawResult, Comparison.draw_result_id == DrawResult.id)
         .join(LotteryType, DrawResult.lottery_code == LotteryType.code)
-        .where(
-            Comparison.user_id == user_id,
-            PrizeClaim.status == 'pending',
-        )
+        .where(and_(*conds))
         .order_by(PrizeClaim.deadline.asc())
     ).all()
 
@@ -147,48 +185,63 @@ def _pending_claims(session: Session, user_id: int) -> list[PendingClaimOut]:
     return result
 
 
-def _summary(session: Session, user_id: int) -> SummaryOut:
+def _summary(session: Session, user_id: int, period: str = 'all', lottery_code: str | None = None) -> SummaryOut:
     """盈亏摘要：投入按 tickets.cost；中奖按 comparisons.prize_amount。
     pending_amount 统计 prize_amount IS NULL 的中奖笔数（浮动奖未回填，无金额可计）。
     win_rate = win_count / ticket_count（ticket_count=0 时返回 0.0）。
-    welfare_contribution 按每票(lottery_type.welfare_rate × cost)累加。"""
+    welfare_contribution 按每票(lottery_type.welfare_rate × cost)累加。
+
+    Filters:
+    - period: 'month' (current month), 'year' (current year), 'all' (default)
+    - lottery_code: filter by specific lottery type
+    """
+    # Build time filter for Ticket.created_at and Comparison.created_at
+    time_filter = _build_time_filter(period)
+
+    # Ticket conditions
+    ticket_conds = [Ticket.user_id == user_id, Ticket.enabled == True]  # noqa: E712
+    if lottery_code:
+        ticket_conds.append(Ticket.lottery_code == lottery_code)
+    if time_filter:
+        ticket_conds.append(time_filter(Ticket.created_at))
+
     cost_row = session.exec(
-        select(func.coalesce(func.sum(Ticket.cost), 0)).where(
-            Ticket.user_id == user_id,
-            Ticket.enabled == True,  # noqa: E712
-        )
+        select(func.coalesce(func.sum(Ticket.cost), 0)).where(and_(*ticket_conds))
     ).first()
     total_cost = int(cost_row or 0)
 
     ticket_count_row = session.exec(
-        select(func.count(Ticket.id)).where(
-            Ticket.user_id == user_id,
-            Ticket.enabled == True,  # noqa: E712
-        )
+        select(func.count(Ticket.id)).where(and_(*ticket_conds))
     ).first()
     ticket_count = int(ticket_count_row or 0)
+
+    # Comparison conditions
+    comp_conds = [Comparison.user_id == user_id]
+    if lottery_code:
+        # Join through DrawResult to filter by lottery_code
+        comp_conds.append(Comparison.draw_result_id == DrawResult.id)
+        comp_conds.append(DrawResult.lottery_code == lottery_code)
+    if time_filter:
+        comp_conds.append(time_filter(Comparison.created_at))
 
     win_row = session.exec(
         select(
             func.coalesce(func.sum(Comparison.prize_amount), 0),
             func.count(Comparison.id),
-        ).where(
-            Comparison.user_id == user_id,
+        ).where(and_(*comp_conds,
             Comparison.is_win == True,  # noqa: E712
             Comparison.prize_amount != None,  # noqa: E711
-        )
+        ))
     ).first()
     total_prize = int(win_row[0] if win_row else 0)
     win_count = int(win_row[1] if win_row else 0)
 
     # Pending claims where prize_amount IS NULL (floating prizes not yet backfilled).
-    # We count them rather than sum (SUM of all-NULL rows = NULL→0 is useless).
     pending_count_row = session.exec(
-        select(func.count(Comparison.id)).where(
-            Comparison.user_id == user_id,
+        select(func.count(Comparison.id)).where(and_(*comp_conds,
             Comparison.is_win == True,  # noqa: E712
             Comparison.prize_amount == None,  # noqa: E711
-        )
+        ))
     ).first()
     pending_amount = int(pending_count_row or 0)
 
@@ -199,14 +252,17 @@ def _summary(session: Session, user_id: int) -> SummaryOut:
     welfare_contribution = 0
     if total_cost > 0:
         import json
-        # Preload all lottery types for welfare_rate lookup
+        # Preload lottery types for welfare_rate lookup
         lt_rows = session.exec(select(LotteryType)).all()
         lt_map = {lt.code: lt for lt in lt_rows}
-        tickets_with_lottery = session.exec(
+
+        # Build ticket cost aggregation with filters
+        ticket_cost_stmt = (
             select(Ticket.lottery_code, func.sum(Ticket.cost))
-            .where(Ticket.user_id == user_id, Ticket.enabled == True)  # noqa: E712
+            .where(and_(*ticket_conds))
             .group_by(Ticket.lottery_code)
-        ).all()
+        )
+        tickets_with_lottery = session.exec(ticket_cost_stmt).all()
         for lt_code, cost_sum in tickets_with_lottery:
             lt = lt_map.get(lt_code)
             if lt is not None:
@@ -232,17 +288,26 @@ def _summary(session: Session, user_id: int) -> SummaryOut:
 _MAX_RECENT_HITS = 20
 
 
-def _recent_hits(session: Session, user_id: int) -> list[dict[str, Any]]:
+def _recent_hits(session: Session, user_id: int, period: str = 'all', lottery_code: str | None = None) -> list[dict[str, Any]]:
     """最近中奖记录（多彩种混合，按 created_at 倒序）。
-    批量查 PrizeClaim（避免 N+1），按 comparison_id → latest_claim 索引。"""
+    批量查 PrizeClaim（避免 N+1），按 comparison_id → latest_claim 索引。
+    支持 period 和 lottery_code 过滤。"""
+    # Build filter conditions
+    conds = [
+        Comparison.user_id == user_id,
+        Comparison.is_win == True,  # noqa: E712
+    ]
+    if lottery_code:
+        conds.append(DrawResult.lottery_code == lottery_code)
+    time_filter = _build_time_filter(period)
+    if time_filter:
+        conds.append(time_filter(Comparison.created_at))
+
     rows = session.exec(
         select(Comparison, DrawResult, LotteryType)
         .join(DrawResult, Comparison.draw_result_id == DrawResult.id)
         .join(LotteryType, DrawResult.lottery_code == LotteryType.code)
-        .where(
-            Comparison.user_id == user_id,
-            Comparison.is_win == True,  # noqa: E712
-        )
+        .where(and_(*conds))
         .order_by(Comparison.created_at.desc())
         .limit(_MAX_RECENT_HITS)
     ).all()
@@ -340,14 +405,21 @@ def dashboard_monthly(
 
 @router.get('', response_model=DashboardOut)
 def dashboard(
+    period: str = Query('all', pattern='^(month|year|all)$'),
+    lottery_code: str | None = Query(None),
     user: User = Depends(current_user),
     session: Session = Depends(get_session_dep),
 ) -> DashboardOut:
-    """返回当前登录用户的首屏聚合数据。"""
+    """返回当前登录用户的首屏聚合数据。
+
+    Filters:
+    - period: 'month' (current month), 'year' (current year), 'all' (default)
+    - lottery_code: filter by specific lottery type (optional)
+    """
     latest = _latest_draws(session)
-    pending = _pending_claims(session, user.id)
-    summary = _summary(session, user.id)
-    hits = _recent_hits(session, user.id)
+    pending = _pending_claims(session, user.id, period=period, lottery_code=lottery_code)
+    summary = _summary(session, user.id, period=period, lottery_code=lottery_code)
+    hits = _recent_hits(session, user.id, period=period, lottery_code=lottery_code)
     return DashboardOut(
         latest_draws=latest,
         pending_claims=pending,
