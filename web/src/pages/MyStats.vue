@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, nextTick } from 'vue';
+import { ref, onMounted, onUnmounted, nextTick, watch } from 'vue';
 import { apiGet } from '../api/client';
 import { fmtMoney } from '../lib/format';
 import State from '../components/State.vue';
 import * as echarts from 'echarts';
 import { aggregateByTier, aggregateMonthly, type WinRow, type MonthlyRow } from '../lib/stats';
+import { LOTTERIES } from '../lib/lotteries';
 
 interface Summary {
   total_cost: number;
@@ -23,6 +24,12 @@ const monthly = ref<MonthlyRow[]>([]);
 const loading = ref(false);
 const error = ref('');
 
+// Filter state (spec §12.2 row 6: 全局筛选——时段本月/本年/全部/自定义·彩种，默认本月)
+const period = ref<'month' | 'year' | 'all' | 'custom'>('month');
+const lotteryCode = ref<string>('');
+const dateFrom = ref<string>('');
+const dateTo = ref<string>('');
+
 const tierPieRef = ref<HTMLDivElement | null>(null);
 const amountPieRef = ref<HTMLDivElement | null>(null);
 const monthlyBarRef = ref<HTMLDivElement | null>(null);
@@ -34,13 +41,37 @@ let monthlyBarChart: echarts.ECharts | null = null;
 // Guard against async render after unmount
 let disposed = false;
 
+function buildQueryString(basePath: string): string {
+  const params = new URLSearchParams();
+  params.set('period', period.value);
+  if (period.value === 'custom' && dateFrom.value) params.set('date_from', dateFrom.value);
+  if (period.value === 'custom' && dateTo.value) params.set('date_to', dateTo.value);
+  if (lotteryCode.value) {
+    params.set('lottery_code', lotteryCode.value);
+  }
+  const qs = params.toString();
+  return qs ? `${basePath}?${qs}` : basePath;
+}
+
+function buildComparisonsQueryString(): string {
+  const params = new URLSearchParams();
+  params.set('win_only', 'true');
+  params.set('period', period.value);
+  if (period.value === 'custom' && dateFrom.value) params.set('date_from', dateFrom.value);
+  if (period.value === 'custom' && dateTo.value) params.set('date_to', dateTo.value);
+  if (lotteryCode.value) {
+    params.set('lottery_code', lotteryCode.value);
+  }
+  return `/api/comparisons?${params.toString()}`;
+}
+
 async function load() {
   loading.value = true;
   error.value = '';
   try {
     const [dash, comps, monthData] = await Promise.all([
-      apiGet<{ summary: Summary }>('/api/dashboard'),
-      apiGet<WinRow[]>('/api/comparisons?win_only=true'),
+      apiGet<{ summary: Summary }>(buildQueryString('/api/dashboard')),
+      apiGet<WinRow[]>(buildComparisonsQueryString()),
       apiGet<MonthlyRow[]>('/api/dashboard/monthly'),
     ]);
     data.value = dash;
@@ -56,6 +87,12 @@ async function load() {
 }
 
 function renderCharts() {
+  // Dispose existing instances before re-init to prevent memory leaks
+  // (echarts.init on an already-mounted DOM creates orphan instances)
+  tierPieChart?.dispose();
+  amountPieChart?.dispose();
+  monthlyBarChart?.dispose();
+
   // Use pure aggregation functions
   const tierData = aggregateByTier(wins.value);
   const monthlyData = aggregateMonthly(monthly.value);
@@ -127,6 +164,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  disposed = true;
   // Dispose ECharts instances to prevent memory leaks
   tierPieChart?.dispose();
   amountPieChart?.dispose();
@@ -135,6 +173,11 @@ onUnmounted(() => {
   amountPieChart = null;
   monthlyBarChart = null;
 });
+
+// 监听筛选条件变化，重新加载数据（spec §12.2 row 6: 盈亏总览随筛选联动）
+watch([period, lotteryCode, dateFrom, dateTo], () => {
+  void load();
+});
 </script>
 
 <template>
@@ -142,6 +185,80 @@ onUnmounted(() => {
     <header class="page-header">
       <h1>我的统计</h1>
     </header>
+
+    <!-- 筛选栏（spec §12.2 row 6: 全局筛选——时段·彩种） -->
+    <section class="card filter-bar">
+      <div class="filter-group">
+        <span class="filter-label">时段</span>
+        <div class="pill-group" role="radiogroup" aria-label="时段筛选">
+          <button
+            type="button"
+            class="pill"
+            :class="{ active: period === 'month' }"
+            role="radio"
+            :aria-checked="period === 'month'"
+            @click="period = 'month'"
+          >
+            本月
+          </button>
+          <button
+            type="button"
+            class="pill"
+            :class="{ active: period === 'year' }"
+            role="radio"
+            :aria-checked="period === 'year'"
+            @click="period = 'year'"
+          >
+            本年
+          </button>
+          <button
+            type="button"
+            class="pill"
+            :class="{ active: period === 'all' }"
+            role="radio"
+            :aria-checked="period === 'all'"
+            @click="period = 'all'"
+          >
+            全部
+          </button>
+          <button
+            type="button"
+            class="pill"
+            :class="{ active: period === 'custom' }"
+            role="radio"
+            :aria-checked="period === 'custom'"
+            @click="period = 'custom'"
+          >
+            自定义
+          </button>
+        </div>
+      </div>
+      <div v-if="period === 'custom'" class="filter-group">
+        <label class="filter-label">日期范围</label>
+        <input
+          type="date"
+          v-model="dateFrom"
+          class="date-input"
+          placeholder="开始日期"
+        />
+        <span class="date-separator">至</span>
+        <input
+          type="date"
+          v-model="dateTo"
+          class="date-input"
+          placeholder="结束日期"
+        />
+      </div>
+      <div class="filter-group">
+        <label for="lottery-filter" class="filter-label">彩种</label>
+        <select id="lottery-filter" v-model="lotteryCode" class="lottery-select">
+          <option value="">全部彩种</option>
+          <option v-for="l in LOTTERIES" :key="l.code" :value="l.code">
+            {{ l.name }}
+          </option>
+        </select>
+      </div>
+    </section>
 
     <State v-if="loading" type="loading" title="加载统计中…" />
     <State v-else-if="error" type="error" :title="error" @action="load" />
