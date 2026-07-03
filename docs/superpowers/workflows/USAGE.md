@@ -93,6 +93,7 @@ Workflow({
 ```
 get-ts（取时间戳）
   → bootstrap：读 config + 给 plan 生成 frontmatter(modelHint) + git log 识别已完成 task
+    （sonnet 执行，失败自动升级 opus 重试——retryModel 机制，见 §7.2）
     → for plan（args.plan 过滤）:
         for task（叶子优先，args.tasks 过滤，已完成跳过）:
           runTask:
@@ -152,6 +153,24 @@ task 被识别为 completed 直接跳过，从第一个未 commit 的 task 接�
 
 `resumeFromRunId` 是 Workflow runtime 的**缓存回放**机制——它把上次 run 里**已完成的 agent 调用**
 按 `(prompt, opts)` 原样返回缓存结果，**第一个未命中缓存的 agent 起才真正重跑**。这对
+
+## 7.2 retryModel 机制：模型能力不足自动升级
+
+**场景**：`agent()` 返回 `null` 不一定是 quota 耗尽——也可能是**模型能力不足**（如 `qwen3.7-plus` 跑复杂 bootstrap 被 router 以 "Repetitive tool calls" 400 中断，runtime 吞为 null）。旧逻辑一律视作 `model_unavailable` halt，导致弱 model 永远无法完成任务。
+
+**机制**：`dispatchImpl(prompt, opts, model, retryModel = null)` 新增第 4 参数：
+- `agent()` 返回 `null` 时，若 `retryModel` 非空且 ≠ `model`，用 `retryModel` **重试一次**
+- 重试仍 `null` 或抛 quota 错误 → halt（不再无限重试）
+- 不重试 quota 错误（第一层 `catch` 已 halt，不浪费更强模型的额度）
+
+**当前使用**：
+- bootstrap 调用：`dispatchImpl(..., 'sonnet', 'opus')`——sonnet 跑 bootstrap 失败时自动升级 opus
+- 其他 agent 调用（implementor/review/commit/gate）：暂不启用 retryModel，保留旧行为
+
+**测试**：`docs/superpowers/workflows/tests/dispatchImpl-retry.test.js` 覆盖 8 个场景（null 无 retry / null 有 retry 成功 / retry 也 null / retry == model 跳过 / quota 错误各路径）。
+
+**日志**：重试时 `log()` 打 `⚠ label: model returned null (capability failure likely), retry with retryModel`，便于定位。
+
 run-plans.js 这种 git-log 驱动的编排器是**错配**，会踩两个坑：
 
 1. **看不到 workflow 外的提交**。halt 后你（或 Claude 主循环）手动修完一个 task 并 commit 了
