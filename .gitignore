@@ -16,3 +16,4 @@ htmlcov/
 *.egg-info/
 static/
 web/node_modules/
+graphify-out/
