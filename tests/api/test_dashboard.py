@@ -276,6 +276,161 @@ def test_recent_hits_batched_claim_lookup(db_engine):
     assert by_tier[3]['claim_status'] is None  # no PrizeClaim row
 
 
+def test_dashboard_summary_filters_by_time_period(db_engine):
+    """GET /api/dashboard?period=month filters summary to current month only."""
+    _seed_lottery(db_engine)
+    uid = _make_user(db_engine, 'filter_user')
+
+    cst_now = datetime.now(_CST).replace(tzinfo=None)
+
+    with Session(db_engine) as s:
+        # Ticket from current month
+        t_current = Ticket(
+            user_id=uid, lottery_code='ssq', play_type='single',
+            numbers_json='{}', cost=200,
+        )
+        s.add(t_current)
+        s.flush()
+
+        # Ticket from 2 months ago
+        t_old = Ticket(
+            user_id=uid, lottery_code='ssq', play_type='single',
+            numbers_json='{}', cost=300,
+        )
+        # Manually set created_at to 2 months ago
+        t_old.created_at = cst_now - timedelta(days=60)
+        s.add(t_old)
+        s.commit()
+
+    client = _auth_client(db_engine, uid)
+
+    # No filter: should include all tickets
+    r = client.get('/api/dashboard')
+    assert r.status_code == 200
+    summary_all = r.json()['summary']
+    assert summary_all['total_cost'] == 500  # 200 + 300
+
+    # Filter by current month: should only include current month ticket
+    r = client.get('/api/dashboard?period=month')
+    assert r.status_code == 200
+    summary_month = r.json()['summary']
+    assert summary_month['total_cost'] == 200, f"Expected 200 (current month only), got {summary_month['total_cost']}"
+
+
+def test_dashboard_summary_filters_by_lottery_code(db_engine):
+    """GET /api/dashboard?lottery_code=ssq filters summary to specific lottery."""
+    # Seed two lottery types
+    with Session(db_engine) as s:
+        s.add(LotteryType(code='ssq', name='双色球', category='welfare', spec_json='{}', draw_schedule_json='{}'))
+        s.add(LotteryType(code='dlt', name='大乐透', category='sports', spec_json='{}', draw_schedule_json='{}'))
+        s.commit()
+
+    uid = _make_user(db_engine, 'lottery_filter_user')
+
+    with Session(db_engine) as s:
+        t_ssq = Ticket(
+            user_id=uid, lottery_code='ssq', play_type='single',
+            numbers_json='{}', cost=200,
+        )
+        t_dlt = Ticket(
+            user_id=uid, lottery_code='dlt', play_type='single',
+            numbers_json='{}', cost=400,
+        )
+        s.add_all([t_ssq, t_dlt])
+        s.commit()
+
+    client = _auth_client(db_engine, uid)
+
+    # No filter: includes both lotteries
+    r = client.get('/api/dashboard')
+    assert r.status_code == 200
+    summary_all = r.json()['summary']
+    assert summary_all['total_cost'] == 600  # 200 + 400
+
+    # Filter by ssq: only ssq tickets
+    r = client.get('/api/dashboard?lottery_code=ssq')
+    assert r.status_code == 200
+    summary_ssq = r.json()['summary']
+    assert summary_ssq['total_cost'] == 200, f"Expected 200 (ssq only), got {summary_ssq['total_cost']}"
+
+    # Filter by dlt: only dlt tickets
+    r = client.get('/api/dashboard?lottery_code=dlt')
+    assert r.status_code == 200
+    summary_dlt = r.json()['summary']
+    assert summary_dlt['total_cost'] == 400, f"Expected 400 (dlt only), got {summary_dlt['total_cost']}"
+
+
+def test_comparisons_filters_by_time_and_lottery(db_engine):
+    """GET /api/comparisons supports period and lottery_code filters."""
+    with Session(db_engine) as s:
+        s.add(LotteryType(code='ssq', name='双色球', category='welfare', spec_json='{}', draw_schedule_json='{}'))
+        s.add(LotteryType(code='dlt', name='大乐透', category='sports', spec_json='{}', draw_schedule_json='{}'))
+        s.commit()
+
+    uid = _make_user(db_engine, 'comp_filter_user')
+    cst_now = datetime.now(_CST).replace(tzinfo=None)
+
+    with Session(db_engine) as s:
+        # SSQ draw + comparison (current month)
+        draw_ssq = DrawResult(
+            lottery_code='ssq', draw_no='2026100',
+            draw_date=cst_now - timedelta(days=1),
+            numbers_json='{"front":[1,2,3,4,5,6],"back":[7]}',
+            source='mxnzp', verified=True,
+        )
+        s.add(draw_ssq)
+        s.flush()
+        t_ssq = Ticket(user_id=uid, lottery_code='ssq', play_type='single', numbers_json='{}', cost=200)
+        s.add(t_ssq)
+        s.flush()
+        comp_ssq = Comparison(
+            user_id=uid, draw_result_id=draw_ssq.id, ticket_id=t_ssq.id,
+            hits_json='{}', prize_tier=5, prize_amount=1000, is_win=True,
+        )
+        s.add(comp_ssq)
+
+        # DLT draw + comparison (current month)
+        draw_dlt = DrawResult(
+            lottery_code='dlt', draw_no='2026100',
+            draw_date=cst_now - timedelta(days=1),
+            numbers_json='{"front":[1,2,3,4,5],"back":[6,7]}',
+            source='mxnzp', verified=True,
+        )
+        s.add(draw_dlt)
+        s.flush()
+        t_dlt = Ticket(user_id=uid, lottery_code='dlt', play_type='single', numbers_json='{}', cost=400)
+        s.add(t_dlt)
+        s.flush()
+        comp_dlt = Comparison(
+            user_id=uid, draw_result_id=draw_dlt.id, ticket_id=t_dlt.id,
+            hits_json='{}', prize_tier=3, prize_amount=500, is_win=True,
+        )
+        s.add(comp_dlt)
+        s.commit()
+
+    client = _auth_client(db_engine, uid)
+
+    # No filter: both comparisons
+    r = client.get('/api/comparisons?win_only=true')
+    assert r.status_code == 200
+    comps_all = r.json()
+    assert len(comps_all) == 2
+
+    # Filter by ssq: only ssq comparison
+    r = client.get('/api/comparisons?win_only=true&lottery_code=ssq')
+    assert r.status_code == 200
+    comps_ssq = r.json()
+    assert len(comps_ssq) == 1
+    assert comps_ssq[0]['lottery_code'] == 'ssq'
+
+    # Filter by dlt: only dlt comparison
+    r = client.get('/api/comparisons?win_only=true&lottery_code=dlt')
+    assert r.status_code == 200
+    comps_dlt = r.json()
+    assert len(comps_dlt) == 1
+    assert comps_dlt[0]['lottery_code'] == 'dlt'
+
+
 def test_dashboard_monthly_returns_last_12_months(db_engine):
     """GET /api/dashboard/monthly 返回最近12个月的投入/中奖月数据。"""
     _seed_lottery(db_engine)

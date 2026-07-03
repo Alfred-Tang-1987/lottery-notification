@@ -40,6 +40,7 @@ _MAX_LIMIT = 200
 @router.get('', response_model=list[ComparisonOut])
 def list_comparisons(
     win_only: bool = Query(False),
+    lottery_code: str | None = Query(None),
     limit: int = Query(100, ge=1, le=_MAX_LIMIT),
     user: User = Depends(current_user),
     session: Session = Depends(get_session_dep),
@@ -47,6 +48,7 @@ def list_comparisons(
     """返回当前用户的比对记录，按创建时间降序。
 
     win_only=true 时仅返回中奖记录，用于「中奖记录」页面。
+    lottery_code 可按彩种筛选。
     """
     stmt = select(Comparison, DrawResult, LotteryType, Ticket).where(
         Comparison.user_id == user.id
@@ -60,6 +62,9 @@ def list_comparisons(
 
     if win_only:
         stmt = stmt.where(Comparison.is_win == True)  # noqa: E712
+
+    if lottery_code:
+        stmt = stmt.where(DrawResult.lottery_code == lottery_code)
 
     rows = session.exec(stmt).all()
 
