@@ -770,20 +770,19 @@ Steps:
 4. If mode=halted: run "git status --porcelain" and "git diff --stat". BEST-EFFORT — if git fails (not a repo / index corrupt), skip this section (do NOT block manifest.json write).
    If "git status --porcelain" output is non-empty, append a "## Working Tree (dirty)" section to blocked.md with: the porcelain output (file list) + the diff --stat output (change summary) + 接手指引（implementor 改动未提交，留在工作树。选项：git diff <file> 查看 / git checkout -- <file> 丢弃 / 手动修后 git commit -m "feat(plan-X/T-Y): ..." 再全新跑续，见 USAGE.md §7.1）。
    If output is empty, append "## Working Tree (clean)" — no uncommitted changes（likely_source=gate restored 时预期如此）。
-5. Lessons ({{lessonsAutoDistill}}): If lessonsAutoDistill=true AND mode=halted AND lessonsPath is non-empty: invoke the lesson-distiller agent to extract reusable knowledge from this halt (see lessonDistiller prompt for details). The distiller returns decisions [{action: append|update|skip, ...}]. Apply decisions to lessonsPath: append → add new entry; update → replace existing entry by update_target_id; skip → no change. BEST-EFFORT — if distiller fails/quota-exhausted, skip lesson update (do NOT block manifest.json write). If lessonsAutoDistill=false or mode=done: leave lessonsPath untouched.
-   Legacy note: old behavior was "DO NOT auto-append halt reason as a lesson" because raw halt reasons (e.g. "OSCILLATING") are event labels not reusable knowledge. The new distiller agent filters transient events (review_empty/model_unavailable) and extracts reusable root causes — only those become lessons.
+5. Lessons ({{lessonsAutoDistill}}): If lessonsAutoDistill=true AND mode=halted: lesson-distiller agent has ALREADY been invoked by orchestrator before this finalReport call — it read lessonsPath, extracted reusable root causes, and updated lessons.md itself. You do NOT need to touch lessonsPath. If distiller failed (quota/error), orchestrator logged it and proceeded — lessonsPath may be stale but manifest write must proceed. If lessonsAutoDistill=false or mode=done: lessonsPath untouched.
 6. Print a digest summary (counts: done/blocked, total tasks, per-plan gate result).
 
 Return {evidence:{manifest_path}, summary: <digest>}.
 RED FLAG: manifest 必须真实写入磁盘（你 ls 确认）。stateJson 是 orchestrator 传入的完整状态，照实记录。`,
 
-  lessonDistiller: `You are the LESSON-DISTILLER (model opus). Extract REUSABLE knowledge from a halted workflow run. You are invoked by finalReport when mode=halted and lessons_auto_distill=true.
+  lessonDistiller: `You are the LESSON-DISTILLER (model opus). Extract REUSABLE knowledge from a halted workflow run and update lessons.md. You are invoked by orchestrator (halt path) when mode=halted and lessons_auto_distill=true.
 
-Inputs: distillInput={{distillInput}} existingLessons={{existingLessons}}
+Inputs: distillInput={{distillInput}} lessonsPath={{lessonsPath}}
 
 ## Your task
 1. Read distillInput: halt_info (reason, last_error, blocked task) + review_history (per-round findings) + failed_approaches (cross-run repeated failures).
-2. Read existingLessons: current lessons.md entries (id, title, detail, source?, category?).
+2. Read lessonsPath file (current lessons.md). If file missing/empty, treat as no existing lessons. Parse entries: ## L-<id> followed by title/detail/source?/category?/status fields.
 3. Identify REUSABLE knowledge — root causes that, if known beforehand, would have prevented the halt or guided the implementor differently. Categories:
    - silent-failure: swallowed error / bad fallback / missing transaction (e.g. DB split-commit must be single-transaction)
    - dependency: task ordering / cross-layer contract (e.g. frontend field name must match backend schema)
@@ -792,7 +791,20 @@ Inputs: distillInput={{distillInput}} existingLessons={{existingLessons}}
    - other: anything reusable that doesn't fit above
 4. FILTER OUT transient events (action=skip): review_empty, model_unavailable, single-occurrence hiccups. These are NOT reusable knowledge — they are瞬态 model/runtime hiccups. ONLY提炼 root causes.
    Exception: if failed_approaches shows the SAME task halted with the SAME root cause across multiple runs (cross-run repeat),提炼 it even if the reason label looks transient — the repetition signals a systemic trap.
-5. DEDUP against existingLessons: if a new finding semantically overlaps an existing entry → action=update (set update_target_id=existing id, refine title/detail with new evidence); if全新 → action=append; if nothing reusable → action=skip.
+5. DEDUP against existing lessons: if a new finding semantically overlaps an existing entry → action=update (set update_target_id=existing id, refine title/detail with new evidence); if全新 → action=append; if nothing reusable → action=skip.
+
+## Apply decisions to lessonsPath (you write the file)
+After deciding, APPLY decisions to lessonsPath yourself (you have fs access):
+- append: add new entry at end of file. Format:
+  ## L-<ts>
+  title: <title>
+  detail: <detail>
+  source: <plan-X/T-Y@<run_ts>>
+  category: <category>
+  status: active
+- update: replace the existing entry段落 (## L-<update_target_id> to next ## L- or EOF) with new content. Preserve update_target_id as id (or use new id if replacing).
+- skip: no change.
+Ensure file starts with '# Lessons Learned' header. Entries separated by blank lines.
 
 ## Quality bar (RED FLAG)
 lesson 必须是可复用知识，非事件标签。
@@ -811,5 +823,5 @@ Return {decisions: [{action, id, title, detail, source?, category?, update_targe
 - action=update: update_target_id 必填（existing id），id 可同 update_target_id（原地更新）或新 id（替换）。title/detail 必填。
 - action=skip: 仅 id+title+detail 占位即可（不会被写入）。
 若整个 run 无可复用知识 → decisions: [{action:'skip', id:'none', title:'no reusable knowledge', detail:'transient event only'}].
-若遇到 model 限额耗尽（quota/rate-limit/429 错误），返回 decisions: [{action:'skip', id:'quota', title:'distiller quota exhausted', detail:'skip lesson update'}]（finalReport 会 best-effort 跳过）。`,
+若遇到 model 限额耗尽（quota/rate-limit/429 错误），返回 decisions: [{action:'skip', id:'quota', title:'distiller quota exhausted', detail:'skip lesson update'}]（orchestrator 会 best-effort 跳过）。`,
 }

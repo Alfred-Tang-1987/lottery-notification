@@ -37,9 +37,14 @@ test('PROMPTS.implementor includes {{lessons}} placeholder', () => {
 })
 
 // --- finalReport prompt ---
+// SH2 修复后：distiller 是独立 agent 调用，finalReport 不再负责 lesson 更新
+// finalReport step5 仅说明 distiller 已执行（lessonsPath 仍传入用于 manifest 记录）
 
-test('PROMPTS.finalReport includes lessonsPath and lesson append instruction', () => {
+test('PROMPTS.finalReport includes lessonsPath and distiller-already-invoked note', () => {
   assert.match(PROMPTS.finalReport, /\{\{lessonsPath\}\}/)
   assert.match(PROMPTS.finalReport, /lessonsPath/)
-  assert.match(PROMPTS.finalReport, /append.*lesson/i)
+  // distiller 已独立执行（finalReport 不再自己调 distiller 或 append lesson）
+  assert.match(PROMPTS.finalReport, /ALREADY been invoked/i)
+  // 不得再含直接 append lesson 指令（旧机制）
+  assert.doesNotMatch(PROMPTS.finalReport, /append.*lesson/i)
 })

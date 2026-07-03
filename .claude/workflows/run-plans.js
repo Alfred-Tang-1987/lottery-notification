@@ -261,7 +261,9 @@ async function safeAgent(prompt, opts) {
 // 典型场景：bootstrap 用 sonnet（qwen3.7-plus）跑复杂任务被 Repetitive tool calls 400 打断 → 升级 opus（qwen3.7-max）重试。
 async function dispatchImpl(prompt, opts, model, retryModel = null) {
   let impl
-  try { impl = await agent(prompt, opts) }
+  // QH1: 首次调用注入 model 到 opts（之前 opts 缺 model → agent 用环境默认 model，
+  // 与 dispatchImpl 的 model 参数不一致，retryModel 逻辑也失效）。
+  try { impl = await agent(prompt, { ...opts, model }) }
   catch (e) {
     if (isQuotaError(e)) return { halted: true, reason: 'model_unavailable', diag: { model, error: errStr(e) } }
     throw e
@@ -735,20 +737,19 @@ Steps:
 4. If mode=halted: run "git status --porcelain" and "git diff --stat". BEST-EFFORT — if git fails (not a repo / index corrupt), skip this section (do NOT block manifest.json write).
    If "git status --porcelain" output is non-empty, append a "## Working Tree (dirty)" section to blocked.md with: the porcelain output (file list) + the diff --stat output (change summary) + 接手指引（implementor 改动未提交，留在工作树。选项：git diff <file> 查看 / git checkout -- <file> 丢弃 / 手动修后 git commit -m "feat(plan-X/T-Y): ..." 再全新跑续，见 USAGE.md §7.1）。
    If output is empty, append "## Working Tree (clean)" — no uncommitted changes（likely_source=gate restored 时预期如此）。
-5. Lessons ({{lessonsAutoDistill}}): If lessonsAutoDistill=true AND mode=halted AND lessonsPath is non-empty: invoke the lesson-distiller agent to extract reusable knowledge from this halt (see lessonDistiller prompt for details). The distiller returns decisions [{action: append|update|skip, ...}]. Apply decisions to lessonsPath: append → add new entry; update → replace existing entry by update_target_id; skip → no change. BEST-EFFORT — if distiller fails/quota-exhausted, skip lesson update (do NOT block manifest.json write). If lessonsAutoDistill=false or mode=done: leave lessonsPath untouched.
-   Legacy note: old behavior was "DO NOT auto-append halt reason as a lesson" because raw halt reasons (e.g. "OSCILLATING") are event labels not reusable knowledge. The new distiller agent filters transient events (review_empty/model_unavailable) and extracts reusable root causes — only those become lessons.
+5. Lessons ({{lessonsAutoDistill}}): If lessonsAutoDistill=true AND mode=halted: lesson-distiller agent has ALREADY been invoked by orchestrator before this finalReport call — it read lessonsPath, extracted reusable root causes, and updated lessons.md itself. You do NOT need to touch lessonsPath. If distiller failed (quota/error), orchestrator logged it and proceeded — lessonsPath may be stale but manifest write must proceed. If lessonsAutoDistill=false or mode=done: lessonsPath untouched.
 6. Print a digest summary (counts: done/blocked, total tasks, per-plan gate result).
 
 Return {evidence:{manifest_path}, summary: <digest>}.
 RED FLAG: manifest 必须真实写入磁盘（你 ls 确认）。stateJson 是 orchestrator 传入的完整状态，照实记录。`,
 
-  lessonDistiller: `You are the LESSON-DISTILLER (model opus). Extract REUSABLE knowledge from a halted workflow run. You are invoked by finalReport when mode=halted and lessons_auto_distill=true.
+  lessonDistiller: `You are the LESSON-DISTILLER (model opus). Extract REUSABLE knowledge from a halted workflow run and update lessons.md. You are invoked by orchestrator (halt path) when mode=halted and lessons_auto_distill=true.
 
-Inputs: distillInput={{distillInput}} existingLessons={{existingLessons}}
+Inputs: distillInput={{distillInput}} lessonsPath={{lessonsPath}}
 
 ## Your task
 1. Read distillInput: halt_info (reason, last_error, blocked task) + review_history (per-round findings) + failed_approaches (cross-run repeated failures).
-2. Read existingLessons: current lessons.md entries (id, title, detail, source?, category?).
+2. Read lessonsPath file (current lessons.md). If file missing/empty, treat as no existing lessons. Parse entries: ## L-<id> followed by title/detail/source?/category?/status fields.
 3. Identify REUSABLE knowledge — root causes that, if known beforehand, would have prevented the halt or guided the implementor differently. Categories:
    - silent-failure: swallowed error / bad fallback / missing transaction (e.g. DB split-commit must be single-transaction)
    - dependency: task ordering / cross-layer contract (e.g. frontend field name must match backend schema)
@@ -757,7 +758,20 @@ Inputs: distillInput={{distillInput}} existingLessons={{existingLessons}}
    - other: anything reusable that doesn't fit above
 4. FILTER OUT transient events (action=skip): review_empty, model_unavailable, single-occurrence hiccups. These are NOT reusable knowledge — they are瞬态 model/runtime hiccups. ONLY提炼 root causes.
    Exception: if failed_approaches shows the SAME task halted with the SAME root cause across multiple runs (cross-run repeat),提炼 it even if the reason label looks transient — the repetition signals a systemic trap.
-5. DEDUP against existingLessons: if a new finding semantically overlaps an existing entry → action=update (set update_target_id=existing id, refine title/detail with new evidence); if全新 → action=append; if nothing reusable → action=skip.
+5. DEDUP against existing lessons: if a new finding semantically overlaps an existing entry → action=update (set update_target_id=existing id, refine title/detail with new evidence); if全新 → action=append; if nothing reusable → action=skip.
+
+## Apply decisions to lessonsPath (you write the file)
+After deciding, APPLY decisions to lessonsPath yourself (you have fs access):
+- append: add new entry at end of file. Format:
+  ## L-<ts>
+  title: <title>
+  detail: <detail>
+  source: <plan-X/T-Y@<run_ts>>
+  category: <category>
+  status: active
+- update: replace the existing entry段落 (## L-<update_target_id> to next ## L- or EOF) with new content. Preserve update_target_id as id (or use new id if replacing).
+- skip: no change.
+Ensure file starts with '# Lessons Learned' header. Entries separated by blank lines.
 
 ## Quality bar (RED FLAG)
 lesson 必须是可复用知识，非事件标签。
@@ -776,7 +790,7 @@ Return {decisions: [{action, id, title, detail, source?, category?, update_targe
 - action=update: update_target_id 必填（existing id），id 可同 update_target_id（原地更新）或新 id（替换）。title/detail 必填。
 - action=skip: 仅 id+title+detail 占位即可（不会被写入）。
 若整个 run 无可复用知识 → decisions: [{action:'skip', id:'none', title:'no reusable knowledge', detail:'transient event only'}].
-若遇到 model 限额耗尽（quota/rate-limit/429 错误），返回 decisions: [{action:'skip', id:'quota', title:'distiller quota exhausted', detail:'skip lesson update'}]（finalReport 会 best-effort 跳过）。`,
+若遇到 model 限额耗尽（quota/rate-limit/429 错误），返回 decisions: [{action:'skip', id:'quota', title:'distiller quota exhausted', detail:'skip lesson update'}]（orchestrator 会 best-effort 跳过）。`,
 }
 
 // ===== state（§4.4）=====
@@ -796,9 +810,35 @@ async function finalReportWithFallback(ctx) {
         { schema: SCHEMAS.finalReport, model: m, label: `final-report:${m}` })
     } catch (e) { log(`finalReport ${m} 不可用: ${errStr(e)}, 试下一个`) }
   }
+  // QC2: 环境默认 model 兜底也包 try/catch——全链失败时返回 null，不 crash
+  // halt 场景下 crash 会丢 manifest/blocked.md，比 finalReport 失败更严重
   log('fallback 链全失败，用环境默认 model 保存')
-  return await agent(buildPrompt('finalReport', ctx),
-    { schema: SCHEMAS.finalReport, label: 'final-report:default' })
+  try {
+    return await agent(buildPrompt('finalReport', ctx),
+      { schema: SCHEMAS.finalReport, label: 'final-report:default' })
+  } catch (e) {
+    log(`✗ 环境默认 model 也失败，finalReport 无法保存: ${errStr(e)}`)
+    return null
+  }
+}
+
+// lesson distiller fallback 链（§5.4）：opus 首选（提炼需推理），sonnet/haiku 兜底。
+// distiller 自己读 lessonsPath + 自己写回（orchestrator 无 fs）。
+// 全链失败 → 返回 null（best-effort，不阻塞 finalReport）。
+async function lessonDistillerWithFallback(ctx) {
+  for (const m of ['opus', 'sonnet', 'haiku']) {
+    try {
+      return await agent(buildPrompt('lessonDistiller', ctx),
+        { schema: SCHEMAS.lessonDistiller, model: m, label: `lesson-distiller:${m}` })
+    } catch (e) { log(`lessonDistiller ${m} 不可用: ${errStr(e)}, 试下一个`) }
+  }
+  try {
+    return await agent(buildPrompt('lessonDistiller', ctx),
+      { schema: SCHEMAS.lessonDistiller, label: 'lesson-distiller:default' })
+  } catch (e) {
+    log(`✗ lesson distiller 全链失败: ${errStr(e)}`)
+    return null
+  }
 }
 
 async function halt(plan, task, r) {
@@ -816,16 +856,29 @@ async function halt(plan, task, r) {
     } }
   phase('Finalize')
   const blockedInfo = JSON.stringify(state.perTask[tid].blocked_info)
-  // lesson 自动提炼（§5.4）：halt 时若 lessons_auto_distill=true 且 lessons_path 非空，
-  // 传 lessonsAutoDistill + distillInput（haltInfo + reviewHistory + failedApproaches）给 finalReport，
-  // finalReport 据此调 lessonDistiller agent 提炼可复用根因 → applyLessonDecisions 更新 lessons.md。
-  // distiller 失败/限额 → finalReport best-effort 跳过，不阻塞 manifest 写入。
+  // SH2 修复（§5.4）：distiller 是独立 agent 调用（非 finalReport 内部调）。
+  // orchestrator 无 fs 不能读 lessons.md，故 distiller 自己读 lessonsPath + 自己写回。
+  // distiller 失败/限额 → best-effort 跳过，不阻塞 finalReport manifest 写入。
   const lessonsAutoDistill = resolveLessonsAutoDistill(state.config)
-  const haltInfo = state.perTask[tid].blocked_info
-  const reviewHistory = state.perTask[tid]?.review_history || []
-  const failedApproaches = state.failedApproaches[tid] || []
-  const distillInput = JSON.stringify(distillLessonInput('halted', haltInfo, reviewHistory, failedApproaches))
-  await finalReportWithFallback({ mode: 'halted', stateJson: JSON.stringify(state), blockedInfo, runsDir: 'runs', runTs: state.runTs, lessonsPath: state.config?.lessons_path || '', lessonsAutoDistill: String(lessonsAutoDistill), distillInput })
+  const lessonsPath = state.config?.lessons_path || ''
+  if (lessonsAutoDistill && lessonsPath) {
+    const haltInfo = state.perTask[tid].blocked_info
+    const reviewHistory = state.perTask[tid]?.review_history || []
+    const failedApproaches = state.failedApproaches[tid] || []
+    const distillInput = JSON.stringify(distillLessonInput('halted', haltInfo, reviewHistory, failedApproaches))
+    try {
+      const distillResult = await lessonDistillerWithFallback({ distillInput, lessonsPath })
+      if (distillResult?.decisions) {
+        const applied = distillResult.decisions.filter(d => d.action !== 'skip').length
+        log(`📋 lesson distiller: ${applied} 条 lesson 已更新（append/update）`)
+      } else {
+        log('⚠ lesson distiller 返回空，跳过 lesson 更新')
+      }
+    } catch (e) {
+      log(`⚠ lesson distiller 失败（best-effort 跳过）: ${errStr(e)}`)
+    }
+  }
+  await finalReportWithFallback({ mode: 'halted', stateJson: JSON.stringify(state), blockedInfo, runsDir: 'runs', runTs: state.runTs, lessonsPath, lessonsAutoDistill: String(lessonsAutoDistill) })
   log(`✗ HALT: ${r.reason} (plan ${plan?.id}, task ${tid})`)
 }
 
@@ -978,7 +1031,7 @@ async function runTask(plan, task) {
 
   // —— commit（§5：状态原子转换；simplify 回退委托此 agent）——
   let commit
-  commit = await dispatchImpl(buildPrompt('commit', { taskId: task.id, planId: plan.id, planIdShort, taskTitle: task.title || task.id, commitMsg: commitSubject(plan.seq, task.id, task.title || task.id), testCommand: cfg.test_command, simplifyFailed: String(simplifyFailed), simplifyFiles: simplifyFiles.join(','), simplifyRevertNote: simplifyFailed ? `Simplify 回退：重跑 review 失败，还原 ${simplifyFiles.length} 个文件。` : '', writeFilesScope: formatWriteFilesScope(state.taskWriteFiles?.[task.id] || []) }), { schema: SCHEMAS.commit, label: `commit:${task.id}` }, model)
+  commit = await dispatchImpl(buildPrompt('commit', { taskId: task.id, planId: plan.id, planIdShort, commitMsg: commitSubject(plan.seq, task.id, task.title || task.id), testCommand: cfg.test_command, simplifyFailed: String(simplifyFailed), simplifyFiles: simplifyFiles.join(','), simplifyRevertNote: simplifyFailed ? `Simplify 回退：重跑 review 失败，还原 ${simplifyFiles.length} 个文件。` : '', writeFilesScope: formatWriteFilesScope(state.taskWriteFiles?.[task.id] || []) }), { schema: SCHEMAS.commit, label: `commit:${task.id}` }, model)
   if (commit.halted) return commit
   if (commit.status === 'failed' && Array.isArray(commit.diagnostics?.out_of_scope) && commit.diagnostics.out_of_scope.length) return { halted: true, reason: 'commit out_of_scope', diag: commit.diagnostics }
   if (commit.status !== 'ok') return { halted: true, reason: 'commit failed', diag: commit.diagnostics }
@@ -1021,7 +1074,15 @@ async function runTask(plan, task) {
 
 // ===== 顶层编排（Workflow 入口）=====
 phase('Bootstrap')
-const tsAgent = await agent('Run `date -u +%Y%m%dT%H%M%SZ` and return ONLY the timestamp string, nothing else.', { label: 'get-ts' })
+// QC1: tsAgent 调用包 try/catch——非 quota 异常（网络/runtime 内部错误）不应 crash 整个 workflow
+// 而无 manifest/blocked.md 丢失进度。降级为用 Date.now() 兜底时间戳 + log 警告。
+let tsAgent
+try {
+  tsAgent = await agent('Run `date -u +%Y%m%dT%H%M%SZ` and return ONLY the timestamp string, nothing else.', { label: 'get-ts' })
+} catch (e) {
+  log(`⚠ get-ts agent 抛错（非 quota），降级用 Date.now() 兜底: ${errStr(e)}`)
+  tsAgent = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 8) + 'T' + new Date().toISOString().slice(11, 19).replace(/:/g, '') + 'Z'
+}
 state.runTs = typeof tsAgent === 'string' ? tsAgent.trim() : String(tsAgent)
 let boot
 try {
@@ -1101,6 +1162,6 @@ for (const plan of boot.evidence.plans) {
 }
 
 phase('Finalize')
-await finalReportWithFallback({ mode: 'done', stateJson: JSON.stringify(state), blockedInfo: '', runsDir: 'runs', runTs: state.runTs, lessonsPath: state.config?.lessons_path || '', lessonsAutoDistill: String(resolveLessonsAutoDistill(state.config)), distillInput: '{}' })
+await finalReportWithFallback({ mode: 'done', stateJson: JSON.stringify(state), blockedInfo: '', runsDir: 'runs', runTs: state.runTs, lessonsPath: state.config?.lessons_path || '', lessonsAutoDistill: String(resolveLessonsAutoDistill(state.config)) })
 log('✓ workflow done')
 return { result: 'done', perTask: state.perTask }

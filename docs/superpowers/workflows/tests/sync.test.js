@@ -151,17 +151,23 @@ test('review_history 存档：每轮 findings 摘要进 manifest（OSCILLATING h
   assert.match(finalP, /review_history/, 'finalReport manifest per_task 须含 review_history 字段')
 })
 
-test('halt 自动提炼 lesson 经 distiller agent（非直接 append halt reason）', () => {
+test('halt 自动提炼 lesson 经独立 distiller agent（非 finalReport 内部调）', () => {
   // 旧 finalReport step5：halt 时 append lesson title:<reason> detail:<last_error> status:active
   // → reason=OSCILLATING 时 title/detail 都是 "OSCILLATING"，无信息量，污染知识库。
-  // 新机制（§5.4）：halt 时调 lessonDistiller agent 提炼可复用根因（过滤瞬态事件），
-  // distiller 返回 decisions → finalReport 调 applyLessonDecisions 更新 lessons.md。
-  // distiller 失败/限额 → best-effort 跳过，不阻塞 manifest 写入。
+  // 新机制（§5.4，SH2 修复）：distiller 是 halt() 中的独立 agent 调用（orchestrator 无 fs，
+  // distiller 自己读 lessonsPath + 自己写回）。finalReport step5 仅说明 distiller 已执行。
   for (const [name, src] of [['lib.js', libSrc], ['run-plans.js', runSrc]]) {
     const p = promptBody(src, 'finalReport')
     // 不得直接把 halt reason 当 lesson title（旧废条目根因）
     assert.doesNotMatch(p, /title: <reason>/, `${name} finalReport 不得把 halt reason 当 lesson title`)
-    // 新机制：通过 distiller agent 提炼
-    assert.match(p, /lesson-distiller|lessonDistiller/, `${name} finalReport 必须通过 distiller agent 提炼 lesson`)
+    // finalReport 应说明 distiller 已独立执行（而非 finalReport 自己调 distiller）
+    assert.match(p, /ALREADY been invoked|distiller.*has.*ALREADY/i, `${name} finalReport 应说明 distiller 已独立执行`)
+  }
+  // distiller prompt 应指示自己读 lessonsPath（非依赖 orchestrator 传 existingLessons）
+  for (const [name, src] of [['lib.js', libSrc], ['run-plans.js', runSrc]]) {
+    const p = promptBody(src, 'lessonDistiller')
+    assert.match(p, /Read lessonsPath file/, `${name} lessonDistiller 应自己读 lessonsPath`)
+    assert.match(p, /lessonsPath=\{\{lessonsPath\}\}/, `${name} lessonDistiller 输入应为 lessonsPath 路径`)
+    assert.doesNotMatch(p, /existingLessons=\{\{existingLessons\}\}/, `${name} lessonDistiller 不应依赖 existingLessons 传入`)
   }
 })
