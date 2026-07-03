@@ -158,7 +158,7 @@ function haltLikelySource(reason) {
   const r = String(reason || '')
   if (r === 'plan gate failed' || /gate/.test(r)) return 'gate restored'        // gate 已 checkout 回原 HEAD
   if (/^bootstrap /.test(r)) return 'bootstrap frontmatter'                      // bootstrap 可能写了 plan frontmatter
-  if (/max rounds|OSCILLATING|fix-round|commit failed|commit out_of_scope|simplify (diff check|amend|checkout) failed|simplify reported|BLOCKED|after (context-fetch|retry)|agent_error|model_unavailable|review_empty|review_failed_no_findings/.test(r)) return 'implementor changes'
+  if (/max rounds|OSCILLATING|fix-round|commit failed|commit out_of_scope|simplify (diff check|amend|checkout) failed|BLOCKED|after (context-fetch|retry)|agent_error|model_unavailable|review_empty|review_failed_no_findings/.test(r)) return 'implementor changes'
   return 'unknown'
 }
 
@@ -258,7 +258,12 @@ async function dispatchImpl(prompt, opts, model, retryModel = null) {
       log(`⚠ ${opts?.label || 'unknown'}: ${model} returned null (capability failure likely), retry with ${retryModel}`)
       try {
         impl = await agent(prompt, { ...opts, model: retryModel })
-        if (impl != null) return impl
+        // Q1（第 4 轮）: retry 路径须检查 model_unavailable status（与首次调用一致）
+        //   retryModel 也限额耗尽 → 返回 {status:'model_unavailable'} → 调用方访问 impl.evidence crash
+        if (impl != null) {
+          if (impl?.status === 'model_unavailable') return { halted: true, reason: 'model_unavailable', diag: impl.diagnostics }
+          return impl
+        }
       } catch (e) {
         if (isQuotaError(e)) return { halted: true, reason: 'model_unavailable', diag: { model: retryModel, error: errStr(e) } }
         throw e
@@ -675,9 +680,11 @@ Steps:
 1. git status --porcelain → see staged/unstaged.
 2. Run {{testCommand}} on current tree; confirm exit 0. If fail → status=failed (do NOT commit).
 2.5. If writeFilesScope is non-empty: run git diff --name-only. Compare with writeFilesScope. If any file is out of scope → status=failed, diagnostics.out_of_scope=[<files>]. Do NOT commit.
-2.6. Destructive Change Detection: run git diff --cached --numstat. For each file:
+2.6. Destructive Change Detection: run git diff HEAD --numstat. For each file:
+  S4（第 4 轮）: 须用 git diff HEAD（非 git diff --cached）——文件未 git add 时 --cached 永远为空，
+    destructive review 永不触发。git diff HEAD 对比工作树与 HEAD，无需暂存即可检测改动。
   a. If column 2 (deletions) >= 5 AND file is not a test file → record {type:'deleted_code', file, detail:'<N> lines deleted'}
-  b. If file is deleted (git diff --cached --name-status shows D) → record {type:'file_deletion', file, detail:'file deleted'}
+  b. If file is deleted (git diff HEAD --name-status shows D) → record {type:'file_deletion', file, detail:'file deleted'}
   c. For exported symbol signature changes: read the diff hunks. If a function/class exported symbol's params or return type changed → record {type:'signature_change', file, detail:'<symbol> signature changed'}
   If any hit → record in diagnostics.destructive_changes: [{type, file, detail}]. Still proceed to commit (status=ok), but orchestrator will trigger an extra review round.
 3. git add -A; git commit -m "{{commitMsg}}"。
@@ -725,9 +732,11 @@ Inputs: mode={{mode}} state={{stateJson}} blockedInfo={{blockedInfo}} runsDir={{
 Steps:
 1. mkdir -p {{runsDir}}.
 2. Write {{runsDir}}/manifest.json = {run_ts:{{runTs}}, mode:{{mode}}, plans:[...], per_task:{<taskId>:{status,model,review_rounds,files_touched_per_round,review_history,commit_sha,simplify_reverted,simplify_review_findings,destructive_review_failed,destructive_review_findings,concerns,blocked_info}}, result}.
-3. If mode=halted: write {{runsDir}}/blocked.md from {{blockedInfo}} (the blocked task's blocked_info JSON — render EACH field human-readably: plan, task, reason, category, last_error, suggested_fix, quota_exhausted, likely_source, failed_approach). For failed_approach, render as: "Failed Approach: <failed_approach.task_id>: <failed_approach.reason> — <failed_approach.error>". Do NOT hunt for these fields in state — they are provided inline in blockedInfo.
+3. If mode=halted: write .workflow/blocked.md from {{blockedInfo}} (the blocked task's blocked_info JSON — render EACH field human-readably: plan, task, reason, category, last_error, suggested_fix, quota_exhausted, likely_source, failed_approach). For failed_approach, render as: "Failed Approach: <failed_approach.task_id>: <failed_approach.reason> — <failed_approach.error>". Do NOT hunt for these fields in state — they are provided inline in blockedInfo.
+   S3（第 4 轮）: blocked.md 路径固定为 .workflow/blocked.md（§8.2），独立于 {{runsDir}}——
+   blocked.md 是用户接手入口，路径须稳定可预测（runsDir 会随 runTs 变化，用户难定位）。
 4. If mode=halted: run "git status --porcelain" and "git diff --stat". BEST-EFFORT — if git fails (not a repo / index corrupt), skip this section (do NOT block manifest.json write).
-   If "git status --porcelain" output is non-empty, append a "## Working Tree (dirty)" section to blocked.md with: the porcelain output (file list) + the diff --stat output (change summary) + 接手指引（implementor 改动未提交，留在工作树。选项：git diff <file> 查看 / git checkout -- <file> 丢弃 / 手动修后 git commit -m "feat(plan-X/T-Y): ..." 再全新跑续，见 USAGE.md §7.1）。
+   If "git status --porcelain" output is non-empty, append a "## Working Tree (dirty)" section to .workflow/blocked.md with: the porcelain output (file list) + the diff --stat output (change summary) + 接手指引（implementor 改动未提交，留在工作树。选项：git diff <file> 查看 / git checkout -- <file> 丢弃 / 手动修后 git commit -m "feat(plan-X/T-Y): ..." 再全新跑续，见 USAGE.md §7.1）。
    If output is empty, append "## Working Tree (clean)" — no uncommitted changes（likely_source=gate restored 时预期如此）。
 5. Lessons ({{lessonsAutoDistill}}): If lessonsAutoDistill=true AND mode=halted: lesson-distiller agent has ALREADY been invoked by orchestrator before this finalReport call — it read lessonsPath, extracted reusable root causes, and updated lessons.md itself. You do NOT need to touch lessonsPath. If distiller failed (quota/error), orchestrator logged it and proceeded — lessonsPath may be stale but manifest write must proceed. If lessonsAutoDistill=false or mode=done: lessonsPath untouched.
 6. Print a digest summary (counts: done/blocked, total tasks, per-plan gate result).
@@ -795,47 +804,47 @@ const state = {
 }
 
 // ===== halt（§13a：累积 blocked_info → finalReport halted 模式写盘 + surface）=====
-async function finalReportWithFallback(ctx) {
+// Q7（第 4 轮）: finalReport / lessonDistiller fallback 链控制流同构，抽象为统一 helper。
+// opus→sonnet→haiku 逐一尝试，全链失败用环境默认 model，再失败返回 null（调用方检查）。
+// fallback 链仅用于 halt/finalReport 保存进度——runTask 主 agent 调用不用 fallback（不降级继续开发）。
+async function agentWithFallback(role, ctx, labelPrefix) {
   for (const m of ['opus', 'sonnet', 'haiku']) {
     try {
-      return await agent(buildPrompt('finalReport', ctx),
-        { schema: SCHEMAS.finalReport, model: m, label: `final-report:${m}` })
-    } catch (e) { log(`finalReport ${m} 不可用: ${errStr(e)}, 试下一个`) }
+      return await agent(buildPrompt(role, ctx),
+        { schema: SCHEMAS[role], model: m, label: `${labelPrefix}:${m}` })
+    } catch (e) { log(`${labelPrefix} ${m} 不可用: ${errStr(e)}, 试下一个`) }
   }
   // QC2: 环境默认 model 兜底也包 try/catch——全链失败时返回 null，不 crash
   // halt 场景下 crash 会丢 manifest/blocked.md，比 finalReport 失败更严重
   log('fallback 链全失败，用环境默认 model 保存')
   try {
-    return await agent(buildPrompt('finalReport', ctx),
-      { schema: SCHEMAS.finalReport, label: 'final-report:default' })
+    return await agent(buildPrompt(role, ctx),
+      { schema: SCHEMAS[role], label: `${labelPrefix}:default` })
   } catch (e) {
-    log(`✗ 环境默认 model 也失败，finalReport 无法保存: ${errStr(e)}`)
+    log(`✗ 环境默认 model 也失败，${labelPrefix} 无法保存: ${errStr(e)}`)
     return null
   }
 }
 
-// lesson distiller fallback 链（§5.4）：opus 首选（提炼需推理），sonnet/haiku 兜底。
-// distiller 自己读 lessonsPath + 自己写回（orchestrator 无 fs）。
-// 全链失败 → 返回 null（best-effort，不阻塞 finalReport）。
-async function lessonDistillerWithFallback(ctx) {
-  for (const m of ['opus', 'sonnet', 'haiku']) {
-    try {
-      return await agent(buildPrompt('lessonDistiller', ctx),
-        { schema: SCHEMAS.lessonDistiller, model: m, label: `lesson-distiller:${m}` })
-    } catch (e) { log(`lessonDistiller ${m} 不可用: ${errStr(e)}, 试下一个`) }
-  }
-  try {
-    return await agent(buildPrompt('lessonDistiller', ctx),
-      { schema: SCHEMAS.lessonDistiller, label: 'lesson-distiller:default' })
-  } catch (e) {
-    log(`✗ lesson distiller 全链失败: ${errStr(e)}`)
-    return null
+// Q4（第 4 轮）: perTask 默认字段初始化 helper。halt() 在 tid='unknown'（bootstrap/gate halt）
+// 时 spread 空对象 → perTask 只有 {status, blocked_info}，manifest JSON 序列化缺字段 → schema 不稳定。
+// 须确保所有持久化字段有默认值（与 runTask 初始化一致）。
+function ensurePerTaskDefaults(entry) {
+  return {
+    planId: null, status: 'in_progress', model: 'sonnet', review_rounds: 0,
+    files_touched_per_round: [], review_history: [], commit_sha: null,
+    simplify_reverted: false, simplify_review_findings: [],
+    destructive_review_failed: false, destructive_review_findings: [],
+    concerns: [], blocked_info: null,
+    ...(entry || {}),
   }
 }
 
 async function halt(plan, task, r) {
-  const tid = task?.id || 'unknown'
-  state.perTask[tid] = { ...(state.perTask[tid] || {}), status: 'blocked',
+  // Q2（第 4 轮）: tid 须 plan-scoped（与 runTask 的 taskKey 一致），防跨 plan 同名 task 覆盖。
+  // plan 可用 → `plan-{seq}/{task.id}`；plan=null（bootstrap halt）→ 裸 task.id 或 'unknown'。
+  const tid = (plan && task?.id) ? `plan-${String(plan.seq).padStart(2, '0')}/${task.id}` : (task?.id || 'unknown')
+  state.perTask[tid] = ensurePerTaskDefaults({ ...(state.perTask[tid] || {}), status: 'blocked',
     blocked_info: {
       plan: plan?.id, task: tid, reason: r.reason,
       category: r.diag?.blocked_category || r.diag?.file || r.diag?.reason || null,
@@ -859,7 +868,7 @@ async function halt(plan, task, r) {
     const failedApproaches = state.failedApproaches[tid] || []
     const distillInput = JSON.stringify(distillLessonInput('halted', haltInfo, reviewHistory, failedApproaches))
     try {
-      const distillResult = await lessonDistillerWithFallback({ distillInput, lessonsPath })
+      const distillResult = await agentWithFallback('lessonDistiller', { distillInput, lessonsPath }, 'lesson-distiller')
       if (distillResult?.decisions) {
         const applied = distillResult.decisions.filter(d => d.action !== 'skip').length
         log(`📋 lesson distiller: ${applied} 条 lesson 已更新（append/update）`)
@@ -870,7 +879,7 @@ async function halt(plan, task, r) {
       log(`⚠ lesson distiller 失败（best-effort 跳过）: ${errStr(e)}`)
     }
   }
-  const fr = await finalReportWithFallback({ mode: 'halted', stateJson: JSON.stringify(state), blockedInfo, runsDir: 'runs', runTs: state.runTs, lessonsPath, lessonsAutoDistill: String(lessonsAutoDistill) })
+  const fr = await agentWithFallback('finalReport', { mode: 'halted', stateJson: JSON.stringify(state), blockedInfo, runsDir: `runs/${state.runTs}`, runTs: state.runTs, lessonsPath, lessonsAutoDistill: String(lessonsAutoDistill) }, 'final-report')
   if (!fr) log('✗✗ 致命：finalReport 全链失败，manifest 未写入！请手动检查 runs/ 目录')
   log(`✗ HALT: ${r.reason} (plan ${plan?.id}, task ${tid})`)
 }
@@ -888,9 +897,9 @@ async function halt(plan, task, r) {
 //         └─任一 review failed 但 0 findings──→ halt 'review_failed_no_findings'（reviewHaltForEmptyFailed）
 //         └─max N 轮（默认 4，可配 0=无限）──→ halt 'review max rounds'；振荡──→ halt 'OSCILLATING'
 //   COMMIT ──→ SIMPLIFY ──git status --porcelain 有改动──→ re-review ──全绿──→ git commit --amend（validateAmendResult 校验 SHA）
-//              │                                └─失败──→ git checkout -- . + git clean -fd（validateCheckoutResult 兜底验证 porcelain 空）
+//              │                                └─失败──→ git reset --hard HEAD + git clean -fd（validateCheckoutResult 兜底验证 porcelain 空）
 //              │                                              └─失败──→ halt 'simplify checkout failed'
-//              │                                └─空响应/异常──→ halt 'agent_error'/'model_unavailable'/'review_empty'
+//              │                                └─空响应/异常──→ halt 'agent_error'/'model_unavailable'/'review_failed_no_findings'/'review_empty'
 //              └─diff subagent 失败──→ halt 'simplify diff check failed'
 //              └─amend 失败/SHA 格式错──→ halt 'simplify amend failed'
 //              └─无改动──→ 跳过 review（省成本）
@@ -900,7 +909,11 @@ async function runTask(plan, task) {
   state.currentTask = task.id
   const cfg = state.config
   const planIdShort = `plan-${String(plan.seq).padStart(2, '0')}`
-  state.perTask[task.id] = { planId: plan.id, status: 'in_progress', model: task.model || 'sonnet', review_rounds: 0, files_touched_per_round: [], review_history: [], commit_sha: null, simplify_reverted: false, simplify_review_findings: [], destructive_review_failed: false, destructive_review_findings: [], concerns: [], blocked_info: null }
+  // Q2（第 4 轮）: perTask key 须 plan-scoped（与外层 state.completed 一致），防跨 plan 同名 task 覆盖
+  //   （Plan 01/02 都有 T1-T10 → 裸 task.id 作 key → Plan 02 的 T2 覆盖 Plan 01 的 T2 perTask）。
+  //   halt() 已用 plan-scoped tid；runTask 内所有 perTask 访问也须用 taskKey 保持一致。
+  const taskKey = `plan-${String(plan.seq).padStart(2, '0')}/${task.id}`
+  state.perTask[taskKey] = { planId: plan.id, status: 'in_progress', model: task.model || 'sonnet', review_rounds: 0, files_touched_per_round: [], review_history: [], commit_sha: null, simplify_reverted: false, simplify_review_findings: [], destructive_review_failed: false, destructive_review_findings: [], concerns: [], blocked_info: null }
   log(`▶ ${task.id} (${task.model || 'sonnet'}): 派发 implementor — TDD 可能含长命令(uv sync/build/全量测试)，正常耗时请等待；/workflows 可看实时工具调用`)
 
   // —— implementor + BLOCKED 升级链（§2.3）——
@@ -955,16 +968,16 @@ async function runTask(plan, task) {
   let concerns = []
   if (impl.status === 'done_with_concerns') {
     concerns = impl.diagnostics?.concerns || []
-    state.perTask[task.id].concerns = concerns
+    state.perTask[taskKey].concerns = concerns
     log(`⚠ ${task.id} done_with_concerns: ${concerns.join('; ') || '(no detail)'}`)
   }
-  const concernsHint = concerns.length ? `\n## Implementor Concerns (verify these)\n${concerns.map(c => '- ' + c).join('\n')}` : ''
+  let concernsHint = concerns.length ? `\n## Implementor Concerns (verify these)\n${concerns.map(c => '- ' + c).join('\n')}` : ''
   let filesChanged = impl.evidence.files_changed || []
 
   // —— review rounds（max 可配，默认 4；0=无限靠 detectOscillation 防线，§5）——
   const maxRounds = resolveMaxRounds(cfg)
   for (let round = 1; maxRounds === 0 ? true : round <= maxRounds; round++) {
-    state.perTask[task.id].review_rounds = round
+    state.perTask[taskKey].review_rounds = round
     const fc = filesChanged.join('\n')
     const { spec, qual, hunt, haltReason: reviewReason, emptyFailed: emptyFailedReason } = await runReviewRound(task.id, cfg, plan, fc, concernsHint, `:r${round}`, `Plan ${plan.id}`)
     if (reviewReason) {
@@ -974,14 +987,14 @@ async function runTask(plan, task) {
     if (emptyFailedReason) {
       return { halted: true, reason: emptyFailedReason, diag: { spec: spec?.diagnostics, qual: qual?.diagnostics, hunt: hunt?.diagnostics } }
     }
-    state.perTask[task.id].files_touched_per_round.push(unionFiles(spec, qual, hunt))
-    state.perTask[task.id].review_history.push(summarizeReviewRound(round, spec, qual, hunt))
+    state.perTask[taskKey].files_touched_per_round.push(unionFiles(spec, qual, hunt))
+    state.perTask[taskKey].review_history.push(summarizeReviewRound(round, spec, qual, hunt))
     // allGreen 必须在 detectOscillation 之前：否则 r3 三 reviewer 全 ok 时，先被
     // OSCILLATING（核心文件被审 ≥3 轮）截胡 halt，allGreen break 永远轮不到 → 收敛误报
     // （T2 invite / T5 channels）。真矛盾（reviewer 持续分歧，如 T7 claims 时区）不会全绿，
     // 自然落进 detectOscillation 正确 halt 让人介入。单轮全绿即 review 共识，足以放行。
     if (allGreen(spec, qual, hunt)) break
-    const osc = detectOscillation(state.perTask[task.id].files_touched_per_round)
+    const osc = detectOscillation(state.perTask[taskKey].files_touched_per_round)
     if (osc.oscillating) return { halted: true, reason: 'OSCILLATING', diag: osc }
     // maxRounds=0（无限）永不因轮数上限 halt，只靠 detectOscillation halt
     if (maxRounds !== 0 && round === maxRounds) return { halted: true, reason: 'review max rounds', diag: { spec: spec.diagnostics, qual: qual.diagnostics, hunt: hunt.diagnostics } }
@@ -997,13 +1010,23 @@ async function runTask(plan, task) {
     if (impl.status === 'blocked' || impl.status === 'failed' || impl.status === 'needs_context') {
       return { halted: true, reason: `implementor ${impl.status} in fix-round ${round}`, diag: impl.diagnostics }
     }
+    // Q10（第 4 轮）: fix-round implementor 也可能返回 done_with_concerns（修了 review 问题但新增疑虑）。
+    //   旧代码只处理初始 dispatch 的 done_with_concerns → fix-round 的 concerns 被丢弃，
+    //   concernsHint 全程不变 → 后续 review round 收不到新疑虑作 focusHint。
+    //   须在此分支更新 concerns + concernsHint + perTask，与初始 dispatch 路径一致。
+    if (impl.status === 'done_with_concerns') {
+      concerns = impl.diagnostics?.concerns || concerns
+      state.perTask[taskKey].concerns = concerns
+      concernsHint = concerns.length ? `\n## Implementor Concerns (verify these)\n${concerns.map(c => '- ' + c).join('\n')}` : ''
+      log(`⚠ ${task.id} fix-round ${round} done_with_concerns: ${concerns.join('; ') || '(no detail)'}`)
+    }
     filesChanged = impl.evidence.files_changed || filesChanged
   }
 
   // —— 方案 C（§5.2）：commit 提前 + git diff 触发 review + amend/checkout 回退 ——
   // 旧流程：simplify → commit（simplify 失败则委托 commit agent 回退文件）。
   // 新流程：commit → simplify → git diff --stat 独立验证 → 有改动则 review →
-  //   全绿 git commit --amend（合并 simplify 改动到 HEAD）/ 失败 git checkout -- .（回退 simplify 改动）。
+  //   全绿 git commit --amend（合并 simplify 改动到 HEAD）/ 失败 git reset --hard HEAD 回退 simplify 改动。
   // 不信任 simplify 自报 changed（旧 changed 条件分支已删）——commit 后工作树
   // 本应 clean，simplify 若动代码 → git diff 非空 → 触发 review。省成本：simplify 没动代码则跳过 review。
 
@@ -1013,8 +1036,8 @@ async function runTask(plan, task) {
   if (commit.halted) return commit
   if (commit.status === 'failed' && Array.isArray(commit.diagnostics?.out_of_scope) && commit.diagnostics.out_of_scope.length) return { halted: true, reason: 'commit out_of_scope', diag: commit.diagnostics }
   if (commit.status !== 'ok') return { halted: true, reason: 'commit failed', diag: commit.diagnostics }
-  state.perTask[task.id].status = 'committed'
-  state.perTask[task.id].commit_sha = commit.evidence.commit_sha
+  state.perTask[taskKey].status = 'committed'
+  state.perTask[taskKey].commit_sha = commit.evidence.commit_sha
   log(`✓ ${task.id} committed @ ${commit.evidence.commit_sha}`)
 
   // —— simplify（max 1，§5.2 方案 C：git diff 独立验证是否动代码）——
@@ -1028,8 +1051,11 @@ async function runTask(plan, task) {
   // Q4: diff 返回 null/异常 → halt（不静默跳过让 simplify 改动留工作树未 review 未回退）。
   const diffSchema = { type: 'object', required: ['changed', 'files'], properties: { changed: { type: 'boolean' }, files: { type: 'array', items: { type: 'string' } } } }
   const diffResult = await safeAgent('Run `git status --porcelain` in the current working directory. If output is empty, return {"changed": false, "files": []}. Otherwise return {"changed": true, "files": [<list of file paths from porcelain output>]}.', { schema: diffSchema, label: `diff:${task.id}` })
-  if (!diffResult || typeof diffResult !== 'object' || typeof diffResult.changed !== 'boolean') {
-    // Q4: diff subagent 返回 null/异常/格式错 → halt（不静默跳过）
+  // Q4: diff subagent 返回 null/异常/格式错 → halt（不静默跳过）
+  // Q8（第 4 轮）: changed=true 时 files 须为 array——agent 偶发返回 {changed:true} 漏 files 字段，
+  //   旧代码用 Array.isArray(diffResult.files) ? diffResult.files : [] 静默降级为空 →
+  //   simpFiles=[] → review 收空 fc → 漏审 simplify 改动。须 halt 暴露问题而非掩盖。
+  if (!diffResult || typeof diffResult !== 'object' || typeof diffResult.changed !== 'boolean' || (diffResult.changed === true && !Array.isArray(diffResult.files))) {
     return { halted: true, reason: 'simplify diff check failed', diag: { task: task.id, diffResult: diffResult || null } }
   }
   const simpChanged = diffResult.changed === true
@@ -1057,24 +1083,26 @@ async function runTask(plan, task) {
         // Q1/Q2/Q8: amend 失败或 SHA 格式错 → halt（防 gate 在旧 SHA 跑漏检 simplify 改动）
         return { halted: true, reason: 'simplify amend failed', diag: { task: task.id, amendError: amendCheck.error, commitSha: commit.evidence.commit_sha } }
       }
-      state.perTask[task.id].commit_sha = amendCheck.sha
+      state.perTask[taskKey].commit_sha = amendCheck.sha
       log(`✓ ${task.id} simplify review green — amended commit @ ${amendCheck.sha}`)
     } else {
-      // review 失败 → git checkout -- . + git clean -fd 回退 simplify 改动（HEAD 不变，保留原 commit）
+      // review 失败 → git reset --hard HEAD + git clean -fd 回退 simplify 改动（HEAD 不变，保留原 commit）
+      // Q11（第 4 轮）: 须用 git reset --hard HEAD（非旧 git-checkout 回退）——同时清理 staged changes
+      //   （simplify 误 git add 时 staged 区域残留，旧 git-checkout 只回退 tracked 工作区修改不清理 staged）
       // Q3: checkout 须同时 git clean -fd（处理 simplify 新建的 untracked 文件）
       // Q4/Q8: checkout 后再跑 git status --porcelain 兜底验证工作树真 clean + validateCheckoutResult 纯函数校验
       // Q3: checkout 失败或兜底验证非空 → halt（不无条件设 simplify_reverted=true 谎报已回退）
       // Q3: simplify review findings 须持久化到 simplify_review_findings（不丢，用户无需考古 transcript）
       const checkoutSchema = { type: 'object', required: ['ok'], properties: { ok: { type: 'boolean' }, porcelain: { type: 'string' }, error: { type: 'string' } } }
-      const checkoutResult = await safeAgent('Run `git checkout -- . && git clean -fd` to discard simplify changes (both tracked modifications and untracked new files). Then run `git status --porcelain` to verify the working tree is clean. Return JSON {"ok": true, "porcelain": "<porcelain output>"} on success or {"ok": false, "porcelain": "<output>", "error": "<message>"} on failure.', { schema: checkoutSchema, label: `checkout:${task.id}` })
+      const checkoutResult = await safeAgent('Run `git reset --hard HEAD && git clean -fd` to discard simplify changes (both tracked modifications, staged changes, and untracked new files). Then run `git status --porcelain` to verify the working tree is clean. Return JSON {"ok": true, "porcelain": "<porcelain output>"} on success or {"ok": false, "porcelain": "<output>", "error": "<message>"} on failure.', { schema: checkoutSchema, label: `checkout:${task.id}` })
       const checkoutCheck = validateCheckoutResult(checkoutResult)
       if (!checkoutCheck.valid) {
         // Q3/Q4/Q8: checkout 失败或兜底验证工作树仍脏 → halt（simplify 改动残留，不谎报 simplify_reverted）
         return { halted: true, reason: 'simplify checkout failed', diag: { task: task.id, checkoutError: checkoutCheck.error, commitSha: commit.evidence.commit_sha } }
       }
       log(`⚠ ${task.id} simplify review NOT green — reverted simplify changes (HEAD unchanged @ ${commit.evidence.commit_sha})`)
-      state.perTask[task.id].simplify_reverted = true
-      state.perTask[task.id].simplify_review_findings = collectReviewFindings(spec2, qual2, hunt2)
+      state.perTask[taskKey].simplify_reverted = true
+      state.perTask[taskKey].simplify_review_findings = collectReviewFindings(spec2, qual2, hunt2)
     }
   }
 
@@ -1085,18 +1113,21 @@ async function runTask(plan, task) {
   const destructive = commit.diagnostics?.destructive_changes
   if (Array.isArray(destructive) && destructive.length) {
     log(`⚠ ${task.id} destructive_changes detected (${destructive.length}): ${destructive.map(d => `${d.type}:${d.file}`).join(', ')} — 触发额外 review round`)
-    const fc = (commit.evidence.committed_files || []).join(',')
+    // Q3（第 4 轮）: committed_files 须用换行分隔（与 filesChanged / simpFiles 一致），
+    //   逗号对含逗号文件路径（如 data,v2.json）歧义——reviewer 用 git diff 作 ground truth，
+    //   fc 仅是聚焦提示，换行分隔更安全
+    const fc = (commit.evidence.committed_files || []).join('\n')
     const { spec: dSpec, qual: dQual, hunt: dHunt, haltReason: dReason, emptyFailed: dEmptyFailed } = await runReviewRound(task.id, cfg, plan, fc, '', ':destructive', `Plan ${plan.id}`)
     if (dReason || dEmptyFailed) {
       // model 不可用/空响应：不 halt，记录失败继续（destructive review 是增强保护，非阻断）
-      state.perTask[task.id].destructive_review_failed = true
-      state.perTask[task.id].destructive_review_findings = [{ source: 'destructive-review', title: dReason || dEmptyFailed }]
+      state.perTask[taskKey].destructive_review_failed = true
+      state.perTask[taskKey].destructive_review_findings = [{ source: 'destructive-review', title: dReason || dEmptyFailed }]
       log(`⚠ ${task.id} destructive review 异常 (${dReason || dEmptyFailed}) — 记录并继续`)
     } else if (!allGreen(dSpec, dQual, dHunt)) {
       // 不全绿：不 halt，记录 destructive_review_failed + findings 到 perTask，继续下一 task
-      state.perTask[task.id].destructive_review_failed = true
-      state.perTask[task.id].destructive_review_findings = collectReviewFindings(dSpec, dQual, dHunt)
-      log(`⚠ ${task.id} destructive review NOT green — 记录 ${state.perTask[task.id].destructive_review_findings.length} 项 findings 并继续（不 halt）`)
+      state.perTask[taskKey].destructive_review_failed = true
+      state.perTask[taskKey].destructive_review_findings = collectReviewFindings(dSpec, dQual, dHunt)
+      log(`⚠ ${task.id} destructive review NOT green — 记录 ${state.perTask[taskKey].destructive_review_findings.length} 项 findings 并继续（不 halt）`)
     } else {
       log(`✓ ${task.id} destructive review green — 继续正常流程`)
     }
@@ -1108,13 +1139,16 @@ async function runTask(plan, task) {
 // ===== 顶层编排（Workflow 入口）=====
 phase('Bootstrap')
 // QC1: tsAgent 调用包 try/catch——非 quota 异常（网络/runtime 内部错误）不应 crash 整个 workflow
-// 而无 manifest/blocked.md 丢失进度。降级为用 Date.now() 兜底时间戳 + log 警告。
+// 而无 manifest/blocked.md 丢失进度。
+// S1（第 4 轮）: 旧 fallback 用 Date API 违反 §4.3 硬约束——orchestrator 是 JS sandbox，
+//   无 fs、无 subprocess、无 Date.now/Math.random。改用占位符 'unknown-ts'（manifest 仍可写，
+//   run_ts 缺失不阻塞；用户可从 git log / blocked.md 还原时间）。
 let tsAgent
 try {
   tsAgent = await agent('Run `date -u +%Y%m%dT%H%M%SZ` and return ONLY the timestamp string, nothing else.', { label: 'get-ts' })
 } catch (e) {
-  log(`⚠ get-ts agent 抛错（非 quota），降级用 Date.now() 兜底: ${errStr(e)}`)
-  tsAgent = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 8) + 'T' + new Date().toISOString().slice(11, 19).replace(/:/g, '') + 'Z'
+  log(`⚠ get-ts agent 抛错（非 quota），降级用 'unknown-ts' 占位符: ${errStr(e)}`)
+  tsAgent = 'unknown-ts'
 }
 state.runTs = typeof tsAgent === 'string' ? tsAgent.trim() : String(tsAgent)
 let boot
@@ -1195,7 +1229,7 @@ for (const plan of boot.evidence.plans) {
 }
 
 phase('Finalize')
-const frDone = await finalReportWithFallback({ mode: 'done', stateJson: JSON.stringify(state), blockedInfo: '', runsDir: 'runs', runTs: state.runTs, lessonsPath: state.config?.lessons_path || '', lessonsAutoDistill: String(resolveLessonsAutoDistill(state.config)) })
+const frDone = await agentWithFallback('finalReport', { mode: 'done', stateJson: JSON.stringify(state), blockedInfo: '', runsDir: `runs/${state.runTs}`, runTs: state.runTs, lessonsPath: state.config?.lessons_path || '', lessonsAutoDistill: String(resolveLessonsAutoDistill(state.config)) }, 'final-report')
 if (!frDone) log('✗✗ 致命：finalReport 全链失败，manifest 未写入！请手动检查 runs/ 目录')
 log('✓ workflow done')
 return { result: 'done', perTask: state.perTask }

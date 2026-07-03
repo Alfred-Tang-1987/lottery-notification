@@ -271,10 +271,10 @@ switch (agentReturn.status) {
                        ▼
 ┌─────────────────────────────────────────────────────────┐
 │ simplify? (orchestrator 计数, max 1)                      │
-│   → git diff --stat 独立验证是否动代码（不信任自报）     │
+│   → git status --porcelain 独立验证是否动代码（不信任自报）│
 │     有改动 → 触发 review round（spec‖qual‖hunt 并行）    │
 │       全绿 → git commit --amend（合并 simplify 改动）    │
-│       失败 → git checkout -- .（回退 simplify 改动）     │
+│       失败 → git reset --hard HEAD（回退 simplify 改动） │
 │     无改动 → 跳过 review（省成本）                       │
 └──────────────────────┬──────────────────────────────────┘
                        ▼
@@ -295,7 +295,7 @@ review 不是对静态 artifact 的独立观察，是对**当前 working tree** 
 review 全绿 → COMMIT → SIMPLIFY → git status --porcelain subagent 检查有无改动（staged+unstaged）
                                          ├─ 有改动 → re-review (spec‖qual‖hunt, runReviewRound helper)
                                          │            ├─ 全绿 → git commit --amend + git rev-parse HEAD（validateAmendResult 校验 40 位 hex）
-                                         │            └─ 失败 → git checkout -- . && git clean -fd（validateCheckoutResult 兜底验证 porcelain 空）
+                                         │            └─ 失败 → git reset --hard HEAD && git clean -fd（validateCheckoutResult 兜底验证 porcelain 空）
                                          │                          └─ checkout 失败/工作树仍脏 → halt 'simplify checkout failed'
                                          └─ 无改动 → 跳过 review（省成本）
    diff subagent 失败 → halt 'simplify diff check failed'；amend 失败/SHA 格式错 → halt 'simplify amend failed'
@@ -307,7 +307,7 @@ review 全绿 → COMMIT → SIMPLIFY → git status --porcelain subagent 检查
 2. **git status --porcelain 独立验证**（不信任 `simp.evidence.changed` 自报）：用 subagent 跑 `git status --porcelain`，返回 `{changed, files}`。同时检测 staged + unstaged 改动（防 simplify 误 `git add` 后 staged 改动被 `git diff --stat` 漏检）。runtime 禁止 orchestrator 直接调 shell，故走 subagent。三个 subagent（diff/amend/checkout）均用 `safeAgent` 包装 + 返回值验证 + 失败 halt（§5.2 健壮化）。
 3. **amend/checkout 回退**：
    - review 全绿 → `git add -A && git commit --amend --no-edit` 合并 simplify 改动到 HEAD（保持单 commit 原子性，避免 HEAD 多一个 simplify commit 污染 git log）；amend 后用 `git rev-parse HEAD` 独立获取新 SHA + `validateAmendResult` 纯函数校验 40 位 hex（不信任 agent 自报字符串）
-   - review 失败 → `git checkout -- . && git clean -fd` 丢弃 simplify 改动（tracked 修改 + untracked 新文件，HEAD 不变，task 仍 committed 在原 SHA）；checkout 后再跑 `git status --porcelain` 兜底验证工作树真 clean（`validateCheckoutResult` 纯函数校验 porcelain 空，防 ok:true 谎报）
+   - review 失败 → `git reset --hard HEAD && git clean -fd` 丢弃 simplify 改动（同时清理 tracked 修改、staged changes、untracked 新文件，HEAD 不变，task 仍 committed 在原 SHA）；checkout 后再跑 `git status --porcelain` 兜底验证工作树真 clean（`validateCheckoutResult` 纯函数校验 porcelain 空，防 ok:true 谎报）。**Q11（第 4 轮）**：须用 `git reset --hard HEAD`（非旧 `git checkout -- .`）——同时清理 staged changes（simplify 误 `git add` 时 staged 区域残留，旧 git-checkout 只回退 tracked 工作区修改不清理 staged）。
    - review 失败时 simplify review findings 持久化到 `perTask.simplify_review_findings`（不丢，用户无需考古 transcript）
 4. **省成本**：simplify 没动代码则跳过 review（旧设计无条件 review 的成本浪费被消除）。
 5. **max 1** 由线性流程强制（simplify 在 runTask 中单次调用，非计数器；旧 `simplify_invoked` 字段已删除）。
@@ -318,7 +318,9 @@ review 全绿 → COMMIT → SIMPLIFY → git status --porcelain subagent 检查
 
 ### 5.2.1 Destructive Change Detection（commit 后额外 review round）
 
-commit agent 在 step 3.6 检测 `deleted_code` / `file_deletion` / `signature_change`，写入 `diagnostics.destructive_changes`。非空 → 触发 spec+quality+hunter 并行额外 review（`runReviewRound` helper，`:destructive` label）。
+commit agent 在 step 2.6 用 `git diff HEAD --numstat` 检测 `deleted_code` / `file_deletion` / `signature_change`，写入 `diagnostics.destructive_changes`。非空 → 触发 spec+quality+hunter 并行额外 review（`runReviewRound` helper，`:destructive` label）。
+
+> **S4（第 4 轮）**: 须用 `git diff HEAD`（非 `git diff --cached`）——文件未 `git add` 时 `--cached` 永远为空，destructive review 永不触发。`git diff HEAD` 对比工作树与 HEAD，无需暂存即可检测改动。
 
 **与主 review 轮的区别**：
 - 不计入 `review_rounds` 限额（destructive 是增强保护，非主流程）
@@ -609,7 +611,7 @@ return {result: 'done', state}
 1. **implementor**（`model = task.model || 'sonnet'`）；`status='blocked'` → §2.3 升级链（sonnet→opus→halt，带上限）
 2. **review rounds（max N，默认 4，可配 0=无限；§5.3）**：每轮 `spec ‖ quality ‖ hunter` 并行（同 tree snapshot）；收集各 `diagnostics.files_touched` → 振荡检测（§13g）；全绿 break，任一 ❌ → implementor 修复（`collectReviewFindings` 归一化三类 review 的不同 diagnostics key + `formatFindings` 序列化为可读反馈；`fetchedContext` 独立占位符传参考上下文，不混入 fixIssues）→ 下一轮；最后 1 轮 fix 强制 opus（有限模式 `round===maxRounds-1` / 无限模式 `round>=4`，§5.3）；max N 耗尽 → halt（maxRounds=0 无此 halt，仅靠 detectOscillation）。**review 异常/空响应 → halt**：`reviewHaltReason` 扫 status，sentinel 优先级 `agent_error > model_unavailable > review_empty`——`review_empty` 守 status 缺失/为空/非法（含 thinking-only 空响应：agent() 静默返回 null/空对象，无异常），防 hunter/quality/spec 哑火（旧逻辑漏过 → 不 halt → implementor 跑空修复 → max rounds 误 halt）。**第二道守卫 `reviewHaltForEmptyFailed`**（在 `reviewHaltReason` 之后、fix-round 之前）：任一 review `status==='failed'` 但该 review 的 findings 产出 0 项（`issues`/`silent_failures` 空）→ halt `review_failed_no_findings`。堵「合法 failed + 空诊断」漏过 `reviewHaltReason`（status 合法不 halt）→ `collectReviewFindings` 空 → implementor 收「0 项发现」跑空修复 → max rounds 误 halt 的同类洞；与 `review_empty` 区分（后者 status 缺失，本守卫 status 合法但无发现）。**schema items 约束**：quality/hunter 的 `issues`/`silent_failures` 元素强制对象 `{title, fix}`（specReview 保持字符串模板走 `reviewSchema`，qualityReviewer 拆出 `qualityReviewSchema`）——防 LLM 返回纯字符串/缺 fix/用错字段名 → `collectReviewFindings` 的 `it.title||String(it)` 兜底为 `[object Object]`。
 3. **commit（§5.2 方案 C：commit 提前到 simplify 前）**：status check → test → `git commit -m "feat(plan-X/T-Y): ..."`；返回 `commit_sha` → `state.task_status[task.id]='committed'`
-4. **simplify（max 1，§5.2 方案 C）**：commit 后工作树 clean → simplify agent → `git status --porcelain` subagent 独立验证是否动代码（不信任 `simp.evidence.changed` 自报）；有改动 → 触发 review round（`runReviewRound` helper，spec‖qual‖hunt 并行 + 双守卫）；全绿 → `git commit --amend`（合并 simplify 改动到 HEAD，`git rev-parse HEAD` 独立获取新 SHA + 正则校验 40 位 hex）；失败 → `git checkout -- . && git clean -fd` 回退 simplify 改动（HEAD 不变）；无改动 → 跳过 review（省成本）。三个 subagent（diff/amend/checkout）均用 `safeAgent` 包装 + 返回值验证 + 失败 halt（Q1-Q6 健壮化）。
+4. **simplify（max 1，§5.2 方案 C）**：commit 后工作树 clean → simplify agent → `git status --porcelain` subagent 独立验证是否动代码（不信任 `simp.evidence.changed` 自报）；有改动 → 触发 review round（`runReviewRound` helper，spec‖qual‖hunt 并行 + 双守卫）；全绿 → `git commit --amend`（合并 simplify 改动到 HEAD，`git rev-parse HEAD` 独立获取新 SHA + 正则校验 40 位 hex）；失败 → `git reset --hard HEAD && git clean -fd` 回退 simplify 改动（HEAD 不变）；无改动 → 跳过 review（省成本）。三个 subagent（diff/amend/checkout）均用 `safeAgent` 包装 + 返回值验证 + 失败 halt（Q1-Q6 健壮化，Q11 用 git reset --hard HEAD 同时清理 staged changes）。
 
 **halt(plan, task, r)**（终止 helper）：累积 `blocked_info`（task/category/last_error/suggested_fix，来自 `r.diag`）到 state → 若 `lessons_auto_distill=true` 且 `lessons_path` 非空，调 `lessonDistiller` agent（distiller 自读写 `lessonsPath`，best-effort，§5.4）→ dispatch `finalReport`（halted 模式）写 manifest + `.workflow/blocked.md`（§8.2）+ `log()` surface → return。收敛后无 state-updater，**中途终止也走 finalReport 写盘**。
 

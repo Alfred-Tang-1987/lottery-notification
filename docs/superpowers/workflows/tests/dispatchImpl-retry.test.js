@@ -19,11 +19,11 @@ function extractDispatchImpl(src) {
   return m[0]
 }
 
-// 提取 finalReportWithFallback 函数体
-function extractFinalReportWithFallback(src) {
-  const re = /async function finalReportWithFallback\([\s\S]*?\n(?=\n(?:async )?function |$)/
+// 提取 agentWithFallback 函数体（Q7（第 4 轮）：finalReportWithFallback / lessonDistillerWithFallback 抽象为统一 helper）
+function extractAgentWithFallback(src) {
+  const re = /async function agentWithFallback\([\s\S]*?\n(?=\n(?:async )?function |$)/
   const m = src.match(re)
-  assert.ok(m, 'run-plans.js 须含 finalReportWithFallback 定义')
+  assert.ok(m, 'run-plans.js 须含 agentWithFallback 定义（Q7 抽象）')
   return m[0]
 }
 
@@ -51,27 +51,32 @@ test('dispatchImpl-retry 正则与生产 isQuotaError 同步（QH2 遗留）', (
   assert.doesNotMatch(body, /\/quota\|rate\.\?limit\|429\/i/, 'dispatchImpl 不得手写 quota 正则（须调 isQuotaError）')
 })
 
-test('QC1: tsAgent 调用包 try/catch + Date.now() 降级兜底', () => {
-  // tsAgent 错误 → catch → 降级用 new Date().toISOString() 兜底（不 crash）
+test('QC1: tsAgent 调用包 try/catch + unknown-ts 降级兜底（S1 第 4 轮）', () => {
+  // S1: orchestrator 不得用 new Date()（§4.3 无 Date.now/Math.random 硬约束）
+  //   tsAgent 错误 → catch → 降级用 'unknown-ts' 占位符（不 crash，manifest 仍可写）
   assert.match(runSrc, /let tsAgent/, 'tsAgent 须用 let 声明（便于 catch 重新赋值）')
   assert.match(runSrc, /tsAgent = await agent\([\s\S]*?get-ts/, 'tsAgent 须在 try 块中调用')
-  assert.match(runSrc, /new Date\(\)\.toISOString/, 'tsAgent catch 须降级用 Date.now() 兜底')
+  assert.match(runSrc, /tsAgent = 'unknown-ts'/, "tsAgent catch 须降级用 'unknown-ts' 占位符（S1：§4.3 无 new Date 约束）")
+  // S1: 不得用 new Date()（§4.3 硬约束）
+  assert.doesNotMatch(runSrc, /new Date\(\)/, 'run-plans.js 不得用 new Date()（S1：§4.3 硬约束——ts 由 subagent 写入）')
 })
 
-test('QC2: finalReportWithFallback 末尾 try/catch + 返回 null', () => {
-  const body = extractFinalReportWithFallback(runSrc)
+test('QC2: agentWithFallback 末尾 try/catch + 返回 null（Q7 第 4 轮抽象）', () => {
+  // Q7: finalReportWithFallback / lessonDistillerWithFallback 抽象为统一 agentWithFallback helper
+  //   —— opus→sonnet→haiku 逐一尝试，全链失败用环境默认 model，再失败返回 null
+  const body = extractAgentWithFallback(runSrc)
   // 环境默认 model 调用须包 try/catch
-  assert.match(body, /label: 'final-report:default'/, '须有环境默认 model 兜底调用')
+  assert.match(body, /label: `\$\{labelPrefix\}:default`/, '须有环境默认 model 兜底调用')
   assert.match(body, /return null/, '全链失败须返回 null（不 crash）')
   // 不得裸 return await agent(...)（旧 QC2 bug：末尾无 try/catch）
-  const defaultPart = body.slice(body.indexOf("label: 'final-report:default'"))
+  const defaultPart = body.slice(body.indexOf('label: `${labelPrefix}:default`'))
   assert.match(defaultPart, /catch/, '环境默认 model 调用须包 try/catch')
 })
 
-test('SH2: distiller 是 halt() 中独立 agent 调用（非 finalReport 内部）', () => {
-  // halt() 须调 lessonDistillerWithFallback（独立 agent，自己读 lessonsPath）
-  assert.match(runSrc, /async function lessonDistillerWithFallback/, '须有 lessonDistillerWithFallback 函数定义')
-  assert.match(runSrc, /lessonDistillerWithFallback\(\{[^}]*distillInput/, 'halt() 须调 lessonDistillerWithFallback 传 distillInput')
+test('SH2: distiller 是 halt() 中独立 agent 调用（Q7 第 4 轮：经 agentWithFallback）', () => {
+  // Q7: halt() 须调 agentWithFallback('lessonDistiller', ...)（独立 agent，自己读 lessonsPath）
+  assert.match(runSrc, /agentWithFallback\('lessonDistiller'/, "halt() 须调 agentWithFallback('lessonDistiller', ...) 传 distillInput")
+  assert.match(runSrc, /distillInput/, 'halt() 须构造 distillInput 传给 distiller')
   assert.match(runSrc, /lessonsPath/, 'distiller 须收到 lessonsPath 路径（自己读文件）')
   // finalReport step5 须说明 distiller 已执行（不再自己调 distiller）
   const finalReportPrompt = runSrc.match(/finalReport: `([\s\S]*?)`/)?.[1] || ''

@@ -52,6 +52,7 @@ function extractFunctionBody(src, fnName) {
 test('QC-4: 关键 helper 函数体 lib.js ↔ run-plans.js 字节一致', () => {
   // Q7/S5: 扩展覆盖——影响路由/识别/反馈的关键决策函数须字节比较，不仅存在性正则
   // Q8（本轮新增）: validateAmendResult / validateCheckoutResult 纯函数化后纳入字节比较
+  // Q9（第 4 轮新增）: findingsOf / summarizeFinding 内部 helper 也 inline 复制，须字节守护
   const fns = [
     'fixModelForRound', 'resolveMaxRounds', 'haltLikelySource', 'reviewHaltReason',
     'reviewHaltForEmptyFailed', 'detectOscillation', 'classifyThrown',
@@ -61,6 +62,8 @@ test('QC-4: 关键 helper 函数体 lib.js ↔ run-plans.js 字节一致', () =>
     'resolveLessonsAutoDistill', 'distillLessonInput',
     // Q8 新增：方案 C subagent 返回值校验纯函数（边界条件可 node:test 行为测试）
     'validateAmendResult', 'validateCheckoutResult',
+    // Q9 新增：collectReviewFindings / summarizeReviewRound 的内部 helper（inline 复制但未被字节比较守护）
+    'findingsOf', 'summarizeFinding',
   ]
   for (const fn of fns) {
     const libBody = extractFunctionBody(libSrc, fn)
@@ -145,7 +148,9 @@ test('方案 C: simplify 流程健壮化（safeAgent + 返回值验证 + git sta
   assert.match(runSrc, /safeAgent\('Run `git status --porcelain`/, 'diff subagent 须用 git status --porcelain 检测改动（staged + unstaged）')
   // amend/checkout 仍须存在
   assert.match(runSrc, /git commit --amend/, 'simplify review 全绿后须 amend commit')
-  assert.match(runSrc, /git checkout -- \./, 'simplify review 失败须 git checkout -- . 回退')
+  // Q11（第 4 轮）: checkout 须用 git reset --hard HEAD（非 git checkout -- .），同时清理 staged changes
+  assert.match(runSrc, /git reset --hard HEAD/, 'simplify review 失败须 git reset --hard HEAD 回退（Q11：清理 staged + untracked）')
+  assert.doesNotMatch(runSrc, /git checkout -- \./, '不得用 git checkout -- .（Q11：不清理 staged changes）')
   // Q3: checkout 须同时 git clean -fd（处理 simplify 新建的 untracked 文件）
   assert.match(runSrc, /git clean -fd/, 'checkout 须同时 git clean -fd 处理 untracked 新文件')
   // Q1: amend 后须用 git rev-parse HEAD 独立获取 SHA + 正则校验 40 位 hex
@@ -273,7 +278,10 @@ test('Q3: simplify review 失败后 findings 须持久化（不丢，用户无�
 test('Q4: checkout subagent 须兜底验证（再跑 git status --porcelain 确认工作树真 clean）', () => {
   // Q4: checkout 返回 ok:true 但可能实际未 clean（权限/只读 fs/.gitignore 异常）→ 须独立验证
   // 用 validateCheckoutResult 纯函数校验 ok + porcelain 双字段（Q8 抽出，可行为测试）
-  assert.match(runSrc, /git checkout -- \. && git clean -fd/, 'checkout 命令须含 git checkout -- . && git clean -fd')
+  // Q11（第 4 轮）: checkout 须用 git reset --hard HEAD && git clean -fd（非 git checkout -- .）
+  //   —— git checkout -- . 只回退 tracked 工作区修改，不清理 staged changes（simplify 误 git add 时残留）
+  assert.match(runSrc, /git reset --hard HEAD && git clean -fd/, 'checkout 命令须含 git reset --hard HEAD && git clean -fd（Q11：同时清理 staged + untracked）')
+  assert.doesNotMatch(runSrc, /git checkout -- \. && git clean -fd/, '不得用 git checkout -- .（Q11：不清理 staged changes）')
   assert.match(runSrc, /git status --porcelain/, 'checkout 后须再跑 git status --porcelain 兜底验证（Q4）')
   assert.match(runSrc, /validateCheckoutResult/, '须用 validateCheckoutResult 纯函数校验 checkout 返回值（Q8 抽出）')
   // checkout schema 须含 porcelain 字段（用于兜底验证）
@@ -283,10 +291,20 @@ test('Q4: checkout subagent 须兜底验证（再跑 git status --porcelain 确�
 test('Q6: filesChanged.join 须用换行分隔（避免逗号/空格文件路径歧义）', () => {
   // Q6: join(',') 对含逗号文件路径（如 data,v2.json）歧义；reviewer 用 git diff 作 ground truth，
   // changedHint 仅是聚焦提示，换行分隔更安全
+  // Q3（第 4 轮）: destructive review 的 committed_files.join 也须换行分隔（三处统一）
   assert.doesNotMatch(runSrc, /filesChanged\.join\(','\)/, '不得用 join(",") 拼接文件列表（逗号歧义）')
   assert.doesNotMatch(runSrc, /simpFiles\.join\(','\)/, 'simplify 文件列表不得用 join(",")')
+  assert.doesNotMatch(runSrc, /committed_files.*\.join\(','\)/, 'destructive 文件列表不得用 join(",")（Q3）')
   assert.match(runSrc, /filesChanged\.join\('\\n'\)/, '主轮文件列表须用 join("\\n") 换行分隔')
   assert.match(runSrc, /simpFiles\.join\('\\n'\)/, 'simplify 文件列表须用 join("\\n") 换行分隔')
+  assert.match(runSrc, /committed_files.*\.join\('\\n'\)/, 'destructive 文件列表须用 join("\\n") 换行分隔（Q3）')
+})
+
+test('Q6（第 4 轮）: haltLikelySource 正则不得含死分支 simplify reported', () => {
+  // Q6: 正则含 'simplify reported' 但无 halt reason 匹配此字符串 → 死分支
+  // 两副本字节一致，查 lib.js 即可
+  const libHalt = extractFunctionBody(libSrc, 'haltLikelySource')
+  assert.doesNotMatch(libHalt, /simplify reported/, 'haltLikelySource 正则不得含死分支 simplify reported（Q6）')
 })
 
 test('Q7: runReviewRound helper 须给 spec/qual/hunt 三处都设 phase（UI 分组一致）', () => {
@@ -305,11 +323,16 @@ test('Q7: runReviewRound helper 须给 spec/qual/hunt 三处都设 phase（UI �
   assert.doesNotMatch(helperBody, /if \(phaseLabel\) specOpts\.phase = phaseLabel/, '不得仅给 specOpts 设 phase（须三处都设）')
 })
 
-test('Q9: finalReportWithFallback 返回值须被调用方检查（全链失败时不静默继续）', () => {
+test('Q9: agentWithFallback 返回值须被调用方检查（全链失败时不静默继续）', () => {
   // Q9: finalReportWithFallback 全链失败返回 null 时，halt()/done 路径不感知 → 用户误以为进度已保存
   // 须检查返回值，null 时 log 致命错误
-  assert.match(runSrc, /const fr = await finalReportWithFallback|finalReportWithFallback.*\n.*if\s*\(!fr\)/, 'halt/done 路径须检查 finalReportWithFallback 返回值')
+  // Q7（第 4 轮）: finalReportWithFallback / lessonDistillerWithFallback 抽象为 agentWithFallback
+  assert.match(runSrc, /agentWithFallback/, '须有 agentWithFallback helper（Q7 抽象）')
+  assert.match(runSrc, /const fr = await agentWithFallback\('finalReport'|agentWithFallback\('finalReport'.*\n.*if\s*\(!fr\)/, 'halt/done 路径须检查 agentWithFallback 返回值')
   assert.match(runSrc, /manifest 未写入|manifest.*not.*written|无法保存/i, 'finalReport 返回 null 时须 log 致命错误提示')
+  // Q7: 旧 finalReportWithFallback / lessonDistillerWithFallback 函数应被删除
+  assert.doesNotMatch(runSrc, /async function finalReportWithFallback/, '不得残留 finalReportWithFallback 函数（Q7 已抽象为 agentWithFallback）')
+  assert.doesNotMatch(runSrc, /async function lessonDistillerWithFallback/, '不得残留 lessonDistillerWithFallback 函数（Q7 已抽象为 agentWithFallback）')
 })
 
 test('Q10: concerns 须进 finalReport prompt per_task 结构（跨 session 可追溯 implementor 疑虑）', () => {
@@ -332,4 +355,82 @@ test('Q1: haltLikelySource 须覆盖本轮新增的 simplify halt reason + commi
   const libHalt = extractFunctionBody(libSrc, 'haltLikelySource')
   assert.match(libHalt, /simplify \(diff check\|amend\|checkout\) failed/, 'haltLikelySource 正则须匹配 simplify diff/amend/checkout failed')
   assert.match(libHalt, /commit out_of_scope/, 'haltLikelySource 正则须匹配 commit out_of_scope')
+})
+
+// ===== 第 4 轮 review 修复断言（S1-S4 spec + Q1-Q11 quality）=====
+
+test('S1: orchestrator 不得用 new Date()（§4.3 无 Date.now/Math.random 硬约束）', () => {
+  // S1: get-ts agent 失败时 fallback 用 new Date().toISOString() 违反 §4.3 硬约束
+  //   orchestrator 是 JS sandbox：无 fs、无 subprocess、无 Date.now/Math.random
+  //   修：fallback 用占位符 'unknown-ts'（manifest 仍可写，run_ts 缺失不阻塞）
+  assert.doesNotMatch(runSrc, /new Date\(\)/, 'run-plans.js 不得用 new Date()（§4.3 硬约束——ts 由 subagent 写入）')
+})
+
+test('S2: manifest 须写入 runs/<run-id>/ 子目录（非 runs/ 根目录）', () => {
+  // S2: runsDir='runs' → manifest 写 runs/manifest.json，破坏 bootstrap 的 runs/*/manifest.json glob
+  //   修：runsDir 改为 `runs/${state.runTs}`（runTs 即 run-id），bootstrap glob 可匹配
+  assert.match(runSrc, /runsDir:\s*`runs\/\$\{state\.runTs\}`/, 'runsDir 须为 runs/<runTs>（runTs 作 run-id，bootstrap glob 可匹配）')
+  assert.doesNotMatch(runSrc, /runsDir:\s*'runs'/, "不得用裸 'runs' 作 runsDir（破坏 runs/*/manifest.json glob）")
+})
+
+test('S3: blocked.md 须写入 .workflow/blocked.md（非 runs/blocked.md）', () => {
+  // S3: spec §8.2 规定 blocked.md 写 .workflow/blocked.md，代码写 runs/blocked.md（runsDir='runs'）
+  //   修：finalReport prompt 中 blocked.md 路径改为 .workflow/blocked.md（独立于 runsDir）
+  for (const src of [libSrc, runSrc]) {
+    const p = promptBody(src, 'finalReport')
+    assert.match(p, /\.workflow\/blocked\.md/, 'finalReport prompt 须写 .workflow/blocked.md（§8.2，非 runs/blocked.md）')
+  }
+})
+
+test('S4: commit prompt destructive 检测须用 git diff HEAD（非 git diff --cached）', () => {
+  // S4: commit prompt step 2.6 用 git diff --cached --numstat，但文件未 git add → 永远为空
+  //   → destructive review 永不触发。修：改用 git diff HEAD（无需暂存即可对比工作树与 HEAD）
+  for (const src of [libSrc, runSrc]) {
+    const p = promptBody(src, 'commit')
+    // 不得用 git diff --cached（文件未 git add 时永远为空）
+    assert.doesNotMatch(p, /git diff --cached --numstat/, 'commit prompt 不得用 git diff --cached（文件未 git add → 永远为空，S4）')
+    // 须用 git diff HEAD（对比工作树与 HEAD，无需暂存）
+    assert.match(p, /git diff HEAD --numstat/, 'commit prompt 须用 git diff HEAD --numstat（对比工作树与 HEAD，S4）')
+  }
+})
+
+test('Q1（第 4 轮）: dispatchImpl retry 路径须检查 model_unavailable status', () => {
+  // Q1: retry 返回前只检查 impl != null，未检查 status === 'model_unavailable'
+  //   若 retryModel 也限额耗尽 → 返回 {status:'model_unavailable'} → 调用方访问 impl.evidence crash
+  //   修：retry 路径加 status 检查（与首次调用一致）
+  assert.match(runSrc, /if \(impl\?\.status === 'model_unavailable'\) return \{ halted: true, reason: 'model_unavailable'/, 'dispatchImpl retry 路径须检查 model_unavailable status（Q1）')
+})
+
+test('Q2（第 4 轮）: perTask 须用 plan-scoped key（非 bare task.id）', () => {
+  // Q2: state.perTask[task.id] 用裸 task.id（如 'T1'），跨 plan 同名 task 覆盖
+  //   修：perTask key 改为 plan-scoped（与 state.completed 一致）
+  assert.doesNotMatch(runSrc, /state\.perTask\[task\.id\]/, 'perTask 不得用 bare task.id 作 key（Q2：跨 plan 覆盖）')
+  assert.match(runSrc, /state\.perTask\[taskKey\]/, 'perTask 须用 plan-scoped taskKey（Q2）')
+})
+
+test('Q4（第 4 轮）: halt() 须初始化 perTask 默认字段（防 manifest 字段缺失）', () => {
+  // Q4: halt() 在 tid='unknown' 时 spread 空对象 → perTask 只有 {status, blocked_info}
+  //   修：halt() 开头初始化默认字段（与 runTask 初始化一致）
+  assert.match(runSrc, /function ensurePerTaskDefaults|function initPerTask/, '须有 perTask 默认字段初始化 helper（Q4）')
+})
+
+test('Q5（第 4 轮）: 状态机注释 simplify 路径须含 review_failed_no_findings', () => {
+  // Q5: simplify 路径注释缺 review_failed_no_findings halt reason
+  //   修：注释补充（与主 review 路径一致）
+  //   注释是 run-plans.js 顶部 ASCII 图，检查 simplify 路径行
+  const simpCommentLine = runSrc.match(/└─空响应\/异常──→ halt[^]*?review_empty/)
+  assert.ok(simpCommentLine, '须有 simplify 路径状态机注释')
+  assert.match(simpCommentLine[0], /review_failed_no_findings/, 'simplify 路径注释须含 review_failed_no_findings（Q5）')
+})
+
+test('Q8（第 4 轮）: diff subagent 须校验 files 数组（changed=true 时 files 须为 array）', () => {
+  // Q8: diff subagent 只校验 changed 字段，files=undefined 时静默降级为空数组
+  //   修：changed=true 时 files 须为 array，否则 halt
+  assert.match(runSrc, /diffResult\.changed === true && !Array\.isArray\(diffResult\.files\)/, 'diff subagent 须校验 changed=true 时 files 为 array（Q8）')
+})
+
+test('Q10（第 4 轮）: fix-round implementor done_with_concerns 须更新 concerns', () => {
+  // Q10: fix-round implementor 返回 done_with_concerns 时 concerns 被丢弃，concernsHint 全程不变
+  //   修：加 done_with_concerns 分支，更新 concerns + concernsHint
+  assert.match(runSrc, /if \(impl\.status === 'done_with_concerns'\)[\s\S]*?concerns = impl\.diagnostics/, 'fix-round 须有 done_with_concerns 分支更新 concerns（Q10）')
 })
