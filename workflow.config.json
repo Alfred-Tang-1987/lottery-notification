@@ -15,8 +15,9 @@
     "datetime 时区对齐：SQLite 对 datetime 做字符串比较且存取会剥离 tzinfo。模型里凡与其他 datetime 字段比较/排序的写入值，须与项目主流惯例（created_at = naive UTC）同时区同数值。用 datetime.now(timezone.utc).replace(tzinfo=None)，非 aware CST、非弃用 utcnow()。"
   ],
   "lessons_path": "docs/superpowers/lessons.md",
+  "lessons_auto_distill": true,
   "schema_tool": "alembic",
   "model_paths": ["app/models/"],
   "migration_paths": ["alembic/versions/"],
-  "review_max_rounds": 4
+  "review_max_rounds": 0
 }

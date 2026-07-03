@@ -18,7 +18,7 @@ function promptBody(src, role) {
   return m[1]
 }
 
-const ROLES = ['bootstrap', 'implementor', 'specReview', 'qualityReviewer', 'hunter', 'simplify', 'commit', 'contextFetcher', 'gate', 'finalReport']
+const ROLES = ['bootstrap', 'implementor', 'specReview', 'qualityReviewer', 'hunter', 'simplify', 'commit', 'contextFetcher', 'gate', 'finalReport', 'lessonDistiller']
 
 for (const role of ROLES) {
   test(`PROMPTS.${role} identical between lib.js and run-plans.js`, () => {
@@ -28,7 +28,7 @@ for (const role of ROLES) {
 }
 
 test('run-plans.js inlines the new conditional-render helpers', () => {
-  for (const fn of ['formatReferencePaths', 'formatSilentFailureContext', 'formatFailedApproaches', 'formatLessons', 'formatWriteFilesScope', 'formatSchemaCheck', 'languageChecklist', 'LANGUAGE_CHECKLISTS', 'gateCommands', 'collectReviewFindings', 'formatFindings', 'matchesPlanFilter', 'classifyThrown', 'reviewHaltReason', 'reviewHaltForEmptyFailed', 'haltLikelySource', 'fixModelForRound', 'resolveMaxRounds', 'summarizeReviewRound']) {
+  for (const fn of ['formatReferencePaths', 'formatSilentFailureContext', 'formatFailedApproaches', 'formatLessons', 'formatWriteFilesScope', 'formatSchemaCheck', 'languageChecklist', 'LANGUAGE_CHECKLISTS', 'gateCommands', 'collectReviewFindings', 'formatFindings', 'matchesPlanFilter', 'classifyThrown', 'reviewHaltReason', 'reviewHaltForEmptyFailed', 'haltLikelySource', 'fixModelForRound', 'resolveMaxRounds', 'resolveLessonsAutoDistill', 'distillLessonInput', 'formatLessonsForDistill', 'applyLessonDecisions', 'summarizeReviewRound']) {
     assert.match(runSrc, new RegExp(`function ${fn}|const ${fn}`), `missing helper: ${fn}`)
   }
 })
@@ -151,13 +151,17 @@ test('review_history 存档：每轮 findings 摘要进 manifest（OSCILLATING h
   assert.match(finalP, /review_history/, 'finalReport manifest per_task 须含 review_history 字段')
 })
 
-test('halt 不再自动写 lesson（废条目根因：把 halt reason 当 lesson title）', () => {
+test('halt 自动提炼 lesson 经 distiller agent（非直接 append halt reason）', () => {
   // 旧 finalReport step5：halt 时 append lesson title:<reason> detail:<last_error> status:active
-  // → reason=OSCILLATING 时 title/detail 都是 "OSCILLATING"，无信息量，且混进 active lesson 污染知识库。
-  // 修复：halt 事件由 blocked.md 完整记录；lesson 只由人/复盘提炼。删除自动追加逻辑。
+  // → reason=OSCILLATING 时 title/detail 都是 "OSCILLATING"，无信息量，污染知识库。
+  // 新机制（§5.4）：halt 时调 lessonDistiller agent 提炼可复用根因（过滤瞬态事件），
+  // distiller 返回 decisions → finalReport 调 applyLessonDecisions 更新 lessons.md。
+  // distiller 失败/限额 → best-effort 跳过，不阻塞 manifest 写入。
   for (const [name, src] of [['lib.js', libSrc], ['run-plans.js', runSrc]]) {
     const p = promptBody(src, 'finalReport')
-    assert.doesNotMatch(p, /append a new lesson entry/, `${name} finalReport 不得再 halt 自动写 lesson`)
+    // 不得直接把 halt reason 当 lesson title（旧废条目根因）
     assert.doesNotMatch(p, /title: <reason>/, `${name} finalReport 不得把 halt reason 当 lesson title`)
+    // 新机制：通过 distiller agent 提炼
+    assert.match(p, /lesson-distiller|lessonDistiller/, `${name} finalReport 必须通过 distiller agent 提炼 lesson`)
   }
 })

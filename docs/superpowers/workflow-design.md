@@ -228,7 +228,7 @@ if (state.files_touched_per_round.length >= 2) {
 
 **review_history（可观测性，2026-07-01）**：每轮 review 后 `summarizeReviewRound(round, spec, qual, hunt)` 把三类 reviewer 的 `{status, findings:[{title,severity}]}` 摘要 push 进 `state.perTask[task].review_history`（复用 `findingsOf` 归一化，丢 fix/file/source 控体积），随 manifest 持久化。**动机**：OSCILLATING / 收敛 halt 后需精确定位振荡点（哪个 reviewer 在哪点 flip-flop）；旧 `review_rounds` 只存 int 计数，T3 halt 时无法还原分歧点、需考古推断。摘要只留 title+severity（诊断定位所需），完整 findings（含 fix/file）走 implementor 反馈管道不持久化。`summarizeReviewRound` 是 lib.js 纯函数（`node --test` 单测）+ run-plans.js inline（sync.test 守护）。
 
-**halt 不再自动写 lesson（2026-07-01）**：旧 finalReport step5 在 halt 时自动追加 `lessons_path` 条目（`title=halt reason, detail=last_error, status=active`）——但 halt reason（如 `OSCILLATING`）是事件标识、非可复用知识，自动写入产生废条目（title/detail 均为 `OSCILLATING`）污染知识库、被 bootstrap 匹配注入 implementor 噪音。修复：删除自动追加；halt 事件由 `blocked.md` 完整记录（reason/file/likely_source/working tree/接手指引），`lessons_path` 只承载人工复盘提炼的可复用知识。
+**halt 自动提炼 lesson（2026-07-03，§5.4）**：旧 finalReport step5 在 halt 时自动追加 `lessons_path` 条目（`title=halt reason, detail=last_error, status=active`）——但 halt reason（如 `OSCILLATING`）是事件标识、非可复用知识，自动写入产生废条目（title/detail 均为 `OSCILLATING`）污染知识库、被 bootstrap 匹配注入 implementor 噪音。2026-07-01 修复为"完全不自动写、靠人工复盘"。2026-07-03 再改为"halt 时调 `lessonDistiller` agent 自动提炼可复用根因"：distiller 过滤瞬态事件（review_empty/model_unavailable）+ 语义去重对比现有 lessons → append/update/skip 决策 → finalReport 调 `applyLessonDecisions` 更新 lessons.md。distiller 失败/限额 → best-effort 跳过，不阻塞 manifest 写入。`lessons_auto_distill` config 开关控制（默认 true）。详见 §5.4。
 
 ## 5. Task 执行流程（bounded review rounds，max 可配）
 
@@ -298,6 +298,52 @@ orchestrator 无法 diff，不能信任 simplify 自报"是否改了代码"。si
 **设计理由**：难度递增——round 1 没修好说明问题比预期复杂，最后 1 轮用最强 model 降低 halt 概率（halt 后人工介入成本 >> opus 调用）。无限模式前 3 轮给 sonnet 充分机会，避免过早烧 opus；第 4 轮起问题已证明复杂，持续用 opus 直到振荡 halt。
 
 **无限模式的防线**：maxRounds=0 时永不因轮数 halt，仅靠 `detectOscillation`（§13g，同文件 ≥3 round 或连续两轮完全重叠 ≥2 文件）halt。这是独立于 maxRounds 的防线，保证无限模式不会真的无限循环。
+
+### 5.4 lesson 自动提炼（distiller agent，2026-07-03）
+
+**问题**：旧版"halt 时自动写 lesson"产生废条目（title/detail 均为 halt reason 如 `OSCILLATING`），污染知识库；2026-07-01 改为"完全不自动写、靠人工复盘"，但人工复盘成本高、可复用知识流失。
+
+**新机制**：halt 时调 `lessonDistiller` agent（opus）自动提炼可复用根因，finalReport 据其 decisions 更新 lessons.md。
+
+**配置**：`workflow.config.json` 的 `lessons_auto_distill` 字段，由 `resolveLessonsAutoDistill(config)` 解析：
+
+| 配置值 | 行为 |
+|---|---|
+| 未配 / true / 非布尔 | true（默认启用） |
+| 显式 false | 关闭（旧行为：不自动提炼） |
+
+**distiller agent 设计**：
+- **模型**：opus（提炼需推理，非模式匹配）
+- **触发**：仅 halt 且 `lessons_auto_distill=true` 且 `lessons_path` 非空（done 不触发）
+- **输入**（`distillLessonInput` 构造）：`halt_info` + `review_history` + `failed_approaches` + 现有 lessons（`formatLessonsForDistill` 解析）
+- **任务**：
+  1. 识别可复用根因（silent-failure / dependency / convention / test-strategy / other）
+  2. 过滤瞬态事件（review_empty / model_unavailable / 单次 hiccup → skip）
+  3. 语义去重对比现有 lessons：重叠 → `update`（补证据）；全新 → `append`；无价值 → `skip`
+- **输出**：`decisions: [{action, id, title, detail, source?, category?, update_target_id?}]`
+- **质量门**：RED FLAG 给正反例（❌ "OSCILLATING" 事件标签 / ✅ "DB split-commit 必须单事务" 可复用根因）
+
+**finalReport 应用决策**（`applyLessonDecisions` 纯函数）：
+- `append` → 追加新条目到 lessons.md 末尾
+- `update` → 替换 `update_target_id` 指定的现有条目段落（不存在则回退 append）
+- `skip` → 不修改
+- 空决策数组 → 原文不变；空现有 lessons → append 时创建文件骨架
+
+**lessons.md schema 增强**（向后兼容）：
+```markdown
+## L-<ts>
+title: <可复用知识>
+detail: <根因+场景+修法>
+source: <plan-X/T-Y@<run_ts>>  # 新字段（可选）
+category: <silent-failure|dependency|convention|test-strategy|other>  # 新字段（可选）
+status: active
+```
+- bootstrap 关键词匹配逻辑不变（按 title/detail）
+- `source` / `category` 缺失时 bootstrap 解析兼容
+
+**写盘契约不变**：distiller 只返回决策，finalReport 是唯一写盘 agent（调 `applyLessonDecisions` 更新 lessons.md）。distiller 失败/限额 → best-effort 跳过 lesson 更新，不阻塞 manifest.json 写入。
+
+**纯函数测试**（lib.js，`node --test`）：`distillLessonInput` / `formatLessonsForDistill` / `applyLessonDecisions` 共 13 个测试覆盖全分支；sync.test.js 守护 inline 副本一致性 + finalReport prompt 含 distiller 调用断言。
 
 ## 6. Bootstrap & Resume（崩溃恢复）
 
@@ -419,6 +465,7 @@ runs/<run-id>/
   "reference_paths": ["docs/reference/lottery-rules.md"],
   "silent_failure_context": ["<项目特定静默失败纪律数组>"],
   "lessons_path": "docs/superpowers/lessons.md",
+  "lessons_auto_distill": true,
   "schema_tool": "alembic",
   "model_paths": ["app/models/"],
   "migration_paths": ["alembic/versions/"]
@@ -427,7 +474,7 @@ runs/<run-id>/
 
 启动 config smoke：`test_command --collect-only`（fail loud，2 秒发现 typo 而非 20 分钟）。
 
-> **可选字段**：`extra_lint_commands`（架构纪律 lint，如 domain 层纯度护栏）/ `reference_paths`（spec 外权威文档）/ `silent_failure_context`（项目特定静默失败纪律，hunter 优先核查）/ `lessons_path`（跨任务失败知识库，bootstrap 按 task 关键词匹配注入 implementor，halt 时 finalReport 自动追加新 lesson）/ `schema_tool` + `model_paths` + `migration_paths`（schema 迁移一致性检查三件套，gate 用 `git diff --name-only HEAD~1..HEAD` 查 model 有变更但无迁移文件 → `migration_missing=true` 触发 gate failed）均可选，不配即对应 prompt 段消失（条件渲染）。通用性原则：项目特有内容只走 config，不写进 prompt。
+> **可选字段**：`extra_lint_commands`（架构纪律 lint，如 domain 层纯度护栏）/ `reference_paths`（spec 外权威文档）/ `silent_failure_context`（项目特定静默失败纪律，hunter 优先核查）/ `lessons_path`（跨任务失败知识库，bootstrap 按 task 关键词匹配注入 implementor，halt 时 finalReport 调 lessonDistiller agent 提炼可复用根因 → applyLessonDecisions 更新，§5.4）/ `lessons_auto_distill`（控制 halt 时自动提炼 lesson，默认 true，§5.4）/ `schema_tool` + `model_paths` + `migration_paths`（schema 迁移一致性检查三件套，gate 用 `git diff --name-only HEAD~1..HEAD` 查 model 有变更但无迁移文件 → `migration_missing=true` 触发 gate failed）均可选，不配即对应 prompt 段消失（条件渲染）。通用性原则：项目特有内容只走 config，不写进 prompt。
 
 ### 11.2 plan frontmatter（YAML，writing-plans 产出约定）
 

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, isQuotaError, errStr, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound, resolveMaxRounds, detectOscillation } from '../lib.js'
+import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, isQuotaError, errStr, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound, resolveMaxRounds, detectOscillation, distillLessonInput, applyLessonDecisions, formatLessonsForDistill } from '../lib.js'
 
 const ok = { status: 'ok', diagnostics: { files_touched: ['a.py'] } }
 const ok2 = { status: 'ok', diagnostics: { files_touched: ['b.py'] } }
@@ -285,4 +285,201 @@ test('detectOscillation: length < 3 不振荡（现有行为，无限模式靠�
   assert.equal(detectOscillation([]).oscillating, false)
   assert.equal(detectOscillation([['a']]).oscillating, false)
   assert.equal(detectOscillation([['a'], ['a']]).oscillating, false)
+})
+
+// —— lesson 自动提炼（distiller 输入构造 / 决策应用 / 现有 lessons 解析）——
+
+test('distillLessonInput: halt 模式构造完整输入（haltInfo/reviewHistory/failedApproaches 字段映射）', () => {
+  const haltInfo = { plan: 'plan-06', task: 'T6b', reason: 'OSCILLATING', last_error: 'files touched in 3 rounds' }
+  const reviewHistory = [{ round: 1, spec: { status: 'failed', findings: [{ title: 'qxc 分类错误', severity: 'Important' }] } }]
+  const failedApproaches = [{ task_id: 'T6b', reason: 'OSCILLATING', error: 'same files' }]
+  const out = distillLessonInput('halted', haltInfo, reviewHistory, failedApproaches)
+  assert.equal(out.mode, 'halted')
+  assert.equal(out.halt_info.task, 'T6b')
+  assert.equal(out.halt_info.reason, 'OSCILLATING')
+  assert.deepEqual(out.review_history, reviewHistory)
+  assert.deepEqual(out.failed_approaches, failedApproaches)
+})
+
+test('distillLessonInput: done 模式也接受（distiller 自行决定 skip）', () => {
+  const out = distillLessonInput('done', null, [], [])
+  assert.equal(out.mode, 'done')
+  assert.equal(out.halt_info, null)
+  assert.deepEqual(out.review_history, [])
+  assert.deepEqual(out.failed_approaches, [])
+})
+
+test('distillLessonInput: halt_info 缺失字段容错（不 crash）', () => {
+  const out = distillLessonInput('halted', {}, undefined, undefined)
+  assert.equal(out.mode, 'halted')
+  assert.equal(out.halt_info.task, undefined)
+  assert.deepEqual(out.review_history, [])
+  assert.deepEqual(out.failed_approaches, [])
+})
+
+test('applyLessonDecisions: append 新条目到现有 lessons.md 末尾', () => {
+  const existing = `# Lessons Learned
+
+## L-20260701T103320Z
+title: 旧条目
+detail: 旧内容
+status: active
+`
+  const decisions = [{
+    action: 'append',
+    id: 'L-20260703T150000Z',
+    title: 'DB split-commit 必须单事务',
+    detail: 'DrawResult + outbox 分两次 commit，第二次失败导致 outbox 永不补',
+    source: 'plan-06/T6b@20260702T132012Z',
+    category: 'silent-failure',
+  }]
+  const out = applyLessonDecisions(existing, decisions)
+  assert.match(out, /## L-20260701T103320Z[\s\S]*status: active/)
+  assert.match(out, /## L-20260703T150000Z[\s\S]*title: DB split-commit 必须单事务[\s\S]*category: silent-failure/)
+  // 原有条目仍在
+  assert.match(out, /旧条目/)
+})
+
+test('applyLessonDecisions: update 替换指定 id 段落（保留其他条目）', () => {
+  const existing = `# Lessons Learned
+
+## L-20260701T103320Z
+title: 旧条目
+detail: 旧内容
+status: active
+
+## L-20260702T080000Z
+title: 另一条目
+detail: 另一内容
+status: active
+`
+  const decisions = [{
+    action: 'update',
+    update_target_id: 'L-20260701T103320Z',
+    id: 'L-20260701T103320Z',
+    title: '更新后的标题',
+    detail: '更新后的内容',
+    source: 'plan-06/T6b@20260702T132012Z',
+    category: 'convention',
+  }]
+  const out = applyLessonDecisions(existing, decisions)
+  assert.match(out, /## L-20260701T103320Z[\s\S]*title: 更新后的标题[\s\S]*category: convention/)
+  assert.doesNotMatch(out, /旧条目/)
+  // 其他条目保留
+  assert.match(out, /## L-20260702T080000Z[\s\S]*另一内容/)
+})
+
+test('applyLessonDecisions: skip 不修改任何内容', () => {
+  const existing = `# Lessons Learned
+
+## L-20260701T103320Z
+title: 旧条目
+detail: 旧内容
+status: active
+`
+  const decisions = [{ action: 'skip', id: 'L-x', title: '应被忽略', detail: '应被忽略' }]
+  const out = applyLessonDecisions(existing, decisions)
+  assert.equal(out, existing)
+})
+
+test('applyLessonDecisions: 多决策组合（append + update + skip）按序应用', () => {
+  const existing = `# Lessons Learned
+
+## L-OLD
+title: 旧
+detail: 旧内容
+status: active
+`
+  const decisions = [
+    { action: 'update', update_target_id: 'L-OLD', id: 'L-OLD', title: '更新', detail: '更新内容', category: 'convention' },
+    { action: 'append', id: 'L-NEW', title: '新增', detail: '新内容', category: 'silent-failure' },
+    { action: 'skip', id: 'L-SKIP', title: '忽略', detail: '忽略' },
+  ]
+  const out = applyLessonDecisions(existing, decisions)
+  assert.match(out, /## L-OLD[\s\S]*title: 更新/)
+  assert.match(out, /## L-NEW[\s\S]*title: 新增/)
+  assert.doesNotMatch(out, /旧内容/)
+  assert.doesNotMatch(out, /忽略/)
+})
+
+test('applyLessonDecisions: update_target_id 不存在 → 回退 append（不丢条目）', () => {
+  const existing = `# Lessons Learned
+
+## L-EXISTING
+title: 存在
+detail: 内容
+status: active
+`
+  const decisions = [{
+    action: 'update',
+    update_target_id: 'L-NOT-EXIST',
+    id: 'L-FALLBACK',
+    title: '回退追加',
+    detail: '目标不存在时回退 append',
+    category: 'other',
+  }]
+  const out = applyLessonDecisions(existing, decisions)
+  // 原有条目保留
+  assert.match(out, /## L-EXISTING[\s\S]*存在/)
+  // 新条目以 L-FALLBACK 追加（非 L-NOT-EXIST）
+  assert.match(out, /## L-FALLBACK[\s\S]*title: 回退追加/)
+})
+
+test('applyLessonDecisions: 空决策数组 → 原文不变', () => {
+  const existing = '# Lessons Learned\n'
+  assert.equal(applyLessonDecisions(existing, []), existing)
+})
+
+test('applyLessonDecisions: 空现有 lessons → append 创建文件骨架', () => {
+  const decisions = [{
+    action: 'append',
+    id: 'L-FIRST',
+    title: '首条',
+    detail: '首条内容',
+    source: 'plan-01/T1@20260701T000000Z',
+    category: 'convention',
+  }]
+  const out = applyLessonDecisions('', decisions)
+  assert.match(out, /^# Lessons Learned/)
+  assert.match(out, /## L-FIRST[\s\S]*title: 首条/)
+})
+
+test('formatLessonsForDistill: 解析现有 lessons.md 为结构化数组（含 source/category 新字段）', () => {
+  const md = `# Lessons Learned
+
+## L-20260701T103320Z
+title: DB split-commit 必须单事务
+detail: DrawResult + outbox 分两次 commit，第二次失败导致 outbox 永不补
+source: plan-06/T6b@20260702T132012Z
+category: silent-failure
+status: active
+
+## L-20260702T080000Z
+title: 旧格式条目（无 source/category）
+detail: 旧内容
+status: active
+`
+  const out = formatLessonsForDistill(md)
+  assert.equal(out.length, 2)
+  assert.equal(out[0].id, 'L-20260701T103320Z')
+  assert.equal(out[0].title, 'DB split-commit 必须单事务')
+  assert.equal(out[0].source, 'plan-06/T6b@20260702T132012Z')
+  assert.equal(out[0].category, 'silent-failure')
+  // 旧格式兼容：source/category 缺失 → undefined
+  assert.equal(out[1].id, 'L-20260702T080000Z')
+  assert.equal(out[1].title, '旧格式条目（无 source/category）')
+  assert.equal(out[1].source, undefined)
+  assert.equal(out[1].category, undefined)
+})
+
+test('formatLessonsForDistill: 空字符串 → 空数组', () => {
+  assert.deepEqual(formatLessonsForDistill(''), [])
+  assert.deepEqual(formatLessonsForDistill('# Lessons Learned\n'), [])
+})
+
+test('formatLessonsForDistill: 仅 header 无条目 → 空数组', () => {
+  const md = `# Lessons Learned
+
+（暂无）`
+  assert.deepEqual(formatLessonsForDistill(md), [])
 })

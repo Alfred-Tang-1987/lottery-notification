@@ -33,7 +33,8 @@
   "reference_paths": ["docs/reference/lottery-rules.md"],
   "language": "python",
   "silent_failure_context": ["<项目特定静默失败纪律条目，见下>"],
-  "review_max_rounds": 4
+  "review_max_rounds": 4,
+  "lessons_auto_distill": true
 }
 ```
 
@@ -51,6 +52,7 @@
 | `language` | 否 | `python` / `general`（可扩展 ts/go…）。决定 qualityReviewer 的语言专项清单。未知值 → 通用清单 |
 | `silent_failure_context` | 否 | **项目特定静默失败纪律数组**（hunter 优先核查）。承载本项目反复踩的领域致命点——如 DB split-commit / savepoint 隔离 / 批量循环兜底 / 更正重置终态 / datetime 时区对齐。hunter 先查这些再查通用 `except:pass` 模式。不配即 hunter 退化为通用清单 |
 | `review_max_rounds` | 否 | **review 最大轮数**（默认 4）。正整数 N → N 轮仍有 ❌ 则 halt；`0`/负数 → 无限模式（永不因轮数 halt，仅靠 `detectOscillation` 同文件 ≥3 round halt）。**最后 1 轮 fix 强制 opus**：有限模式 `round===maxRounds-1`、无限模式 `round>=4`。未配/null/非数字 → 默认 4。详见设计文档 §5.3 |
+| `lessons_auto_distill` | 否 | **halt 时自动提炼 lesson**（默认 true）。halt 时调 `lessonDistiller` agent（opus）从 halt 根因中提炼可复用知识，过滤瞬态事件（review_empty/model_unavailable），语义去重对比现有 lessons 后 append/update/skip。distiller 失败/限额 → best-effort 跳过，不阻塞 manifest。显式 `false` 关闭（旧行为）。详见设计文档 §5.4 |
 
 > **通用性原则**：项目特有内容（彩种规则、domain 纯度纪律）只走 config，不写进 prompt。换一个非彩票 Python 项目，改几个路径即可复用；换 TS 项目加 `language: "typescript"` 清单即可。新字段全部可选——旧 config 无它们照跑（条件渲染：orchestrator 传空串，相关 prompt 段消失）。
 

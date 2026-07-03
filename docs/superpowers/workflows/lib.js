@@ -211,6 +211,104 @@ export function resolveMaxRounds(config) {
   return Math.floor(v)
 }
 
+// 从 config 解析 lessons_auto_distill 开关。未配 → true（默认启用自动提炼）。
+// 显式 false → 关闭。非布尔值 → true（容错：宁可多提炼，distiller 自身有 skip 决策兜底）。
+export function resolveLessonsAutoDistill(config) {
+  const v = config?.lessons_auto_distill
+  if (v === false) return false                            // 显式 false → 关闭
+  return true                                              // 未配/true/非布尔 → 启用
+}
+
+// lesson 自动提炼：构造 distiller agent 的输入上下文（§5.4）。
+// halt 模式传 haltInfo + reviewHistory + failedApproaches；done 模式 haltInfo=null。
+// 字段缺失容错（不 crash），distiller 据此决定 append/update/skip。
+export function distillLessonInput(mode, haltInfo, reviewHistory, failedApproaches) {
+  return {
+    mode,
+    halt_info: haltInfo || null,
+    review_history: Array.isArray(reviewHistory) ? reviewHistory : [],
+    failed_approaches: Array.isArray(failedApproaches) ? failedApproaches : [],
+  }
+}
+
+// 把现有 lessons.md 解析为结构化数组（供 distiller 语义对比去重）。
+// 条目格式：## L-<id> 后跟 title/detail/source?/category?/status 字段（每行一个）。
+// 旧格式（无 source/category）兼容：对应字段为 undefined。
+// 无条目 → 空数组。
+export function formatLessonsForDistill(md) {
+  if (!md || typeof md !== 'string') return []
+  const entries = []
+  // 按 ## L- 开头分段
+  const blocks = md.split(/^## (L-[^\n]+)$/m)
+  // split 后：[前置文本, id1, body1, id2, body2, ...]
+  for (let i = 1; i < blocks.length; i += 2) {
+    const id = blocks[i]
+    const body = blocks[i + 1] || ''
+    const fields = {}
+    for (const line of body.split('\n')) {
+      const m = line.match(/^(\w+):\s?(.*)$/)
+      if (m) fields[m[1]] = m[2]
+    }
+    entries.push({
+      id,
+      title: fields.title,
+      detail: fields.detail,
+      source: fields.source,
+      category: fields.category,
+      status: fields.status,
+    })
+  }
+  return entries
+}
+
+// 渲染单个 lesson 条目为 markdown 段落（append/update 共用）。
+function renderLessonEntry(d) {
+  const lines = [`## ${d.id}`, `title: ${d.title}`, `detail: ${d.detail}`]
+  if (d.source) lines.push(`source: ${d.source}`)
+  if (d.category) lines.push(`category: ${d.category}`)
+  lines.push('status: active')
+  return lines.join('\n')
+}
+
+// 应用 distiller 的 decisions 到现有 lessons.md 文本（finalReport 调用，唯一写盘点）。
+// action: append → 追加新条目；update → 替换 update_target_id 段落（不存在则回退 append）；
+// skip → 忽略。空决策数组 → 原文不变。空现有 lessons → append 时创建文件骨架。
+export function applyLessonDecisions(existingMd, decisions) {
+  if (!Array.isArray(decisions) || decisions.length === 0) return existingMd
+  let md = existingMd || ''
+  // 确保有 header
+  if (!md) md = '# Lessons Learned\n'
+  if (!md.startsWith('# Lessons Learned')) md = '# Lessons Learned\n\n' + md
+
+  for (const d of decisions) {
+    if (!d || d.action === 'skip') continue
+
+    if (d.action === 'append') {
+      // 追加到末尾，确保与前一段有空行分隔
+      const sep = md.endsWith('\n\n') ? '' : (md.endsWith('\n') ? '\n' : '\n\n')
+      md += sep + renderLessonEntry(d) + '\n'
+      continue
+    }
+
+    if (d.action === 'update') {
+      const targetId = d.update_target_id || d.id
+      // 定位目标段落：## <targetId> 到下一个 ## L- 或文件末尾。
+      // 不用 multiline $（会匹配每行末尾），用 [\s\S]*? non-greedy + lookahead 下一个 ## L- 或 string end。
+      const escaped = targetId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      const pattern = new RegExp(`## ${escaped}\\n[\\s\\S]*?(?=\\n## L-|$)`, '')
+      if (pattern.test(md)) {
+        md = md.replace(pattern, renderLessonEntry(d))
+      } else {
+        // 目标不存在 → 回退 append（不丢条目）
+        const sep = md.endsWith('\n\n') ? '' : (md.endsWith('\n') ? '\n' : '\n\n')
+        md += sep + renderLessonEntry(d) + '\n'
+      }
+      continue
+    }
+  }
+  return md
+}
+
 // 把 bootstrap 从 git log 解析的 completed id 归一化为 plan-scoped key "plan-{seq}/T-{id}"。
 // 提交约定单一事实源（emission ↔ recognition 对称）。
 // 任何 task 的 git 提交消息必须是 feat(plan-XX/TY): <title>——这是 bootstrap 扫 git log
@@ -402,6 +500,22 @@ export const SCHEMAS = {
         properties: { tests_exit_code: { type: 'integer' }, pytest_summary: { type: 'string' }, lint_results: { type: 'array' }, migration_missing: { type: 'boolean' } } }, summary: { type: 'string' } } },
   finalReport: { type: 'object', required: ['summary'], additionalProperties: true,
     properties: { evidence: { type: 'object', properties: { manifest_path: { type: 'string' } } }, summary: { type: 'string' } } },
+  lessonDistiller: { type: 'object', required: ['decisions'], additionalProperties: true,
+    properties: {
+      decisions: { type: 'array', items: {
+        type: 'object', required: ['action', 'title', 'detail'],
+        properties: {
+          action: { type: 'string', enum: ['append', 'update', 'skip'] },
+          id: { type: 'string' },
+          title: { type: 'string' },
+          detail: { type: 'string' },
+          source: { type: 'string' },
+          category: { type: 'string', enum: ['silent-failure', 'dependency', 'convention', 'test-strategy', 'other'] },
+          update_target_id: { type: 'string' },
+        },
+      } },
+      summary: { type: 'string' },
+    } },
 }
 
 // 注意：'agent_error' 是 orchestrator-internal sentinel，由 safeAgent 的 catch 块构造、
@@ -656,9 +770,46 @@ Steps:
 4. If mode=halted: run "git status --porcelain" and "git diff --stat". BEST-EFFORT — if git fails (not a repo / index corrupt), skip this section (do NOT block manifest.json write).
    If "git status --porcelain" output is non-empty, append a "## Working Tree (dirty)" section to blocked.md with: the porcelain output (file list) + the diff --stat output (change summary) + 接手指引（implementor 改动未提交，留在工作树。选项：git diff <file> 查看 / git checkout -- <file> 丢弃 / 手动修后 git commit -m "feat(plan-X/T-Y): ..." 再全新跑续，见 USAGE.md §7.1）。
    If output is empty, append "## Working Tree (clean)" — no uncommitted changes（likely_source=gate restored 时预期如此）。
-5. Lessons: DO NOT auto-append halt reason as a lesson. halt events are fully recorded in blocked.md (steps 3-4); lessonsPath holds human-distilled reusable knowledge only. halt reasons (e.g. "OSCILLATING") are event labels, not reusable lessons — auto-writing previously produced useless entries (title/detail both "OSCILLATING"). Leave lessonsPath untouched; add lessons by manual retrospective only.
+5. Lessons ({{lessonsAutoDistill}}): If lessonsAutoDistill=true AND mode=halted AND lessonsPath is non-empty: invoke the lesson-distiller agent to extract reusable knowledge from this halt (see lessonDistiller prompt for details). The distiller returns decisions [{action: append|update|skip, ...}]. Apply decisions to lessonsPath: append → add new entry; update → replace existing entry by update_target_id; skip → no change. BEST-EFFORT — if distiller fails/quota-exhausted, skip lesson update (do NOT block manifest.json write). If lessonsAutoDistill=false or mode=done: leave lessonsPath untouched.
+   Legacy note: old behavior was "DO NOT auto-append halt reason as a lesson" because raw halt reasons (e.g. "OSCILLATING") are event labels not reusable knowledge. The new distiller agent filters transient events (review_empty/model_unavailable) and extracts reusable root causes — only those become lessons.
 6. Print a digest summary (counts: done/blocked, total tasks, per-plan gate result).
 
 Return {evidence:{manifest_path}, summary: <digest>}.
 RED FLAG: manifest 必须真实写入磁盘（你 ls 确认）。stateJson 是 orchestrator 传入的完整状态，照实记录。`,
+
+  lessonDistiller: `You are the LESSON-DISTILLER (model opus). Extract REUSABLE knowledge from a halted workflow run. You are invoked by finalReport when mode=halted and lessons_auto_distill=true.
+
+Inputs: distillInput={{distillInput}} existingLessons={{existingLessons}}
+
+## Your task
+1. Read distillInput: halt_info (reason, last_error, blocked task) + review_history (per-round findings) + failed_approaches (cross-run repeated failures).
+2. Read existingLessons: current lessons.md entries (id, title, detail, source?, category?).
+3. Identify REUSABLE knowledge — root causes that, if known beforehand, would have prevented the halt or guided the implementor differently. Categories:
+   - silent-failure: swallowed error / bad fallback / missing transaction (e.g. DB split-commit must be single-transaction)
+   - dependency: task ordering / cross-layer contract (e.g. frontend field name must match backend schema)
+   - convention: commit message / naming / format violations causing bootstrap misrecognition
+   - test-strategy: testing scope / framework / coverage gaps
+   - other: anything reusable that doesn't fit above
+4. FILTER OUT transient events (action=skip): review_empty, model_unavailable, single-occurrence hiccups. These are NOT reusable knowledge — they are瞬态 model/runtime hiccups. ONLY提炼 root causes.
+   Exception: if failed_approaches shows the SAME task halted with the SAME root cause across multiple runs (cross-run repeat),提炼 it even if the reason label looks transient — the repetition signals a systemic trap.
+5. DEDUP against existingLessons: if a new finding semantically overlaps an existing entry → action=update (set update_target_id=existing id, refine title/detail with new evidence); if全新 → action=append; if nothing reusable → action=skip.
+
+## Quality bar (RED FLAG)
+lesson 必须是可复用知识，非事件标签。
+- ❌ title: "OSCILLATING" (event label — not reusable)
+- ❌ title: "review_empty" (transient hiccup — not reusable)
+- ❌ title: "halt" (too vague)
+- ✅ title: "同文件 ≥3 round 振荡时，检查 reviewer 是否对同一 spec 条款反向报" (reusable root cause)
+- ✅ title: "DB 写 split-commit（DrawResult + outbox）必须单事务，二次 commit 失败导致 outbox 永不补" (reusable root cause)
+- ✅ title: "前端字段名必须与后端 pydantic schema 一致（如 dlt_append vs append）" (reusable cross-layer contract)
+
+title 应是可独立理解的结论；detail 含根因+场景+修法；source 是 task@run_ts 便于追溯。
+
+## Schema
+Return {decisions: [{action, id, title, detail, source?, category?, update_target_id?}], summary}.
+- action=append: id 必填（新 L-<ts>），title/detail 必填，source/category 建议填。
+- action=update: update_target_id 必填（existing id），id 可同 update_target_id（原地更新）或新 id（替换）。title/detail 必填。
+- action=skip: 仅 id+title+detail 占位即可（不会被写入）。
+若整个 run 无可复用知识 → decisions: [{action:'skip', id:'none', title:'no reusable knowledge', detail:'transient event only'}].
+若遇到 model 限额耗尽（quota/rate-limit/429 错误），返回 decisions: [{action:'skip', id:'quota', title:'distiller quota exhausted', detail:'skip lesson update'}]（finalReport 会 best-effort 跳过）。`,
 }
