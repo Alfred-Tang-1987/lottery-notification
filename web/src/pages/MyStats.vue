@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { ref, onMounted, nextTick } from 'vue';
+import { ref, onMounted, onUnmounted, nextTick } from 'vue';
 import { apiGet } from '../api/client';
 import { fmtMoney } from '../lib/format';
 import State from '../components/State.vue';
 import * as echarts from 'echarts';
+import { aggregateByTier, aggregateMonthly, type WinRow, type MonthlyRow } from '../lib/stats';
 
 interface Summary {
   total_cost: number;
@@ -16,25 +17,9 @@ interface Summary {
   welfare_contribution: number;
 }
 
-interface WinRecord {
-  id: number;
-  lottery_code: string;
-  lottery_name: string;
-  draw_no: string;
-  prize_tier: number | null;
-  prize_amount: number | null;
-  is_win: boolean;
-}
-
-interface MonthlyPoint {
-  month: string;
-  cost: number;
-  prize: number;
-}
-
 const data = ref<{ summary: Summary } | null>(null);
-const wins = ref<WinRecord[]>([]);
-const monthly = ref<MonthlyPoint[]>([]);
+const wins = ref<WinRow[]>([]);
+const monthly = ref<MonthlyRow[]>([]);
 const loading = ref(false);
 const error = ref('');
 
@@ -42,11 +27,12 @@ const tierPieRef = ref<HTMLDivElement | null>(null);
 const amountPieRef = ref<HTMLDivElement | null>(null);
 const monthlyBarRef = ref<HTMLDivElement | null>(null);
 
-const TIER_NAMES: Record<number, string> = {
-  1: '一等奖', 2: '二等奖', 3: '三等奖',
-  4: '四等奖', 5: '五等奖', 6: '六等奖',
-  7: '七等奖', 8: '八等奖', 9: '九等奖',
-};
+// ECharts instances for cleanup
+let tierPieChart: echarts.ECharts | null = null;
+let amountPieChart: echarts.ECharts | null = null;
+let monthlyBarChart: echarts.ECharts | null = null;
+// Guard against async render after unmount
+let disposed = false;
 
 async function load() {
   loading.value = true;
@@ -54,14 +40,14 @@ async function load() {
   try {
     const [dash, comps, monthData] = await Promise.all([
       apiGet<{ summary: Summary }>('/api/dashboard'),
-      apiGet<WinRecord[]>('/api/comparisons?win_only=true'),
-      apiGet<MonthlyPoint[]>('/api/dashboard/monthly'),
+      apiGet<WinRow[]>('/api/comparisons?win_only=true'),
+      apiGet<MonthlyRow[]>('/api/dashboard/monthly'),
     ]);
     data.value = dash;
     wins.value = comps;
     monthly.value = monthData;
     await nextTick();
-    renderCharts();
+    if (!disposed) renderCharts();
   } catch (err) {
     error.value = err instanceof Error ? err.message : '加载失败';
   } finally {
@@ -70,53 +56,40 @@ async function load() {
 }
 
 function renderCharts() {
-  const tierDistribution = new Map<number, { count: number; amount: number }>();
-  for (const w of wins.value) {
-    const t = w.prize_tier ?? 0;
-    const entry = tierDistribution.get(t) || { count: 0, amount: 0 };
-    entry.count++;
-    entry.amount += (w.prize_amount ?? 0);
-    tierDistribution.set(t, entry);
-  }
+  // Use pure aggregation functions
+  const tierData = aggregateByTier(wins.value);
+  const monthlyData = aggregateMonthly(monthly.value);
 
-  const sortedTiers = Array.from(tierDistribution.entries())
-    .sort(([a], [b]) => a - b);
-
-  const tierLabels = sortedTiers.map(([t]) => (t === 0 ? '未知' : TIER_NAMES[t] || `T${t}`));
-  const tierCounts = sortedTiers.map(([, v]) => v.count);
-  const tierAmounts = sortedTiers.map(([, v]) => v.amount);
-
+  // Tier pie chart (count view)
   if (tierPieRef.value) {
-    const pie1 = echarts.init(tierPieRef.value);
-    pie1.setOption({
+    tierPieChart = echarts.init(tierPieRef.value);
+    tierPieChart.setOption({
       tooltip: { trigger: 'item', formatter: '{b}: {c} 笔 ({d}%)' },
       series: [{
         type: 'pie', radius: ['40%', '70%'],
-        data: tierLabels.map((name, i) => ({ name, value: tierCounts[i] })),
+        data: tierData.labels.map((name, i) => ({ name, value: tierData.counts[i] })),
         label: { formatter: '{b}\n{d}%' },
       }],
     });
   }
 
+  // Amount pie chart (amount view)
   if (amountPieRef.value) {
-    const pie2 = echarts.init(amountPieRef.value);
-    pie2.setOption({
+    amountPieChart = echarts.init(amountPieRef.value);
+    amountPieChart.setOption({
       tooltip: { trigger: 'item', formatter: (p: { name: string; value: number; percent: number }) => `${p.name}: ¥${(p.value / 100).toFixed(2)} (${p.percent}%)` },
       series: [{
         type: 'pie', radius: ['40%', '70%'],
-        data: tierLabels.map((name, i) => ({ name, value: tierAmounts[i] })),
+        data: tierData.labels.map((name, i) => ({ name, value: tierData.amounts[i] })),
         label: { formatter: '{b}\n{d}%' },
       }],
     });
   }
 
+  // Monthly bar chart
   if (monthlyBarRef.value) {
-    const bar = echarts.init(monthlyBarRef.value);
-    const monthLabels = monthly.value.map((p) => p.month);
-    const costValues = monthly.value.map((p) => p.cost / 100);
-    const prizeValues = monthly.value.map((p) => p.prize / 100);
-
-    bar.setOption({
+    monthlyBarChart = echarts.init(monthlyBarRef.value);
+    monthlyBarChart.setOption({
       tooltip: {
         trigger: 'axis',
         formatter: (params: { seriesName: string; value: number }[]) => {
@@ -127,20 +100,20 @@ function renderCharts() {
       },
       legend: { data: ['投入', '中奖'], bottom: 0 },
       grid: { left: '8%', right: '8%', top: '10%', bottom: '14%' },
-      xAxis: { type: 'category', data: monthLabels, axisLabel: { rotate: 45, fontSize: 10 } },
+      xAxis: { type: 'category', data: monthlyData.months, axisLabel: { rotate: 45, fontSize: 10 } },
       yAxis: { type: 'value', axisLabel: { formatter: (v: number) => `¥${v}` } },
       series: [
         {
           name: '投入',
           type: 'bar',
-          data: costValues,
+          data: monthlyData.costs,
           itemStyle: { color: '#94a3b8' },
           label: { show: true, position: 'top', formatter: (p: { value: number }) => (p.value > 0 ? `¥${p.value}` : ''), fontSize: 10 },
         },
         {
           name: '中奖',
           type: 'bar',
-          data: prizeValues,
+          data: monthlyData.prizes,
           itemStyle: { color: '#34d399' },
           label: { show: true, position: 'top', formatter: (p: { value: number }) => (p.value > 0 ? `¥${p.value}` : ''), fontSize: 10 },
         },
@@ -151,6 +124,16 @@ function renderCharts() {
 
 onMounted(() => {
   void load();
+});
+
+onUnmounted(() => {
+  // Dispose ECharts instances to prevent memory leaks
+  tierPieChart?.dispose();
+  amountPieChart?.dispose();
+  monthlyBarChart?.dispose();
+  tierPieChart = null;
+  amountPieChart = null;
+  monthlyBarChart = null;
 });
 </script>
 
