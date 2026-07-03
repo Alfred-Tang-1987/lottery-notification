@@ -25,25 +25,31 @@ def _build_time_filter(period: str, date_from: str | None = None, date_to: str |
 
     Returns a callable that takes a datetime column and returns a filter expression,
     or None for 'all' period.
+
+    IMPORTANT: All datetime comparisons use naive UTC to match the project convention
+    (TimestampMixin.created_at = default_factory=datetime.utcnow = naive UTC).
+    SQLite stores datetimes as strings without timezone info, so CST and UTC values
+    would compare incorrectly if mixed.
     """
     if period == 'all':
         return None
 
-    cst_now = datetime.now(_CST).replace(tzinfo=None)
+    # Use naive UTC to match created_at column convention (datetime.utcnow)
+    utc_now = datetime.utcnow()
 
     if period == 'month':
         # Current month: from 1st day of current month to end of current month
-        start_of_month = cst_now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        if cst_now.month == 12:
-            end_of_month = cst_now.replace(year=cst_now.year + 1, month=1, day=1)
+        start_of_month = utc_now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        if utc_now.month == 12:
+            end_of_month = utc_now.replace(year=utc_now.year + 1, month=1, day=1)
         else:
-            end_of_month = cst_now.replace(month=cst_now.month + 1, day=1)
+            end_of_month = utc_now.replace(month=utc_now.month + 1, day=1)
         return lambda col: and_(col >= start_of_month, col < end_of_month)
 
     elif period == 'year':
         # Current year: from Jan 1 to Dec 31
-        start_of_year = cst_now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
-        end_of_year = cst_now.replace(year=cst_now.year + 1, month=1, day=1)
+        start_of_year = utc_now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+        end_of_year = utc_now.replace(year=utc_now.year + 1, month=1, day=1)
         return lambda col: and_(col >= start_of_year, col < end_of_year)
 
     elif period == 'custom':
@@ -55,9 +61,9 @@ def _build_time_filter(period: str, date_from: str | None = None, date_to: str |
                 # Make inclusive: end_date should include the whole day
                 end_date = end_date.replace(hour=23, minute=59, second=59)
                 return lambda col: and_(col >= start_date, col <= end_date)
-            except ValueError:
-                # Invalid date format, fall through to default
-                pass
+            except ValueError as e:
+                # Invalid date format, raise error for 422
+                raise ValueError(f'Invalid date format: {e}') from e
 
     # Unknown period defaults to all
     return None
@@ -153,7 +159,7 @@ def _latest_draws(session: Session) -> list[LatestDrawOut]:
     return result
 
 
-def _pending_claims(session: Session, user_id: int, period: str = 'all', lottery_code: str | None = None, date_from: str | None = None, date_to: str | None = None) -> list[PendingClaimOut]:
+def _pending_claims(session: Session, user_id: int, period: str = 'month', lottery_code: str | None = None, date_from: str | None = None, date_to: str | None = None) -> list[PendingClaimOut]:
     """当前用户待兑奖记录，按截止日升序。支持 period 和 lottery_code 过滤。"""
     # Build filter conditions
     conds = [
@@ -199,7 +205,7 @@ def _pending_claims(session: Session, user_id: int, period: str = 'all', lottery
     return result
 
 
-def _summary(session: Session, user_id: int, period: str = 'all', lottery_code: str | None = None, date_from: str | None = None, date_to: str | None = None) -> SummaryOut:
+def _summary(session: Session, user_id: int, period: str = 'month', lottery_code: str | None = None, date_from: str | None = None, date_to: str | None = None) -> SummaryOut:
     """盈亏摘要：投入按 tickets.cost；中奖按 comparisons.prize_amount。
     pending_amount 统计 prize_amount IS NULL 的中奖笔数（浮动奖未回填，无金额可计）。
     win_rate = win_count / ticket_count（ticket_count=0 时返回 0.0）。
@@ -302,7 +308,7 @@ def _summary(session: Session, user_id: int, period: str = 'all', lottery_code: 
 _MAX_RECENT_HITS = 20
 
 
-def _recent_hits(session: Session, user_id: int, period: str = 'all', lottery_code: str | None = None, date_from: str | None = None, date_to: str | None = None) -> list[dict[str, Any]]:
+def _recent_hits(session: Session, user_id: int, period: str = 'month', lottery_code: str | None = None, date_from: str | None = None, date_to: str | None = None) -> list[dict[str, Any]]:
     """最近中奖记录（多彩种混合，按 created_at 倒序）。
     批量查 PrizeClaim（避免 N+1），按 comparison_id → latest_claim 索引。
     支持 period 和 lottery_code 过滤。"""

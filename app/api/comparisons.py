@@ -5,7 +5,7 @@
 
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import desc
 from sqlmodel import Session, select
@@ -37,10 +37,89 @@ class ComparisonOut(BaseModel):
 _MAX_LIMIT = 200
 
 
+def _build_time_filter(period: str, date_from: str | None, date_to: str | None):
+    """Build time filter for comparisons.
+
+    Uses naive UTC datetimes to match the project convention
+    (created_at = default_factory=datetime.utcnow = naive UTC).
+
+    Returns a list of filter expressions for SQLAlchemy .where().
+    Raises HTTPException(422) for invalid date formats or missing parameters.
+    """
+    if period == 'all':
+        return []
+
+    # Use naive UTC to match created_at column convention
+    utc_now = datetime.utcnow()
+
+    if period == 'month':
+        start = utc_now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        return [Comparison.created_at >= start]
+
+    if period == 'year':
+        start = utc_now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+        return [Comparison.created_at >= start]
+
+    if period == 'custom':
+        if not date_from or not date_to:
+            raise HTTPException(422, 'custom period requires both date_from and date_to')
+        try:
+            start = datetime.strptime(date_from, '%Y-%m-%d')
+            end = datetime.strptime(date_to, '%Y-%m-%d').replace(hour=23, minute=59, second=59)
+        except ValueError as e:
+            raise HTTPException(422, f'Invalid date format: {e}') from e
+        return [Comparison.created_at >= start, Comparison.created_at <= end]
+
+    return []
+
+
+def _format_rows(rows) -> list[ComparisonOut]:
+    """Format comparison rows to ComparisonOut list, attaching claim info."""
+    comparison_ids = [cmp.id for cmp, _dr, _lt, _t in rows]
+    claims: dict[int, PrizeClaim] = {}
+    if comparison_ids:
+        claim_rows = list(
+            session_exec(comparison_ids)
+        )
+        claims = {c.comparison_id: c for c in claim_rows}
+
+    result = []
+    for cmp, draw, lottery, ticket in rows:
+        claim = claims.get(cmp.id)
+        result.append(
+            ComparisonOut(
+                id=cmp.id,
+                lottery_code=lottery.code,
+                lottery_name=lottery.name,
+                draw_no=draw.draw_no,
+                draw_date=draw.draw_date,
+                numbers_json=ticket.numbers_json,
+                ticket_label=ticket.label,
+                hits_json=cmp.hits_json,
+                prize_tier=cmp.prize_tier,
+                prize_amount=cmp.prize_amount,
+                is_win=cmp.is_win,
+                created_at=cmp.created_at,
+                claim_status=claim.status if claim else None,
+                claim_id=claim.id if claim else None,
+                deadline=claim.deadline if claim else None,
+            )
+        )
+    return result
+
+
+def session_exec(comparison_ids):
+    """Fetch claims for given comparison IDs. Requires a session context."""
+    return select(PrizeClaim).where(PrizeClaim.comparison_id.in_(comparison_ids))
+
+
 @router.get('', response_model=list[ComparisonOut])
 def list_comparisons(
     win_only: bool = Query(False),
     lottery_code: str | None = Query(None),
+    period: str = Query('month', pattern='^(month|year|all|custom)$'),
+    date_from: str | None = Query(None),
+    date_to: str | None = Query(None),
     limit: int = Query(100, ge=1, le=_MAX_LIMIT),
     user: User = Depends(current_user),
     session: Session = Depends(get_session_dep),
@@ -49,6 +128,7 @@ def list_comparisons(
 
     win_only=true 时仅返回中奖记录，用于「中奖记录」页面。
     lottery_code 可按彩种筛选。
+    period 支持 month/year/all/custom，自定义时段需传 date_from/date_to。
     """
     stmt = select(Comparison, DrawResult, LotteryType, Ticket).where(
         Comparison.user_id == user.id
@@ -66,8 +146,13 @@ def list_comparisons(
     if lottery_code:
         stmt = stmt.where(DrawResult.lottery_code == lottery_code)
 
+    # Apply time period filter (naive UTC to match created_at convention)
+    for filt in _build_time_filter(period, date_from, date_to):
+        stmt = stmt.where(filt)
+
     rows = session.exec(stmt).all()
 
+    # Attach claim info
     comparison_ids = [cmp.id for cmp, _dr, _lt, _t in rows]
     claims: dict[int, PrizeClaim] = {}
     if comparison_ids:

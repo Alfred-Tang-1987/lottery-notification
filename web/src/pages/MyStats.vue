@@ -281,7 +281,7 @@ watch([period, lotteryCode, dateFrom, dateTo], () => {
             </div>
             <div class="stat-card">
               <div class="stat-label">待派奖</div>
-              <div class="stat-value warning">{{ data.summary.pending_amount }} 笔</div>
+              <div class="stat-value warning">{{ data.summary.pending_amount > 0 ? '待官方派奖' : '无' }}</div>
             </div>
             <div class="stat-card">
               <div class="stat-label">净盈亏</div>
