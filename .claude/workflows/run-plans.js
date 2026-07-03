@@ -256,7 +256,10 @@ async function safeAgent(prompt, opts) {
 // implementor/commit/bootstrap/gate 等带 status 的 agent 统一派发：
 // catch quota→halt；agent 自报 model_unavailable→halt；否则返回 impl 供调用方判断 blocked/failed/needs_context。
 // 返回 {halted:true, reason, diag} 或 impl（非 halted）。model 仅用于 halt 诊断。
-async function dispatchImpl(prompt, opts, model) {
+// retryModel：当 agent 返回 null（能力不足 / 模型反复重试同一 tool call 被 runtime 400 中断）时，
+// 用更强模型重试一次。不重试 quota 错误（isQuotaError 在第一层 catch 已 halt）。
+// 典型场景：bootstrap 用 sonnet（qwen3.7-plus）跑复杂任务被 Repetitive tool calls 400 打断 → 升级 opus（qwen3.7-max）重试。
+async function dispatchImpl(prompt, opts, model, retryModel = null) {
   let impl
   try { impl = await agent(prompt, opts) }
   catch (e) {
@@ -264,10 +267,23 @@ async function dispatchImpl(prompt, opts, model) {
     throw e
   }
   if (impl?.status === 'model_unavailable') return { halted: true, reason: 'model_unavailable', diag: impl.diagnostics }
-  // agent() 返回 null：限额耗尽（router 中文错误如"已达到 5 小时的使用上限"常被 runtime
-  // 吞为空响应而非 throw）或 thinking-only 空响应。视作 model_unavailable halt 等 resume，
+  // agent() 返回 null：可能是限额耗尽（router 中文错误如"已达到 5 小时的使用上限"常被 runtime
+  // 吞为空响应），可能是 thinking-only 空响应，也可能是模型能力不足（400 Repetitive tool calls 等
+  // 被 runtime 吞为 null）。如果有 retryModel，用更强模型重试一次；否则 halt 等 resume。
   // 不能放任 null 流到调用方导致 `boot.halted`/`impl.halted` crash（observed wf_a80ebbf1）。
-  if (impl == null) return { halted: true, reason: 'model_unavailable', diag: { model, error: 'agent returned null (quota exhausted or empty/thinking-only response)' } }
+  if (impl == null) {
+    if (retryModel && retryModel !== model) {
+      log(`⚠ ${opts?.label || 'unknown'}: ${model} returned null (capability failure likely), retry with ${retryModel}`)
+      try {
+        impl = await agent(prompt, { ...opts, model: retryModel })
+        if (impl != null) return impl
+      } catch (e) {
+        if (isQuotaError(e)) return { halted: true, reason: 'model_unavailable', diag: { model: retryModel, error: errStr(e) } }
+        throw e
+      }
+    }
+    return { halted: true, reason: 'model_unavailable', diag: { model, error: 'agent returned null (quota exhausted or capability failure — retry with stronger model exhausted)' } }
+  }
   return impl
 }
 
@@ -1009,7 +1025,7 @@ const tsAgent = await agent('Run `date -u +%Y%m%dT%H%M%SZ` and return ONLY the t
 state.runTs = typeof tsAgent === 'string' ? tsAgent.trim() : String(tsAgent)
 let boot
 try {
-  boot = await dispatchImpl(buildPrompt('bootstrap', { configPath: args.configPath, plansDir: args.plansDir, runTs: state.runTs }), { schema: SCHEMAS.bootstrap, label: 'bootstrap' }, 'sonnet')
+  boot = await dispatchImpl(buildPrompt('bootstrap', { configPath: args.configPath, plansDir: args.plansDir, runTs: state.runTs }), { schema: SCHEMAS.bootstrap, label: 'bootstrap' }, 'sonnet', 'opus')
 } catch (e) {
   // dispatchImpl 仅吞 quota 错（→halted）；其余非 quota 错抛出，此处兜底 halt
   await halt(null, null, { reason: 'model_unavailable', diag: { model: 'sonnet', error: errStr(e) } }); return { result: 'halted', reason: 'model_unavailable' }
