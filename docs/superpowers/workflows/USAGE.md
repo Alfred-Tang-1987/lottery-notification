@@ -109,11 +109,12 @@ get-ts（取时间戳）
               → 任一 review failed 但 0 findings（review_failed_no_findings）→ halt
               → 振荡检测（同文件≥3 round）
             commit → git commit feat(plan-X/T-Y)（方案 C：commit 提前到 simplify 前）
-            simplify (max 1) → git diff --stat 独立验证是否动代码（不信任自报）
-              → 有改动 → re-review（spec‖qual‖hunt）
-                → 全绿 → git commit --amend（合并 simplify 改动到 HEAD）
-                → 失败 → git checkout -- .（回退 simplify 改动，HEAD 不变）
+            simplify (max 1) → git status --porcelain subagent 独立验证是否动代码（staged+unstaged，不信任自报）
+              → 有改动 → re-review（spec‖qual‖hunt，runReviewRound helper）
+                → 全绿 → git commit --amend + git rev-parse HEAD（正则校验 40 位 hex）
+                → 失败 → git checkout -- . && git clean -fd（回退 tracked + untracked 改动，HEAD 不变）
               → 无改动 → 跳过 review（省成本）
+              → 三个 subagent（diff/amend/checkout）均 safeAgent 包装 + 返回值验证 + 失败 halt
         plan gate: committed SHA 上依次重跑 test + lint_command + extra_lint_commands（任一非 0 halt）
     → finalize: 写 manifest
 ```

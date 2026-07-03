@@ -122,7 +122,8 @@ function summarizeReviewRound(round, spec, qual, hunt) {
 // 判断错误是否 model 限额耗尽（§2.4 双重检测的捕获路径）—— inline 自 lib.js
 function isQuotaError(e) {
   const s = String(e?.message || e || '').toLowerCase()
-  // 含中文 router 限额错误（本机 router "已达到 5 小时的使用上限" / "额度" / "限额"）。
+  // 含中文 router 限额错误（本机 router 返回 "已达到 5 小时的使用上限" / "额度" / "限额"）。
+  // 不认则 dispatchImpl catch 不归类 model_unavailable → 走 throw → 顶层 uncaught crash。
   return /quota|rate.?limit|429|overloaded|insufficient.*balance|credit|capacity|使用上限|限额|额度|超出.*限制/i.test(s)
 }
 function errStr(e) {
@@ -183,12 +184,12 @@ function resolveMaxRounds(config) {
   return Math.floor(v)
 }
 
-// 从 config 解析 lessons_auto_distill 开关—— inline 自 lib.js
-// 未配 → true（默认启用自动提炼）。显式 false → 关闭。非布尔 → true（容错）。
+// 从 config 解析 lessons_auto_distill 开关。未配 → true（默认启用自动提炼）。
+// 显式 false → 关闭。非布尔值 → true（容错：宁可多提炼，distiller 自身有 skip 决策兜底）。
 function resolveLessonsAutoDistill(config) {
   const v = config?.lessons_auto_distill
-  if (v === false) return false
-  return true
+  if (v === false) return false                            // 显式 false → 关闭
+  return true                                              // 未配/true/非布尔 → 启用
 }
 
 // lesson 自动提炼：构造 distiller agent 输入上下文—— inline 自 lib.js（§5.4）
@@ -241,6 +242,25 @@ async function dispatchImpl(prompt, opts, model, retryModel = null) {
     return { halted: true, reason: 'model_unavailable', diag: { model, error: 'agent returned null (quota exhausted or capability failure — retry with stronger model exhausted)' } }
   }
   return impl
+}
+
+// 跑一轮 spec‖qual‖hunt 并行 review + 双守卫（Q10 抽取，主轮/simplify 轮/destructive 轮共用）。
+// 只抽"并行调用 + reviewHaltReason + reviewHaltForEmptyFailed"——后续逻辑（halt/amend/记录）由调用方决定。
+// concernsHint：主轮传 implementor 疑虑，simplify/destructive 传空串。
+// labelSuffix：区分轮次（`:r${round}` / `:simp` / `:destructive`）。
+// phaseLabel：主轮+destructive 传 `Plan ${plan.id}`（Workflow UI 显示阶段），simplify 传空。
+// 返回 { spec, qual, hunt, haltReason, emptyFailed }。haltReason 非空时 emptyFailed=null（短路）。
+async function runReviewRound(taskId, cfg, plan, fc, concernsHint, labelSuffix, phaseLabel) {
+  const specOpts = { schema: SCHEMAS.specReview, model: 'opus', label: `spec:${taskId}${labelSuffix}` }
+  if (phaseLabel) specOpts.phase = phaseLabel
+  const [spec, qual, hunt] = await parallel([
+    async () => safeAgent(buildPrompt('specReview', { taskId, specPath: cfg.spec_path, planFilePath: plan.file, filesChanged: fc, concernsHint, referencePaths: formatReferencePaths(cfg.reference_paths) }), specOpts),
+    async () => safeAgent(buildPrompt('qualityReviewer', { taskId, filesChanged: fc, languageChecklist: languageChecklist(cfg.language) }), { schema: SCHEMAS.qualityReviewer, model: 'opus', label: `qual:${taskId}${labelSuffix}` }),
+    async () => safeAgent(buildPrompt('hunter', { taskId, filesChanged: fc, silentFailureContext: formatSilentFailureContext(cfg.silent_failure_context) }), { schema: SCHEMAS.hunter, model: 'sonnet', label: `hunt:${taskId}${labelSuffix}` }),
+  ])
+  const haltReason = reviewHaltReason(spec, qual, hunt)
+  const emptyFailed = haltReason ? null : reviewHaltForEmptyFailed(spec, qual, hunt)
+  return { spec, qual, hunt, haltReason, emptyFailed }
 }
 
 // 提交约定单一事实源（emission ↔ recognition 对称）（inline 自 lib.js）。
@@ -679,7 +699,7 @@ Inputs: mode={{mode}} state={{stateJson}} blockedInfo={{blockedInfo}} runsDir={{
 
 Steps:
 1. mkdir -p {{runsDir}}.
-2. Write {{runsDir}}/manifest.json = {run_ts:{{runTs}}, mode:{{mode}}, plans:[...], per_task:{<taskId>:{status,model,review_rounds,files_touched_per_round,review_history,commit_sha,blocked_info}}, result}.
+2. Write {{runsDir}}/manifest.json = {run_ts:{{runTs}}, mode:{{mode}}, plans:[...], per_task:{<taskId>:{status,model,review_rounds,files_touched_per_round,review_history,commit_sha,simplify_reverted,destructive_review_failed,destructive_review_findings,blocked_info}}, result}.
 3. If mode=halted: write {{runsDir}}/blocked.md from {{blockedInfo}} (the blocked task's blocked_info JSON — render EACH field human-readably: plan, task, reason, category, last_error, suggested_fix, quota_exhausted, likely_source, failed_approach). For failed_approach, render as: "Failed Approach: <failed_approach.task_id>: <failed_approach.reason> — <failed_approach.error>". Do NOT hunt for these fields in state — they are provided inline in blockedInfo.
 4. If mode=halted: run "git status --porcelain" and "git diff --stat". BEST-EFFORT — if git fails (not a repo / index corrupt), skip this section (do NOT block manifest.json write).
    If "git status --porcelain" output is non-empty, append a "## Working Tree (dirty)" section to blocked.md with: the porcelain output (file list) + the diff --stat output (change summary) + 接手指引（implementor 改动未提交，留在工作树。选项：git diff <file> 查看 / git checkout -- <file> 丢弃 / 手动修后 git commit -m "feat(plan-X/T-Y): ..." 再全新跑续，见 USAGE.md §7.1）。
@@ -913,17 +933,11 @@ async function runTask(plan, task) {
   for (let round = 1; maxRounds === 0 ? true : round <= maxRounds; round++) {
     state.perTask[task.id].review_rounds = round
     const fc = filesChanged.join(',')
-    const [spec, qual, hunt] = await parallel([
-      async () => safeAgent(buildPrompt('specReview', { taskId: task.id, specPath: cfg.spec_path, planFilePath: plan.file, filesChanged: fc, concernsHint, referencePaths: formatReferencePaths(cfg.reference_paths) }), { schema: SCHEMAS.specReview, model: 'opus', phase: `Plan ${plan.id}`, label: `spec:${task.id}:r${round}` }),
-      async () => safeAgent(buildPrompt('qualityReviewer', { taskId: task.id, filesChanged: fc, languageChecklist: languageChecklist(cfg.language) }), { schema: SCHEMAS.qualityReviewer, model: 'opus', label: `qual:${task.id}:r${round}` }),
-      async () => safeAgent(buildPrompt('hunter', { taskId: task.id, filesChanged: fc, silentFailureContext: formatSilentFailureContext(cfg.silent_failure_context) }), { schema: SCHEMAS.hunter, model: 'sonnet', label: `hunt:${task.id}:r${round}` }),
-    ])
-    const reviewReason = reviewHaltReason(spec, qual, hunt)
+    const { spec, qual, hunt, haltReason: reviewReason, emptyFailed: emptyFailedReason } = await runReviewRound(task.id, cfg, plan, fc, concernsHint, `:r${round}`, `Plan ${plan.id}`)
     if (reviewReason) {
       return { halted: true, reason: reviewReason, diag: { spec: spec?.diagnostics, qual: qual?.diagnostics, hunt: hunt?.diagnostics } }
     }
     // 第二道守卫：failed 但 0 findings（防「合法 failed + 空 diagnostics」跑空修复循环 → max rounds 误 halt）
-    const emptyFailedReason = reviewHaltForEmptyFailed(spec, qual, hunt)
     if (emptyFailedReason) {
       return { halted: true, reason: emptyFailedReason, diag: { spec: spec?.diagnostics, qual: qual?.diagnostics, hunt: hunt?.diagnostics } }
     }
@@ -974,38 +988,54 @@ async function runTask(plan, task) {
   let simp
   simp = await dispatchImpl(buildPrompt('simplify', { taskId: task.id, filesChanged: filesChanged.join(',') }), { schema: SCHEMAS.simplify, label: `simp:${task.id}` }, model)
   if (simp.halted) return simp
-  // commit 后工作树 clean → git diff --stat 非空即 simplify 动了代码（不信任 simp.evidence.changed 自报）。
-  // 用 subagent 跑 git diff（runtime 禁止 orchestrator 直接调 shell）。
-  const diffResult = await agent('Run `git diff --stat` and `git diff --name-only` in the current working directory. Return JSON {"changed": true/false, "files": [...]}. If working tree clean (no changes), return {"changed": false, "files": []}.', { schema: { type: 'object', required: ['changed', 'files'], properties: { changed: { type: 'boolean' }, files: { type: 'array', items: { type: 'string' } } } }, label: `diff:${task.id}` })
-  const simpChanged = diffResult?.changed === true
-  const simpFiles = Array.isArray(diffResult?.files) ? diffResult.files : []
+  // commit 后工作树 clean → git status --porcelain 非空即 simplify 动了代码（不信任 simp.evidence.changed 自报）。
+  // Q5: 用 git status --porcelain 替代 git diff --stat——同时检测 staged + unstaged，
+  //   防 simplify 误 `git add` 后 staged 改动被 git diff --stat 漏检。
+  // Q6: 三个 subagent（diff/amend/checkout）均用 safeAgent 包装，异常归类为 sentinel 而非裸冒泡。
+  // Q4: diff 返回 null/异常 → halt（不静默跳过让 simplify 改动留工作树未 review 未回退）。
+  const diffSchema = { type: 'object', required: ['changed', 'files'], properties: { changed: { type: 'boolean' }, files: { type: 'array', items: { type: 'string' } } } }
+  const diffResult = await safeAgent('Run `git status --porcelain` in the current working directory. If output is empty, return {"changed": false, "files": []}. Otherwise return {"changed": true, "files": [<list of file paths from porcelain output>]}.', { schema: diffSchema, label: `diff:${task.id}` })
+  if (!diffResult || typeof diffResult !== 'object' || typeof diffResult.changed !== 'boolean') {
+    // Q4: diff subagent 返回 null/异常/格式错 → halt（不静默跳过）
+    return { halted: true, reason: 'simplify diff check failed', diag: { task: task.id, diffResult: diffResult || null } }
+  }
+  const simpChanged = diffResult.changed === true
+  const simpFiles = Array.isArray(diffResult.files) ? diffResult.files : []
   if (simpChanged) {
     const fc = simpFiles.join(',')
-    const [spec2, qual2, hunt2] = await parallel([
-      async () => safeAgent(buildPrompt('specReview', { taskId: task.id, specPath: cfg.spec_path, planFilePath: plan.file, filesChanged: fc, concernsHint: '', referencePaths: formatReferencePaths(cfg.reference_paths) }), { schema: SCHEMAS.specReview, model: 'opus', label: `spec:${task.id}:simp` }),
-      async () => safeAgent(buildPrompt('qualityReviewer', { taskId: task.id, filesChanged: fc, languageChecklist: languageChecklist(cfg.language) }), { schema: SCHEMAS.qualityReviewer, model: 'opus', label: `qual:${task.id}:simp` }),
-      async () => safeAgent(buildPrompt('hunter', { taskId: task.id, filesChanged: fc, silentFailureContext: formatSilentFailureContext(cfg.silent_failure_context) }), { schema: SCHEMAS.hunter, model: 'sonnet', label: `hunt:${task.id}:simp` }),
-    ])
-    const simpReviewReason = reviewHaltReason(spec2, qual2, hunt2)
+    const { spec: spec2, qual: qual2, hunt: hunt2, haltReason: simpReviewReason, emptyFailed: simpEmptyFailed } = await runReviewRound(task.id, cfg, plan, fc, '', ':simp', '')
     if (simpReviewReason) {
       // model_unavailable/agent_error/review_empty：不 amend 也不 checkout，直接 halt。
       // simplify 改动留在工作树，blocked.md 记录脏状态 + likely_source=implementor changes。
       return { halted: true, reason: simpReviewReason, diag: { spec2: spec2?.diagnostics, qual2: qual2?.diagnostics, hunt2: hunt2?.diagnostics } }
     }
     // 第二道守卫（同主 review 轮）：failed 但 0 findings → halt，防空诊断静默回退
-    const simpEmptyFailed = reviewHaltForEmptyFailed(spec2, qual2, hunt2)
     if (simpEmptyFailed) {
       return { halted: true, reason: simpEmptyFailed, diag: { spec2: spec2?.diagnostics, qual2: qual2?.diagnostics, hunt2: hunt2?.diagnostics } }
     }
     if (allGreen(spec2, qual2, hunt2)) {
       // review 全绿 → amend commit（合并 simplify 改动到 HEAD，保持原子性）
-      const amendResult = await agent('Run `git add -A && git commit --amend --no-edit` to merge simplify changes into HEAD. Then run `git rev-parse HEAD` and return ONLY the new commit SHA string.', { label: `amend:${task.id}` })
-      const newSha = String(amendResult || '').trim()
-      if (newSha) state.perTask[task.id].commit_sha = newSha
-      log(`✓ ${task.id} simplify review green — amended commit @ ${newSha || commit.evidence.commit_sha}`)
+      // Q1: amend 后用 git rev-parse HEAD 独立获取 SHA + 正则校验 40 位 hex（不信任 agent 自报字符串）
+      // Q2: amend 失败（pre-commit hook 阻断等）→ staged 区域可能残留 → halt（不静默继续用旧 SHA）
+      const amendSchema = { type: 'object', required: ['ok'], properties: { ok: { type: 'boolean' }, sha: { type: 'string' }, error: { type: 'string' } } }
+      const amendResult = await safeAgent('Run `git add -A && git commit --amend --no-edit`. Then run `git rev-parse HEAD` and return JSON {"ok": true, "sha": "<40-char-hex>"}. If amend failed (e.g. pre-commit hook blocked), return {"ok": false, "sha": "", "error": "<message>"}.', { schema: amendSchema, label: `amend:${task.id}` })
+      const newSha = String(amendResult?.sha || '').trim()
+      if (!amendResult?.ok || !/^[0-9a-f]{40}$/.test(newSha)) {
+        // Q1/Q2: amend 失败或 SHA 格式错 → halt（防 gate 在旧 SHA 跑漏检 simplify 改动）
+        return { halted: true, reason: 'simplify amend failed', diag: { task: task.id, amendError: amendResult?.error || amendResult?.sha || 'invalid sha', commitSha: commit.evidence.commit_sha } }
+      }
+      state.perTask[task.id].commit_sha = newSha
+      log(`✓ ${task.id} simplify review green — amended commit @ ${newSha}`)
     } else {
-      // review 失败 → git checkout -- . 回退 simplify 改动（HEAD 不变，保留原 commit）
-      await agent('Run `git checkout -- .` to discard simplify changes (review failed). Return ONLY "DONE".', { label: `checkout:${task.id}` })
+      // review 失败 → git checkout -- . + git clean -fd 回退 simplify 改动（HEAD 不变，保留原 commit）
+      // Q3: checkout 须同时 git clean -fd（处理 simplify 新建的 untracked 文件）+ 验证返回值
+      // Q3: checkout 失败 → halt（不无条件设 simplify_reverted=true 谎报已回退）
+      const checkoutSchema = { type: 'object', required: ['ok'], properties: { ok: { type: 'boolean' }, error: { type: 'string' } } }
+      const checkoutResult = await safeAgent('Run `git checkout -- . && git clean -fd` to discard simplify changes (both tracked modifications and untracked new files). Return JSON {"ok": true} on success or {"ok": false, "error": "<message>"} on failure.', { schema: checkoutSchema, label: `checkout:${task.id}` })
+      if (!checkoutResult?.ok) {
+        // Q3: checkout 失败 → halt（simplify 改动可能仍残留工作树，不谎报 simplify_reverted）
+        return { halted: true, reason: 'simplify checkout failed', diag: { task: task.id, checkoutError: checkoutResult?.error || 'unknown', commitSha: commit.evidence.commit_sha } }
+      }
       log(`⚠ ${task.id} simplify review NOT green — reverted simplify changes (HEAD unchanged @ ${commit.evidence.commit_sha})`)
       state.perTask[task.id].simplify_reverted = true
     }
@@ -1019,13 +1049,7 @@ async function runTask(plan, task) {
   if (Array.isArray(destructive) && destructive.length) {
     log(`⚠ ${task.id} destructive_changes detected (${destructive.length}): ${destructive.map(d => `${d.type}:${d.file}`).join(', ')} — 触发额外 review round`)
     const fc = (commit.evidence.committed_files || []).join(',')
-    const [dSpec, dQual, dHunt] = await parallel([
-      async () => safeAgent(buildPrompt('specReview', { taskId: task.id, specPath: cfg.spec_path, planFilePath: plan.file, filesChanged: fc, concernsHint: '', referencePaths: formatReferencePaths(cfg.reference_paths) }), { schema: SCHEMAS.specReview, model: 'opus', phase: `Plan ${plan.id}`, label: `spec:${task.id}:destructive` }),
-      async () => safeAgent(buildPrompt('qualityReviewer', { taskId: task.id, filesChanged: fc, languageChecklist: languageChecklist(cfg.language) }), { schema: SCHEMAS.qualityReviewer, model: 'opus', label: `qual:${task.id}:destructive` }),
-      async () => safeAgent(buildPrompt('hunter', { taskId: task.id, filesChanged: fc, silentFailureContext: formatSilentFailureContext(cfg.silent_failure_context) }), { schema: SCHEMAS.hunter, model: 'sonnet', label: `hunt:${task.id}:destructive` }),
-    ])
-    const dReason = reviewHaltReason(dSpec, dQual, dHunt)
-    const dEmptyFailed = reviewHaltForEmptyFailed(dSpec, dQual, dHunt)
+    const { spec: dSpec, qual: dQual, hunt: dHunt, haltReason: dReason, emptyFailed: dEmptyFailed } = await runReviewRound(task.id, cfg, plan, fc, '', ':destructive', `Plan ${plan.id}`)
     if (dReason || dEmptyFailed) {
       // model 不可用/空响应：不 halt，记录失败继续（destructive review 是增强保护，非阻断）
       state.perTask[task.id].destructive_review_failed = true

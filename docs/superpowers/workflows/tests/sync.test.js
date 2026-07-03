@@ -50,7 +50,16 @@ function extractFunctionBody(src, fnName) {
 }
 
 test('QC-4: 关键 helper 函数体 lib.js ↔ run-plans.js 字节一致', () => {
-  for (const fn of ['fixModelForRound', 'resolveMaxRounds', 'haltLikelySource', 'reviewHaltReason', 'reviewHaltForEmptyFailed', 'detectOscillation', 'classifyThrown']) {
+  // Q7/S5: 扩展覆盖——影响路由/识别/反馈的关键决策函数须字节比较，不仅存在性正则
+  const fns = [
+    'fixModelForRound', 'resolveMaxRounds', 'haltLikelySource', 'reviewHaltReason',
+    'reviewHaltForEmptyFailed', 'detectOscillation', 'classifyThrown',
+    // Q7 新增：影响 halt 路由 / commit 识别 / plan 过滤 / 反馈聚合 / distiller 输入
+    'isQuotaError', 'commitSubject', 'normalizeCompleted', 'matchesPlanFilter',
+    'collectReviewFindings', 'summarizeReviewRound', 'formatFindings',
+    'resolveLessonsAutoDistill', 'distillLessonInput',
+  ]
+  for (const fn of fns) {
     const libBody = extractFunctionBody(libSrc, fn)
     const runBody = extractFunctionBody(runSrc, fn)
     assert.ok(libBody, `lib.js 中找不到函数 ${fn}`)
@@ -73,8 +82,10 @@ test('run-plans.js inlines review_empty 空响应守卫 + review_failed_no_findi
   assert.match(runSrc, /'review_empty'/, "run-plans.js 须 inline review_empty sentinel")
   // 第二道守卫：failed 但 0 findings → review_failed_no_findings（防空修复循环 → max rounds 误 halt）
   assert.match(runSrc, /'review_failed_no_findings'/, 'run-plans.js 须 inline review_failed_no_findings sentinel')
-  assert.match(runSrc, /reviewHaltForEmptyFailed\(spec, qual, hunt\)/, '主 review 轮须接 reviewHaltForEmptyFailed 守卫')
-  assert.match(runSrc, /reviewHaltForEmptyFailed\(spec2, qual2, hunt2\)/, 'simplify review 轮须接 reviewHaltForEmptyFailed 守卫')
+  // Q10: reviewHaltForEmptyFailed 在 runReviewRound helper 内部调用（主轮/simplify 轮/destructive 轮共用）
+  assert.match(runSrc, /function runReviewRound/, '须抽 runReviewRound helper（Q10，三处 review 调用共用）')
+  assert.match(runSrc, /reviewHaltForEmptyFailed\(spec, qual, hunt\)/, 'runReviewRound helper 内部须调 reviewHaltForEmptyFailed 守卫')
+  assert.match(runSrc, /emptyFailed/, '调用方须检查 helper 返回的 emptyFailed 字段')
   // qualityReviewer 拆出独立 schema（issues items 强制 {title,fix}）
   assert.match(runSrc, /function qualityReviewSchema/, 'run-plans.js 须 inline qualityReviewSchema')
   // hunter silent_failures items 约束
@@ -124,15 +135,26 @@ test('run-plans.js orchestrator wires new placeholders + gate lint loop', () => 
   assert.match(runSrc, /migration_missing/, 'SCHEMAS.gate + orchestrator 须含 migration_missing 检查')
 })
 
-// 方案 C（§5.2）：commit 提前到 simplify 前 + git diff 触发 review + amend/checkout 回退
-test('方案 C: simplify 流程重构（commit 提前 + git diff 触发 + amend/checkout）', () => {
-  // git diff subagent 检查 simplify 是否动代码（替代信任自报 changed）
-  assert.match(runSrc, /git diff --stat/, 'simplify 后须用 git diff --stat 检查有无改动')
-  // 有改动 → review 全绿后 amend commit（合并 simplify 改动到 HEAD）
+// 方案 C（§5.2）：commit 提前 + git status 触发 review + amend/checkout 回退（Q1-Q6 健壮化）
+test('方案 C: simplify 流程健壮化（safeAgent + 返回值验证 + git status + halt）', () => {
+  // Q5: diff subagent 用 git status --porcelain（同时检测 staged + unstaged），非 git diff --stat
+  // （finalReport prompt 中保留 git diff --stat 用于 blocked.md 显示 diff 摘要是合理的，此处只管 simplify 检测）
+  assert.match(runSrc, /safeAgent\('Run `git status --porcelain`/, 'diff subagent 须用 git status --porcelain 检测改动（staged + unstaged）')
+  // amend/checkout 仍须存在
   assert.match(runSrc, /git commit --amend/, 'simplify review 全绿后须 amend commit')
-  // review 失败 → git checkout 回退 simplify 改动（HEAD 不变）
   assert.match(runSrc, /git checkout -- \./, 'simplify review 失败须 git checkout -- . 回退')
-  // 不得信任 simplify 自报 changed 字段触发 review（旧 if (simp.evidence.changed) 已删）
+  // Q3: checkout 须同时 git clean -fd（处理 simplify 新建的 untracked 文件）
+  assert.match(runSrc, /git clean -fd/, 'checkout 须同时 git clean -fd 处理 untracked 新文件')
+  // Q1: amend 后须用 git rev-parse HEAD 独立获取 SHA + 正则校验 40 位 hex
+  assert.match(runSrc, /git rev-parse HEAD/, 'amend 后须用 git rev-parse HEAD 独立获取新 SHA')
+  assert.match(runSrc, /\[0-9a-f\]\{40\}/, 'amend SHA 须正则校验 40 位 hex（防 agent 返回错误消息被当 SHA）')
+  // Q4: diff subagent 返回 null/异常时须 halt（不静默跳过让 simplify 改动留工作树）
+  assert.match(runSrc, /simplify diff check failed/, 'diff subagent 失败时须 halt（不静默跳过）')
+  // Q1/Q2: amend 失败时须 halt（不静默继续用旧 SHA → gate 在旧 SHA 跑漏检 simplify 改动）
+  assert.match(runSrc, /simplify amend failed/, 'amend 失败时须 halt（不静默继续）')
+  // Q3: checkout 失败时须 halt（不无条件设 simplify_reverted=true 谎报已回退）
+  assert.match(runSrc, /simplify checkout failed/, 'checkout 失败时须 halt（不谎报 simplify_reverted）')
+  // 不得信任 simplify 自报 changed
   assert.doesNotMatch(runSrc, /if \(simp\.evidence\.changed\)/, '不得信任 simplify 自报 changed 触发 review')
 })
 
@@ -143,6 +165,17 @@ test('finalReport prompt 探查工作树脏状态（halt 时记录，防回归�
     assert.match(p, /git status --porcelain/, 'finalReport 须探查工作树脏状态')
     assert.match(p, /likely_source/, 'finalReport blocked.md 须含 likely_source 语义提示')
     assert.match(p, /blockedInfo=/, 'finalReport 须接收 blockedInfo 独立占位符')
+  }
+})
+
+test('Q9: finalReport prompt per_task 结构含 simplify_reverted / destructive_review 字段', () => {
+  // Q9: simplify_reverted / destructive_review_failed / destructive_review_findings 须在
+  // finalReport prompt 的 per_task 结构中列出，否则 agent 可能丢弃这些字段（manifest 丢失记录）
+  for (const src of [libSrc, runSrc]) {
+    const p = promptBody(src, 'finalReport')
+    assert.match(p, /simplify_reverted/, 'finalReport per_task 须含 simplify_reverted 字段')
+    assert.match(p, /destructive_review_failed/, 'finalReport per_task 须含 destructive_review_failed 字段')
+    assert.match(p, /destructive_review_findings/, 'finalReport per_task 须含 destructive_review_findings 字段')
   }
 })
 
