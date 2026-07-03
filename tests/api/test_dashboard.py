@@ -304,8 +304,14 @@ def test_dashboard_summary_filters_by_time_period(db_engine):
 
     client = _auth_client(db_engine, uid)
 
-    # No filter: should include all tickets
+    # Default (no period param) should be 'month' per spec §12.2 row 6
     r = client.get('/api/dashboard')
+    assert r.status_code == 200
+    summary_default = r.json()['summary']
+    assert summary_default['total_cost'] == 200  # Default is 'month', only current month ticket
+
+    # Explicit period=all: should include all tickets
+    r = client.get('/api/dashboard?period=all')
     assert r.status_code == 200
     summary_all = r.json()['summary']
     assert summary_all['total_cost'] == 500  # 200 + 300
@@ -315,6 +321,40 @@ def test_dashboard_summary_filters_by_time_period(db_engine):
     assert r.status_code == 200
     summary_month = r.json()['summary']
     assert summary_month['total_cost'] == 200, f"Expected 200 (current month only), got {summary_month['total_cost']}"
+
+
+def test_dashboard_custom_period_with_date_range(db_engine):
+    """Spec §12.2 row 6: 自定义 — backend accepts period=custom + date_from/date_to filters."""
+    _seed_lottery(db_engine)
+    uid = _make_user(db_engine, 'custom_period_user')
+
+    cst_now = datetime.now(_CST).replace(tzinfo=None)
+
+    with Session(db_engine) as s:
+        # Ticket from 2026-06-15
+        t1 = Ticket(
+            user_id=uid, lottery_code='ssq', play_type='single',
+            numbers_json='{}', cost=200,
+        )
+        t1.created_at = datetime(2026, 6, 15, 10, 0, 0)  # naive CST
+        s.add(t1)
+
+        # Ticket from 2026-07-02
+        t2 = Ticket(
+            user_id=uid, lottery_code='ssq', play_type='single',
+            numbers_json='{}', cost=300,
+        )
+        t2.created_at = datetime(2026, 7, 2, 10, 0, 0)
+        s.add(t2)
+        s.commit()
+
+    client = _auth_client(db_engine, uid)
+
+    # Custom range: 2026-07-01 to 2026-07-03 → only t2 matches
+    r = client.get('/api/dashboard?period=custom&date_from=2026-07-01&date_to=2026-07-03')
+    assert r.status_code == 200
+    summary = r.json()['summary']
+    assert summary['total_cost'] == 300
 
 
 def test_dashboard_summary_filters_by_lottery_code(db_engine):
@@ -429,6 +469,152 @@ def test_comparisons_filters_by_time_and_lottery(db_engine):
     comps_dlt = r.json()
     assert len(comps_dlt) == 1
     assert comps_dlt[0]['lottery_code'] == 'dlt'
+
+
+def test_dashboard_default_period_is_month(db_engine):
+    """Spec §12.2 row 6: 默认本月 — backend API must default period to 'month', not 'all'."""
+    _seed_lottery(db_engine)
+    uid = _make_user(db_engine, 'default_period_user')
+
+    cst_now = datetime.now(_CST).replace(tzinfo=None)
+
+    with Session(db_engine) as s:
+        # Ticket from current month
+        t_current = Ticket(
+            user_id=uid, lottery_code='ssq', play_type='single',
+            numbers_json='{}', cost=200,
+        )
+        s.add(t_current)
+        s.flush()
+
+        # Ticket from 2 months ago
+        t_old = Ticket(
+            user_id=uid, lottery_code='ssq', play_type='single',
+            numbers_json='{}', cost=300,
+        )
+        t_old.created_at = cst_now - timedelta(days=60)
+        s.add(t_old)
+        s.commit()
+
+    client = _auth_client(db_engine, uid)
+
+    # No period param: should default to 'month' (current month only)
+    r = client.get('/api/dashboard')
+    assert r.status_code == 200
+    summary = r.json()['summary']
+    # Default should be 'month', so only current month ticket (200) included
+    assert summary['total_cost'] == 200, f"Expected 200 (default=month), got {summary['total_cost']}"
+
+
+def test_dashboard_custom_period_with_date_range(db_engine):
+    """Spec §12.2 row 6: 自定义 — period=custom with date_from/date_to filters by custom range."""
+    _seed_lottery(db_engine)
+    uid = _make_user(db_engine, 'custom_period_user')
+
+    cst_now = datetime.now(_CST).replace(tzinfo=None)
+
+    with Session(db_engine) as s:
+        # Ticket from 10 days ago
+        t_recent = Ticket(
+            user_id=uid, lottery_code='ssq', play_type='single',
+            numbers_json='{}', cost=200,
+        )
+        t_recent.created_at = cst_now - timedelta(days=10)
+        s.add(t_recent)
+        s.flush()
+
+        # Ticket from 40 days ago
+        t_old = Ticket(
+            user_id=uid, lottery_code='ssq', play_type='single',
+            numbers_json='{}', cost=300,
+        )
+        t_old.created_at = cst_now - timedelta(days=40)
+        s.add(t_old)
+        s.commit()
+
+    client = _auth_client(db_engine, uid)
+
+    # Custom range: last 30 days only
+    date_from = (cst_now - timedelta(days=30)).strftime('%Y-%m-%d')
+    date_to = cst_now.strftime('%Y-%m-%d')
+    r = client.get(f'/api/dashboard?period=custom&date_from={date_from}&date_to={date_to}')
+    assert r.status_code == 200
+    summary = r.json()['summary']
+    # Only recent ticket (200) should be included
+    assert summary['total_cost'] == 200, f"Expected 200 (custom range), got {summary['total_cost']}"
+
+
+def test_dashboard_default_period_is_month(db_engine):
+    """Spec §12.2 row 6: 默认本月 — backend API must default period to 'month', not 'all'."""
+    _seed_lottery(db_engine)
+    uid = _make_user(db_engine, 'default_period_user')
+
+    cst_now = datetime.now(_CST).replace(tzinfo=None)
+
+    with Session(db_engine) as s:
+        # Ticket from current month
+        t_current = Ticket(
+            user_id=uid, lottery_code='ssq', play_type='single',
+            numbers_json='{}', cost=200,
+        )
+        s.add(t_current)
+        s.flush()
+
+        # Ticket from 2 months ago
+        t_old = Ticket(
+            user_id=uid, lottery_code='ssq', play_type='single',
+            numbers_json='{}', cost=300,
+        )
+        t_old.created_at = cst_now - timedelta(days=60)
+        s.add(t_old)
+        s.commit()
+
+    client = _auth_client(db_engine, uid)
+
+    # No period param: should default to 'month' (current month only)
+    r = client.get('/api/dashboard')
+    assert r.status_code == 200
+    summary = r.json()['summary']
+    # Default should be 'month', so only current month ticket (200) included
+    assert summary['total_cost'] == 200, f"Expected 200 (default=month), got {summary['total_cost']}"
+
+
+def test_dashboard_custom_period_with_date_range(db_engine):
+    """Spec §12.2 row 6: 自定义 — period=custom with date_from/date_to filters by custom range."""
+    _seed_lottery(db_engine)
+    uid = _make_user(db_engine, 'custom_period_user')
+
+    cst_now = datetime.now(_CST).replace(tzinfo=None)
+
+    with Session(db_engine) as s:
+        # Ticket from 10 days ago
+        t_recent = Ticket(
+            user_id=uid, lottery_code='ssq', play_type='single',
+            numbers_json='{}', cost=200,
+        )
+        t_recent.created_at = cst_now - timedelta(days=10)
+        s.add(t_recent)
+        s.flush()
+
+        # Ticket from 40 days ago
+        t_old = Ticket(
+            user_id=uid, lottery_code='ssq', play_type='single',
+            numbers_json='{}', cost=300,
+        )
+        t_old.created_at = cst_now - timedelta(days=40)
+        s.add(t_old)
+        s.commit()
+
+    client = _auth_client(db_engine, uid)
+
+    # Custom range: last 30 days only
+    date_from = (cst_now - timedelta(days=30)).strftime('%Y-%m-%d')
+    date_to = cst_now.strftime('%Y-%m-%d')
+    r = client.get(f'/api/dashboard?period=custom&date_from={date_from}&date_to={date_to}')
+    assert r.status_code == 200
+    summary = r.json()['summary']
+    # Only recent ticket (200) should be included
+    assert summary['total_cost'] == 200, f"Expected 200 (custom range), got {summary['total_cost']}"
 
 
 def test_dashboard_monthly_returns_last_12_months(db_engine):
