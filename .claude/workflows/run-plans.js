@@ -17,13 +17,28 @@ export const meta = {
 // ===== 纯函数（inline 自 lib.js Task 2-4，逐字复制）=====
 function detectOscillation(filesTouchedPerRound) {
   if (filesTouchedPerRound.length < 3) return { oscillating: false }
-  const cnt = {}
-  for (const [i, files] of filesTouchedPerRound.entries()) for (const f of files) (cnt[f] ||= []).push(i)
-  for (const [file, rounds] of Object.entries(cnt)) if (rounds.length >= 3) return { oscillating: true, reason: `${file} touched in ${rounds.length} rounds`, file, rounds }
+
+  // 规则 1：同文件出现在 >=3 个 round → 振荡
+  const fileRoundCount = {}
+  for (const [i, files] of filesTouchedPerRound.entries()) {
+    for (const f of files) {
+      (fileRoundCount[f] ||= []).push(i)
+    }
+  }
+  for (const [file, rounds] of Object.entries(fileRoundCount)) {
+    if (rounds.length >= 3) {
+      return { oscillating: true, reason: `${file} touched in ${rounds.length} rounds`, file, rounds }
+    }
+  }
+
+  // 规则 2：连续 2 round 的 files 高度重叠（>=2 且完全重叠）→ 振荡
   for (let i = 1; i < filesTouchedPerRound.length; i++) {
-    const prev = new Set(filesTouchedPerRound[i - 1]); const curr = filesTouchedPerRound[i]
+    const prev = new Set(filesTouchedPerRound[i - 1])
+    const curr = filesTouchedPerRound[i]
     const overlap = curr.filter(f => prev.has(f))
-    if (overlap.length >= 2 && overlap.length === curr.length) return { oscillating: true, reason: `consecutive rounds fix same files: ${overlap.join(',')}`, files: overlap }
+    if (overlap.length >= 2 && overlap.length === curr.length) {
+      return { oscillating: true, reason: `consecutive rounds fix same files: ${overlap.join(',')}`, files: overlap }
+    }
   }
   return { oscillating: false }
 }
@@ -35,11 +50,6 @@ function allGreen(...reviews) { return reviews.every(r => r && r.status === 'ok'
 function unionFiles(...reviews) {
   const set = new Set(); for (const r of reviews) for (const f of (r?.diagnostics?.files_touched || [])) set.add(f); return [...set]
 }
-// 已被 collectReviewFindings 取代（orchestrator fix-round 用）；保留为通用工具 + 向后兼容。
-function issuesFromReviews(...reviews) {
-  const out = []; for (const r of reviews) if (r && r.status === 'failed') out.push(...(r.diagnostics?.issues || [])); return out
-}
-
 // 收集单个 failed review 的 findings（内部 helper，collectReviewFindings 与
 // reviewHaltForEmptyFailed 共用，避免两处重复 push 逻辑漂移）—— inline 自 lib.js
 // 非 failed 或无 diagnostics → 返回 []。items 归一化同 collectReviewFindings。
@@ -55,7 +65,7 @@ function findingsOf(r, source, key) {
 
 // 收集三类 review 的发现并归一化为结构化数组（orchestrator fix-round 反馈管道）—— inline 自 lib.js
 // spec/quality 存 diagnostics.issues；hunter 存 diagnostics.silent_failures（不同 key！
-// 旧 issuesFromReviews 只读 issues → hunter 发现被完全丢弃，Bug 2）。
+// 旧实现只读 issues → hunter 发现被完全丢弃，Bug 2）。
 // items 可能是 string 或 object → 统一归一化为 {source, severity?, title, file?, fix?}。
 function collectReviewFindings(spec, qual, hunt) {
   return [...findingsOf(spec, 'spec', 'issues'), ...findingsOf(qual, 'quality', 'issues'), ...findingsOf(hunt, 'hunter', 'silent_failures')]
@@ -145,8 +155,8 @@ function reviewHaltReason(s, q, h) {
 // 与 finalReport 的 git status ground truth 并存：halt() 填 blocked_info.likely_source。
 function haltLikelySource(reason) {
   const r = String(reason || '')
-  if (r === 'plan gate failed' || /gate/.test(r)) return 'gate restored'
-  if (/^bootstrap /.test(r)) return 'bootstrap frontmatter'
+  if (r === 'plan gate failed' || /gate/.test(r)) return 'gate restored'        // gate 已 checkout 回原 HEAD
+  if (/^bootstrap /.test(r)) return 'bootstrap frontmatter'                      // bootstrap 可能写了 plan frontmatter
   if (/max rounds|OSCILLATING|fix-round|commit failed|simplify reported|BLOCKED|after (context-fetch|retry)|agent_error|model_unavailable|review_empty|review_failed_no_findings/.test(r)) return 'implementor changes'
   return 'unknown'
 }
@@ -167,9 +177,9 @@ function fixModelForRound(round, baseModel, maxRounds) {
 // 无限模式靠 detectOscillation（同文件 ≥3 round）独立防线 halt，防无限循环。
 function resolveMaxRounds(config) {
   const v = config?.review_max_rounds
-  if (v === undefined || v === null) return 4
-  if (typeof v !== 'number' || !Number.isFinite(v)) return 4
-  if (v <= 0) return 0
+  if (v === undefined || v === null) return 4              // 未配 → 默认 4
+  if (typeof v !== 'number' || !Number.isFinite(v)) return 4  // 非数字 → 默认 4（容错）
+  if (v <= 0) return 0                                      // 0/负数 → 无限
   return Math.floor(v)
 }
 
@@ -189,62 +199,6 @@ function distillLessonInput(mode, haltInfo, reviewHistory, failedApproaches) {
     review_history: Array.isArray(reviewHistory) ? reviewHistory : [],
     failed_approaches: Array.isArray(failedApproaches) ? failedApproaches : [],
   }
-}
-
-// 把现有 lessons.md 解析为结构化数组（供 distiller 语义对比去重）—— inline 自 lib.js
-function formatLessonsForDistill(md) {
-  if (!md || typeof md !== 'string') return []
-  const entries = []
-  const blocks = md.split(/^## (L-[^\n]+)$/m)
-  for (let i = 1; i < blocks.length; i += 2) {
-    const id = blocks[i]
-    const body = blocks[i + 1] || ''
-    const fields = {}
-    for (const line of body.split('\n')) {
-      const m = line.match(/^(\w+):\s?(.*)$/)
-      if (m) fields[m[1]] = m[2]
-    }
-    entries.push({ id, title: fields.title, detail: fields.detail, source: fields.source, category: fields.category, status: fields.status })
-  }
-  return entries
-}
-
-// 渲染单个 lesson 条目为 markdown 段落—— inline 自 lib.js
-function renderLessonEntry(d) {
-  const lines = [`## ${d.id}`, `title: ${d.title}`, `detail: ${d.detail}`]
-  if (d.source) lines.push(`source: ${d.source}`)
-  if (d.category) lines.push(`category: ${d.category}`)
-  lines.push('status: active')
-  return lines.join('\n')
-}
-
-// 应用 distiller decisions 到现有 lessons.md—— inline 自 lib.js（finalReport 调用，唯一写盘点）
-function applyLessonDecisions(existingMd, decisions) {
-  if (!Array.isArray(decisions) || decisions.length === 0) return existingMd
-  let md = existingMd || ''
-  if (!md) md = '# Lessons Learned\n'
-  if (!md.startsWith('# Lessons Learned')) md = '# Lessons Learned\n\n' + md
-  for (const d of decisions) {
-    if (!d || d.action === 'skip') continue
-    if (d.action === 'append') {
-      const sep = md.endsWith('\n\n') ? '' : (md.endsWith('\n') ? '\n' : '\n\n')
-      md += sep + renderLessonEntry(d) + '\n'
-      continue
-    }
-    if (d.action === 'update') {
-      const targetId = d.update_target_id || d.id
-      const escaped = targetId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-      const pattern = new RegExp(`## ${escaped}\\n[\\s\\S]*?(?=\\n## L-|$)`, '')
-      if (pattern.test(md)) {
-        md = md.replace(pattern, renderLessonEntry(d))
-      } else {
-        const sep = md.endsWith('\n\n') ? '' : (md.endsWith('\n') ? '\n' : '\n\n')
-        md += sep + renderLessonEntry(d) + '\n'
-      }
-      continue
-    }
-  }
-  return md
 }
 
 // ===== runtime helper（调 agent()，故留此文件不进 lib.js；决策逻辑走上面的纯函数）=====
@@ -294,12 +248,6 @@ async function dispatchImpl(prompt, opts, model, retryModel = null) {
 function commitSubject(seq, taskId, title) {
   const planIdShort = `plan-${String(seq).padStart(2, '0')}`
   return `feat(${planIdShort}/${taskId}): ${title}`
-}
-
-// 从 git 提交消息主体反向解出 plan-scoped task key（bootstrap recognition 侧）（inline 自 lib.js）。
-function extractTaskKey(subject) {
-  const m = String(subject).match(/^feat\(plan-(\d+)\/(T[\w-]+)\)\s*:/i)
-  return m ? `plan-${m[1]}/${m[2]}` : null
 }
 
 // 把 completed id 归一化为 plan-scoped key "plan-{seq}/T-{id}"（inline 自 lib.js）。
@@ -644,7 +592,7 @@ RED FLAG: 只报真正的静默失败（会导致 bug 被隐藏），不报刻�
 
   simplify: `You are SIMPLIFY. Reduce code: dedupe, remove dead code, tighten naming, lower complexity. Behavior MUST be preserved (tests still pass). Be honest about whether you changed anything.
 
-Inputs: taskId={{taskId}} filesChanged={{filesChanged}} simplifyFailed={{simplifyFailed}}
+Inputs: taskId={{taskId}} filesChanged={{filesChanged}}
 
 ## Principles
 1. clarity over cleverness
@@ -666,11 +614,11 @@ Inputs: taskId={{taskId}} filesChanged={{filesChanged}} simplifyFailed={{simplif
 4. HONESTLY report changed (bool) + files_changed.
 
 Return {evidence:{changed, files_changed:[...]}, summary}.
-RED FLAG: changed 必须如实。orchestrator 不信任自报，会无条件重跑 review。若 simplifyFailed=true，跳过（orchestrator 已回退你的上一轮）。`,
+RED FLAG: changed 必须如实。orchestrator 用 git diff --stat 独立验证你是否改了代码（不信任自报），有改动则触发 review。`,
 
-  commit: `You are COMMIT. Create one atomic commit for task {{taskId}}. {{simplifyRevertNote}}
+  commit: `You are COMMIT. Create one atomic commit for task {{taskId}}.
 
-Inputs: taskId={{taskId}} planId={{planId}} testCommand={{testCommand}} simplifyFailed={{simplifyFailed}} simplifyFiles={{simplifyFiles}} commitMsg={{commitMsg}} writeFilesScope={{writeFilesScope}}
+Inputs: taskId={{taskId}} planId={{planId}} testCommand={{testCommand}} commitMsg={{commitMsg}} writeFilesScope={{writeFilesScope}}
 
 ## 提交约定（HARD REQUIREMENT — 违反会导致 OSCILLATING halt）
 git 提交消息**必须**严格等于下面这条（orchestrator 已按 feat(plan-XX/TY): title 格式预计算好，原样使用，不要改写 scope、不要自拟标题）：
@@ -679,21 +627,20 @@ git 提交消息**必须**严格等于下面这条（orchestrator 已按 feat(pl
 **严禁照抄 plan 文件里 Step 5/8 的示意提交消息**（如 feat(scheduler): ... / feat(notifications): ... / 无 scope 的 feat: ...）——那些只是写法的示意，不是真实提交命令。本 task 唯一合法的提交消息就是上面的 {{commitMsg}}。
 
 Steps:
-1. If simplifyFailed=true: first git checkout -- each file in simplifyFiles (revert bad simplify), then proceed.
-2. git status --porcelain → see staged/unstaged.
-3. Run {{testCommand}} on current tree; confirm exit 0. If fail → status=failed (do NOT commit).
-3.5. If writeFilesScope is non-empty: run git diff --name-only. Compare with writeFilesScope. If any file is out of scope → status=failed, diagnostics.out_of_scope=[<files>]. Do NOT commit.
-3.6. Destructive Change Detection: run git diff --cached --numstat. For each file:
+1. git status --porcelain → see staged/unstaged.
+2. Run {{testCommand}} on current tree; confirm exit 0. If fail → status=failed (do NOT commit).
+2.5. If writeFilesScope is non-empty: run git diff --name-only. Compare with writeFilesScope. If any file is out of scope → status=failed, diagnostics.out_of_scope=[<files>]. Do NOT commit.
+2.6. Destructive Change Detection: run git diff --cached --numstat. For each file:
   a. If column 2 (deletions) >= 5 AND file is not a test file → record {type:'deleted_code', file, detail:'<N> lines deleted'}
   b. If file is deleted (git diff --cached --name-status shows D) → record {type:'file_deletion', file, detail:'file deleted'}
   c. For exported symbol signature changes: read the diff hunks. If a function/class exported symbol's params or return type changed → record {type:'signature_change', file, detail:'<symbol> signature changed'}
   If any hit → record in diagnostics.destructive_changes: [{type, file, detail}]. Still proceed to commit (status=ok), but orchestrator will trigger an extra review round.
-4. git add -A; git commit -m "{{commitMsg}}"。
-5. **强制校验 + 纠偏**：git log -1 --format=%s 取 HEAD 主体，与 {{commitMsg}} 比对。若不符（任何原因——比如实现 agent 之前已用错误 scope 提交过、或 HEAD 已存在但消息不对）：git commit --amend -m "{{commitMsg}}" 纠正。这是确定性的：无论谁提交、提交了什么，最终 HEAD 消息必为 {{commitMsg}}。
-6. git rev-parse HEAD → commit_sha。
+3. git add -A; git commit -m "{{commitMsg}}"。
+4. **强制校验 + 纠偏**：git log -1 --format=%s 取 HEAD 主体，与 {{commitMsg}} 比对。若不符（任何原因——比如实现 agent 之前已用错误 scope 提交过、或 HEAD 已存在但消息不对）：git commit --amend -m "{{commitMsg}}" 纠正。这是确定性的：无论谁提交、提交了什么，最终 HEAD 消息必为 {{commitMsg}}。
+5. git rev-parse HEAD → commit_sha。
 
 Return {status (ok|failed), evidence:{commit_sha, committed_files:[...], tests_at_commit}, summary}.
-RED FLAG: tests exit != 0 时绝不 commit（status=failed）。commit_sha 必须真实。HEAD 消息必须等于 {{commitMsg}}（步骤 5 校验，不符必 amend）。若遇到 model 限额耗尽（quota/rate-limit/429 错误），返回 status:'model_unavailable'（非 failed），让 orchestrator halt 并保存进度。`,
+RED FLAG: tests exit != 0 时绝不 commit（status=failed）。commit_sha 必须真实。HEAD 消息必须等于 {{commitMsg}}（步骤 4 校验，不符必 amend）。若遇到 model 限额耗尽（quota/rate-limit/429 错误），返回 status:'model_unavailable'（非 failed），让 orchestrator halt 并保存进度。`,
 
   contextFetcher: `You are CONTEXT-FETCHER. The implementor requested context (NEEDS_CONTEXT). Find and return it. Read-only.
 
@@ -889,10 +836,12 @@ async function halt(plan, task, r) {
 //                                                       └─failed──→ retry ─→ halt 'implementor X after context-fetch retry'
 //              └─failed──→ retry once ─→ halt 'implementor X after retry'
 //              └─ok/done_with_concerns──→ REVIEW rounds(spec‖qual‖hunt 并行)
-//   REVIEW ──全绿──→ SIMPLIFY ──changed──→ re-review ──失败──→ simplifyFailed(commit 回退)
+//   REVIEW ──全绿──→ COMMIT ──非 ok──→ halt 'commit failed'
 //         └─任一❌──→ IMPL(fix-round, 最后 1 轮强制 opus) ──blocked/failed/needs_context──→ halt 'implementor X in fix-round N'
 //         └─max N 轮（默认 4，可配 0=无限）──→ halt 'review max rounds'；振荡──→ halt 'OSCILLATING'
-//   SIMPLIFY ──→ COMMIT ──非 ok──→ halt 'commit failed'
+//   COMMIT ──→ SIMPLIFY ──git diff 有改动──→ re-review ──全绿──→ git commit --amend
+//                                                  └─失败──→ git checkout -- . 回退
+//                            └─无改动──→ 跳过 review（省成本）
 // 任一 agent 限额/异常──→ halt 'model_unavailable' / 'agent_error'（reviewHaltReason 判定）
 async function runTask(plan, task) {
   state.currentTask = task.id
@@ -1004,13 +953,34 @@ async function runTask(plan, task) {
     filesChanged = impl.evidence.files_changed || filesChanged
   }
 
-  // —— simplify（max 1，§5.2：无条件重跑 review；失败则回退）——
-  let simplifyFailed = false, simplifyFiles = []
+  // —— 方案 C（§5.2）：commit 提前 + git diff 触发 review + amend/checkout 回退 ——
+  // 旧流程：simplify → commit（simplify 失败则委托 commit agent 回退文件）。
+  // 新流程：commit → simplify → git diff --stat 独立验证 → 有改动则 review →
+  //   全绿 git commit --amend（合并 simplify 改动到 HEAD）/ 失败 git checkout -- .（回退 simplify 改动）。
+  // 不信任 simplify 自报 changed（旧 changed 条件分支已删）——commit 后工作树
+  // 本应 clean，simplify 若动代码 → git diff 非空 → 触发 review。省成本：simplify 没动代码则跳过 review。
+
+  // —— commit（提前到 simplify 前；§5 状态原子转换）——
+  let commit
+  commit = await dispatchImpl(buildPrompt('commit', { taskId: task.id, planId: plan.id, planIdShort, commitMsg: commitSubject(plan.seq, task.id, task.title || task.id), testCommand: cfg.test_command, writeFilesScope: formatWriteFilesScope(state.taskWriteFiles?.[task.id] || []) }), { schema: SCHEMAS.commit, label: `commit:${task.id}` }, model)
+  if (commit.halted) return commit
+  if (commit.status === 'failed' && Array.isArray(commit.diagnostics?.out_of_scope) && commit.diagnostics.out_of_scope.length) return { halted: true, reason: 'commit out_of_scope', diag: commit.diagnostics }
+  if (commit.status !== 'ok') return { halted: true, reason: 'commit failed', diag: commit.diagnostics }
+  state.perTask[task.id].status = 'committed'
+  state.perTask[task.id].commit_sha = commit.evidence.commit_sha
+  log(`✓ ${task.id} committed @ ${commit.evidence.commit_sha}`)
+
+  // —— simplify（max 1，§5.2 方案 C：git diff 独立验证是否动代码）——
   let simp
-  simp = await dispatchImpl(buildPrompt('simplify', { taskId: task.id, filesChanged: filesChanged.join(','), simplifyFailed: 'false' }), { schema: SCHEMAS.simplify, label: `simp:${task.id}` }, model)
+  simp = await dispatchImpl(buildPrompt('simplify', { taskId: task.id, filesChanged: filesChanged.join(',') }), { schema: SCHEMAS.simplify, label: `simp:${task.id}` }, model)
   if (simp.halted) return simp
-  if (simp.evidence.changed) {
-    const fc = (simp.evidence.files_changed || []).join(',')
+  // commit 后工作树 clean → git diff --stat 非空即 simplify 动了代码（不信任 simp.evidence.changed 自报）。
+  // 用 subagent 跑 git diff（runtime 禁止 orchestrator 直接调 shell）。
+  const diffResult = await agent('Run `git diff --stat` and `git diff --name-only` in the current working directory. Return JSON {"changed": true/false, "files": [...]}. If working tree clean (no changes), return {"changed": false, "files": []}.', { schema: { type: 'object', required: ['changed', 'files'], properties: { changed: { type: 'boolean' }, files: { type: 'array', items: { type: 'string' } } } }, label: `diff:${task.id}` })
+  const simpChanged = diffResult?.changed === true
+  const simpFiles = Array.isArray(diffResult?.files) ? diffResult.files : []
+  if (simpChanged) {
+    const fc = simpFiles.join(',')
     const [spec2, qual2, hunt2] = await parallel([
       async () => safeAgent(buildPrompt('specReview', { taskId: task.id, specPath: cfg.spec_path, planFilePath: plan.file, filesChanged: fc, concernsHint: '', referencePaths: formatReferencePaths(cfg.reference_paths) }), { schema: SCHEMAS.specReview, model: 'opus', label: `spec:${task.id}:simp` }),
       async () => safeAgent(buildPrompt('qualityReviewer', { taskId: task.id, filesChanged: fc, languageChecklist: languageChecklist(cfg.language) }), { schema: SCHEMAS.qualityReviewer, model: 'opus', label: `qual:${task.id}:simp` }),
@@ -1018,6 +988,8 @@ async function runTask(plan, task) {
     ])
     const simpReviewReason = reviewHaltReason(spec2, qual2, hunt2)
     if (simpReviewReason) {
+      // model_unavailable/agent_error/review_empty：不 amend 也不 checkout，直接 halt。
+      // simplify 改动留在工作树，blocked.md 记录脏状态 + likely_source=implementor changes。
       return { halted: true, reason: simpReviewReason, diag: { spec2: spec2?.diagnostics, qual2: qual2?.diagnostics, hunt2: hunt2?.diagnostics } }
     }
     // 第二道守卫（同主 review 轮）：failed 但 0 findings → halt，防空诊断静默回退
@@ -1025,19 +997,19 @@ async function runTask(plan, task) {
     if (simpEmptyFailed) {
       return { halted: true, reason: simpEmptyFailed, diag: { spec2: spec2?.diagnostics, qual2: qual2?.diagnostics, hunt2: hunt2?.diagnostics } }
     }
-    if (!allGreen(spec2, qual2, hunt2)) { simplifyFailed = true; simplifyFiles = simp.evidence.files_changed || [] }
+    if (allGreen(spec2, qual2, hunt2)) {
+      // review 全绿 → amend commit（合并 simplify 改动到 HEAD，保持原子性）
+      const amendResult = await agent('Run `git add -A && git commit --amend --no-edit` to merge simplify changes into HEAD. Then run `git rev-parse HEAD` and return ONLY the new commit SHA string.', { label: `amend:${task.id}` })
+      const newSha = String(amendResult || '').trim()
+      if (newSha) state.perTask[task.id].commit_sha = newSha
+      log(`✓ ${task.id} simplify review green — amended commit @ ${newSha || commit.evidence.commit_sha}`)
+    } else {
+      // review 失败 → git checkout -- . 回退 simplify 改动（HEAD 不变，保留原 commit）
+      await agent('Run `git checkout -- .` to discard simplify changes (review failed). Return ONLY "DONE".', { label: `checkout:${task.id}` })
+      log(`⚠ ${task.id} simplify review NOT green — reverted simplify changes (HEAD unchanged @ ${commit.evidence.commit_sha})`)
+      state.perTask[task.id].simplify_reverted = true
+    }
   }
-  if (simplifyFailed && simplifyFiles.length === 0) return { halted: true, reason: 'simplify reported changed but no files', diag: simp.evidence }
-
-  // —— commit（§5：状态原子转换；simplify 回退委托此 agent）——
-  let commit
-  commit = await dispatchImpl(buildPrompt('commit', { taskId: task.id, planId: plan.id, planIdShort, commitMsg: commitSubject(plan.seq, task.id, task.title || task.id), testCommand: cfg.test_command, simplifyFailed: String(simplifyFailed), simplifyFiles: simplifyFiles.join(','), simplifyRevertNote: simplifyFailed ? `Simplify 回退：重跑 review 失败，还原 ${simplifyFiles.length} 个文件。` : '', writeFilesScope: formatWriteFilesScope(state.taskWriteFiles?.[task.id] || []) }), { schema: SCHEMAS.commit, label: `commit:${task.id}` }, model)
-  if (commit.halted) return commit
-  if (commit.status === 'failed' && Array.isArray(commit.diagnostics?.out_of_scope) && commit.diagnostics.out_of_scope.length) return { halted: true, reason: 'commit out_of_scope', diag: commit.diagnostics }
-  if (commit.status !== 'ok') return { halted: true, reason: 'commit failed', diag: commit.diagnostics }
-  state.perTask[task.id].status = 'committed'
-  state.perTask[task.id].commit_sha = commit.evidence.commit_sha
-  log(`✓ ${task.id} committed @ ${commit.evidence.commit_sha}`)
 
   // —— Destructive Change Detection 触发额外 review round（T4 sync）——
   // commit agent 在 step 3.6 已把 deleted_code/file_deletion/signature_change 写入

@@ -7,7 +7,7 @@
 
 `run-plans` 是一个**自动执行 implementation plan 的编排器**。给它一份或多份 plan，它会：
 
-- **每 task**：派 implementor subagent（TDD RED→GREEN→REFACTOR）→ review chain 并行（spec 逐行比对 ‖ quality 架构 ‖ silent-failure-hunter）→ 精简 simplify → git commit
+- **每 task**：派 implementor subagent（TDD RED→GREEN→REFACTOR）→ review chain 并行（spec 逐行比对 ‖ quality 架构 ‖ silent-failure-hunter）→ git commit → 精简 simplify（git diff 触发 re-review，全绿 amend / 失败 checkout 回退）
 - **plan 级**：独立 gate（在 committed SHA 上重跑 test + lint_command + extra_lint_commands，任一非 0 halt，不信 implementor 自报）
 - **全流程**：多 plan 串行、振荡检测、BLOCKED 升级链、限额容错（halt，恢复后用全新跑续跑，见 §7.1）
 
@@ -108,8 +108,12 @@ get-ts（取时间戳）
               → 任一 review 空响应/异常（agent_error|model_unavailable|review_empty）→ halt
               → 任一 review failed 但 0 findings（review_failed_no_findings）→ halt
               → 振荡检测（同文件≥3 round）
-            simplify (max 1) → 无条件重跑 review → 失败委托 commit 回退
-            commit → git commit feat(plan-X/T-Y)
+            commit → git commit feat(plan-X/T-Y)（方案 C：commit 提前到 simplify 前）
+            simplify (max 1) → git diff --stat 独立验证是否动代码（不信任自报）
+              → 有改动 → re-review（spec‖qual‖hunt）
+                → 全绿 → git commit --amend（合并 simplify 改动到 HEAD）
+                → 失败 → git checkout -- .（回退 simplify 改动，HEAD 不变）
+              → 无改动 → 跳过 review（省成本）
         plan gate: committed SHA 上依次重跑 test + lint_command + extra_lint_commands（任一非 0 halt）
     → finalize: 写 manifest
 ```

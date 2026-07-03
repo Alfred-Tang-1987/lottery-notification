@@ -259,13 +259,18 @@ if (state.files_touched_per_round.length >= 2) {
 └──────────────────────┬──────────────────────────────────┘
                        ▼
 ┌─────────────────────────────────────────────────────────┐
-│ simplify? (orchestrator 计数, max 1)                      │
-│   → 无条件触发 review round（不信任 simplify 自报是否改） │
+│ commit subagent: git status check → test → commit        │
+│   → 返回 {commit_sha}（review 全绿是必要非充分条件）      │
+│   （§5.2 方案 C：commit 提前到 simplify 前）              │
 └──────────────────────┬──────────────────────────────────┘
                        ▼
 ┌─────────────────────────────────────────────────────────┐
-│ commit subagent: git status check → test → commit        │
-│   → 返回 {commit_sha}（review 全绿是必要非充分条件）      │
+│ simplify? (orchestrator 计数, max 1)                      │
+│   → git diff --stat 独立验证是否动代码（不信任自报）     │
+│     有改动 → 触发 review round（spec‖qual‖hunt 并行）    │
+│       全绿 → git commit --amend（合并 simplify 改动）    │
+│       失败 → git checkout -- .（回退 simplify 改动）     │
+│     无改动 → 跳过 review（省成本）                       │
 └──────────────────────┬──────────────────────────────────┘
                        ▼
               mark task committed → 写 manifest → 下一个 task
@@ -275,9 +280,33 @@ if (state.files_touched_per_round.length >= 2) {
 
 review 不是对静态 artifact 的独立观察，是对**当前 working tree** 的 verdict。若 spec 触发修复，tree 变，并行的 quality/hunter 的 verdict 立刻过时。"每 reviewer 独立循环直到✅"自相矛盾。正确形态：**round 内并行（同 snapshot）、round 间串行（任一 ❌ 触发新 round）、max N（默认 4，可配）**。
 
-### 5.2 为什么 simplify 后无条件重跑 review（Eng M10）
+### 5.2 simplify 流程：方案 C（commit 提前 + git diff 触发 review + amend/checkout 回退，2026-07-03）
 
-orchestrator 无法 diff，不能信任 simplify 自报"是否改了代码"。simplify 后无条件触发 review round（若没改，3 个 review 快速 ✅；若改了，重新验证）。max 1 由 orchestrator JS 计数强制。
+**旧设计（无条件 review）问题**：orchestrator 无法 diff，不能信任 simplify 自报"是否改了代码"，故无条件触发 review round——但 simplify 多数情况只改注释/格式，3 个 review 全绿空跑，成本浪费。
+
+**方案 C 新流程**（commit 提前到 simplify 前，git diff 独立验证触发 review）：
+
+```
+review 全绿 → COMMIT → SIMPLIFY → git diff --stat 检查有无改动
+                                         ├─ 有改动 → re-review (spec‖qual‖hunt)
+                                         │            ├─ 全绿 → git commit --amend（合并 simplify 改动到 HEAD）
+                                         │            └─ 失败 → git checkout -- .（回退 simplify 改动，HEAD 不变）
+                                         └─ 无改动 → 跳过 review（省成本）
+```
+
+**关键设计决策**：
+
+1. **commit 提前**：旧流程 `simplify → commit` 让 commit 兜底 simplify 失败；新流程 `commit → simplify` 让 simplify 改动可被 git diff 精确观测。commit 后工作树本应 clean，simplify 若动代码 → git diff 非空 → 触发 review。
+2. **git diff 独立验证**（不信任 `simp.evidence.changed` 自报）：用 subagent 跑 `git diff --stat` 和 `git diff --name-only`，返回 `{changed, files}`。runtime 禁止 orchestrator 直接调 shell，故走 subagent。
+3. **amend/checkout 回退**：
+   - review 全绿 → `git add -A && git commit --amend --no-edit` 合并 simplify 改动到 HEAD（保持单 commit 原子性，避免 HEAD 多一个 simplify commit 污染 git log）
+   - review 失败 → `git checkout -- .` 丢弃 simplify 改动（HEAD 不变，task 仍 committed 在原 SHA）
+4. **省成本**：simplify 没动代码则跳过 review（旧设计无条件 review 的成本浪费被消除）。
+5. **max 1** 由 orchestrator JS 计数强制（同旧设计）。
+
+**为什么不用 simplify 自报 changed 触发 review**：simplify agent 的 `evidence.changed` 是 LLM 自报，存在误报风险（模型可能说没改但实际改了，或反之）。git diff 是 ground truth，确定性触发。
+
+**状态机守卫不变**：simplify review 轮同样接 `reviewHaltReason` + `reviewHaltForEmptyFailed` 双守卫（同主 review 轮）。
 
 ### 5.3 review max rounds 可配 + 最后 1 轮 fix 强制 opus（2026-07-03）
 
@@ -316,7 +345,7 @@ orchestrator 无法 diff，不能信任 simplify 自报"是否改了代码"。si
 **distiller agent 设计**：
 - **模型**：opus（提炼需推理，非模式匹配）
 - **触发**：仅 halt 且 `lessons_auto_distill=true` 且 `lessons_path` 非空（done 不触发）
-- **输入**（`distillLessonInput` 构造）：`halt_info` + `review_history` + `failed_approaches` + 现有 lessons（`formatLessonsForDistill` 解析）
+- **输入**（`distillLessonInput` 构造）：`halt_info` + `review_history` + `failed_approaches` + 现有 lessons（distiller 自己读 `lessonsPath` 解析）
 - **任务**：
   1. 识别可复用根因（silent-failure / dependency / convention / test-strategy / other）
   2. 过滤瞬态事件（review_empty / model_unavailable / 单次 hiccup → skip）
@@ -324,11 +353,9 @@ orchestrator 无法 diff，不能信任 simplify 自报"是否改了代码"。si
 - **输出**：`decisions: [{action, id, title, detail, source?, category?, update_target_id?}]`
 - **质量门**：RED FLAG 给正反例（❌ "OSCILLATING" 事件标签 / ✅ "DB split-commit 必须单事务" 可复用根因）
 
-**finalReport 应用决策**（`applyLessonDecisions` 纯函数）：
-- `append` → 追加新条目到 lessons.md 末尾
-- `update` → 替换 `update_target_id` 指定的现有条目段落（不存在则回退 append）
-- `skip` → 不修改
-- 空决策数组 → 原文不变；空现有 lessons → append 时创建文件骨架
+**写盘契约**（2026-07-03 修正，SH2 后）：**distiller agent 自己读写 `lessonsPath`**（有 fs 访问），orchestrator 不参与写盘。distiller 在 prompt 中明确告知"Apply decisions to lessonsPath yourself"，agent 内部完成 append/update/skip 决策并直接覆写文件。orchestrator 不再调用 `formatLessonsForDistill` / `applyLessonDecisions` / `renderLessonEntry`——这些纯函数保留在 lib.js 仅作向后兼容与单元测试，但 run-plans.js 中已无 inline 副本（死代码已清理，sync.test helper 列表已同步精简）。
+
+**为什么 distiller 自读写盘而非走 finalReport**：finalReport 是写 manifest/blocked.md 的 agent，让它再调 `applyLessonDecisions` 写 lessons.md 会把决策与应用耦合——finalReport 失败时 lesson 也丢。distiller 自读写盘让 lesson 提炼成为独立 best-effort 通道：distiller 失败/限额 → best-effort 跳过 lesson 更新，不阻塞 finalReport 写 manifest/blocked.md。
 
 **lessons.md schema 增强**（向后兼容）：
 ```markdown
@@ -342,9 +369,7 @@ status: active
 - bootstrap 关键词匹配逻辑不变（按 title/detail）
 - `source` / `category` 缺失时 bootstrap 解析兼容
 
-**写盘契约不变**：distiller 只返回决策，finalReport 是唯一写盘 agent（调 `applyLessonDecisions` 更新 lessons.md）。distiller 失败/限额 → best-effort 跳过 lesson 更新，不阻塞 manifest.json 写入。
-
-**纯函数测试**（lib.js，`node --test`）：`distillLessonInput` / `formatLessonsForDistill` / `applyLessonDecisions` 共 13 个测试覆盖全分支；sync.test.js 守护 inline 副本一致性 + finalReport prompt 含 distiller 调用断言。
+**纯函数测试**（lib.js，`node --test`）：`distillLessonInput` / `formatLessonsForDistill` / `applyLessonDecisions` 共 13 个测试覆盖全分支（lib.js 真源保留测试，确保函数契约可追溯）；sync.test.js 守护 inline 副本一致性 + finalReport prompt 含 distiller 调用断言。
 
 ## 6. Bootstrap & Resume（崩溃恢复）
 

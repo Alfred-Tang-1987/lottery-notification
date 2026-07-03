@@ -28,8 +28,34 @@ for (const role of ROLES) {
 }
 
 test('run-plans.js inlines the new conditional-render helpers', () => {
-  for (const fn of ['formatReferencePaths', 'formatSilentFailureContext', 'formatFailedApproaches', 'formatLessons', 'formatWriteFilesScope', 'formatSchemaCheck', 'languageChecklist', 'LANGUAGE_CHECKLISTS', 'gateCommands', 'collectReviewFindings', 'formatFindings', 'matchesPlanFilter', 'classifyThrown', 'reviewHaltReason', 'reviewHaltForEmptyFailed', 'haltLikelySource', 'fixModelForRound', 'resolveMaxRounds', 'resolveLessonsAutoDistill', 'distillLessonInput', 'formatLessonsForDistill', 'applyLessonDecisions', 'summarizeReviewRound']) {
+  // QC-3: formatLessonsForDistill / applyLessonDecisions / renderLessonEntry 不再 inline
+  // （SH2 后 distiller 自读写盘，orchestrator 不调用这些函数）。lib.js 真源保留。
+  for (const fn of ['formatReferencePaths', 'formatSilentFailureContext', 'formatFailedApproaches', 'formatLessons', 'formatWriteFilesScope', 'formatSchemaCheck', 'languageChecklist', 'LANGUAGE_CHECKLISTS', 'gateCommands', 'collectReviewFindings', 'formatFindings', 'matchesPlanFilter', 'classifyThrown', 'reviewHaltReason', 'reviewHaltForEmptyFailed', 'haltLikelySource', 'fixModelForRound', 'resolveMaxRounds', 'resolveLessonsAutoDistill', 'distillLessonInput', 'summarizeReviewRound']) {
     assert.match(runSrc, new RegExp(`function ${fn}|const ${fn}`), `missing helper: ${fn}`)
+  }
+})
+
+// QC-4: 关键 helper 函数体字节比较（防 lib.js 改了实现但忘了同步 run-plans.js inline 副本）。
+// 提取函数体：从 `function fn(` 到列 0 的闭合 `}`（top-level 函数末尾），不含函数间注释
+// （lib.js 和 run-plans.js 的注释风格不同——后者有 "—— inline 自 lib.js" 后缀——但代码必须一致）。
+function extractFunctionBody(src, fnName) {
+  const needle = `function ${fnName}(`
+  const fnStart = src.indexOf(needle)
+  if (fnStart === -1) return null
+  // Top-level 函数的闭合 `}` 在列 0（\n 后紧跟 }，无缩进）
+  const afterFn = src.slice(fnStart)
+  const closeMatch = afterFn.match(/\n\}/)
+  if (!closeMatch) return null
+  return afterFn.slice(0, closeMatch.index + 2).trim()
+}
+
+test('QC-4: 关键 helper 函数体 lib.js ↔ run-plans.js 字节一致', () => {
+  for (const fn of ['fixModelForRound', 'resolveMaxRounds', 'haltLikelySource', 'reviewHaltReason', 'reviewHaltForEmptyFailed', 'detectOscillation', 'classifyThrown']) {
+    const libBody = extractFunctionBody(libSrc, fn)
+    const runBody = extractFunctionBody(runSrc, fn)
+    assert.ok(libBody, `lib.js 中找不到函数 ${fn}`)
+    assert.ok(runBody, `run-plans.js 中找不到函数 ${fn}`)
+    assert.equal(runBody, libBody, `helper ${fn} 函数体字节不一致——lib.js 改了必须同步 run-plans.js inline 副本`)
   }
 })
 
@@ -79,7 +105,9 @@ test('run-plans.js orchestrator wires new placeholders + gate lint loop', () => 
   assert.match(runSrc, /gateCommands\(state\.config\)/)
   assert.match(runSrc, /gateCommands: JSON\.stringify\(cmds\)/)
   assert.match(runSrc, /fetchedContext:/)
-  assert.match(runSrc, /simplifyRevertNote:/)
+  // 方案 C：simplifyRevertNote 已删除（commit 提前 + git diff 触发 + checkout 回退）
+  assert.doesNotMatch(runSrc, /simplifyRevertNote/, '方案 C 后不得残留 simplifyRevertNote')
+  assert.doesNotMatch(runSrc, /simplifyFailed/, '方案 C 后不得残留 simplifyFailed 变量')
   assert.match(runSrc, /silentFailureContext: formatSilentFailureContext\(cfg\.silent_failure_context\)/, 'hunter 须注入 silentFailureContext')
   assert.match(runSrc, /failedApproaches: formatFailedApproaches/, 'implCtx 须注入 failedApproaches')
   assert.match(runSrc, /failed_approaches/, 'SCHEMAS.bootstrap 须含 failed_approaches')
@@ -94,6 +122,18 @@ test('run-plans.js orchestrator wires new placeholders + gate lint loop', () => 
   assert.match(runSrc, /lessonsPath: state\.config\?\.lessons_path \|\| ''/, 'finalReportWithFallback 须传 lessonsPath（done + halted 两模式）')
   assert.match(runSrc, /schemaCheck: formatSchemaCheck/, 'gate ctx 须注入 schemaCheck')
   assert.match(runSrc, /migration_missing/, 'SCHEMAS.gate + orchestrator 须含 migration_missing 检查')
+})
+
+// 方案 C（§5.2）：commit 提前到 simplify 前 + git diff 触发 review + amend/checkout 回退
+test('方案 C: simplify 流程重构（commit 提前 + git diff 触发 + amend/checkout）', () => {
+  // git diff subagent 检查 simplify 是否动代码（替代信任自报 changed）
+  assert.match(runSrc, /git diff --stat/, 'simplify 后须用 git diff --stat 检查有无改动')
+  // 有改动 → review 全绿后 amend commit（合并 simplify 改动到 HEAD）
+  assert.match(runSrc, /git commit --amend/, 'simplify review 全绿后须 amend commit')
+  // review 失败 → git checkout 回退 simplify 改动（HEAD 不变）
+  assert.match(runSrc, /git checkout -- \./, 'simplify review 失败须 git checkout -- . 回退')
+  // 不得信任 simplify 自报 changed 字段触发 review（旧 if (simp.evidence.changed) 已删）
+  assert.doesNotMatch(runSrc, /if \(simp\.evidence\.changed\)/, '不得信任 simplify 自报 changed 触发 review')
 })
 
 test('finalReport prompt 探查工作树脏状态（halt 时记录，防回归）', () => {

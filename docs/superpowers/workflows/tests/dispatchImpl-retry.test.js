@@ -1,217 +1,79 @@
-import { describe, it } from 'node:test'
-import assert from 'node:assert'
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-// Mock agent function for testing
-const createMockAgent = (responses) => {
-  let callCount = 0
-  return async (prompt, opts) => {
-    const response = responses[callCount++]
-    if (response instanceof Error) throw response
-    return response
-  }
+// QC-1 修复：旧测试用手写 dispatchImpl 副本（"Copy dispatchImpl logic for testing"），
+// 真实 dispatchImpl 漂移时测试假绿。改为源码字面量断言——直接验证 run-plans.js 中
+// dispatchImpl 的关键分支存在。逻辑正确性由 helpers.test.js 测 isQuotaError/classifyThrown
+// （lib.js 纯函数）间接覆盖。
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const runSrc = fs.readFileSync(path.resolve(__dirname, '../../../../.claude/workflows/run-plans.js'), 'utf8')
+
+// 提取 dispatchImpl 函数体（从定义到下一个函数定义之前）
+function extractDispatchImpl(src) {
+  const re = /async function dispatchImpl\([\s\S]*?\n(?=\n(?:async )?function |$)/
+  const m = src.match(re)
+  assert.ok(m, 'run-plans.js 须含 dispatchImpl 定义')
+  return m[0]
 }
 
-// Copy dispatchImpl logic for testing (will sync with actual implementation)
-async function dispatchImpl(prompt, opts, model, retryModel, mockAgent) {
-  const agent = mockAgent || globalThis.agent
-  let impl
-  try { impl = await agent(prompt, { ...opts, model }) }
-  catch (e) {
-    const s = String(e?.message || e || '').toLowerCase()
-    if (/quota|rate.?limit|429/i.test(s)) return { halted: true, reason: 'model_unavailable', diag: { model, error: String(e) } }
-    throw e
-  }
-  if (impl?.status === 'model_unavailable') return { halted: true, reason: 'model_unavailable', diag: impl.diagnostics }
-
-  // null 响应：可能是 quota 耗尽，也可能是模型能力不足
-  if (impl == null) {
-    // 如果有 retryModel，用更强模型重试一次
-    if (retryModel && retryModel !== model) {
-      try {
-        impl = await agent(prompt, { ...opts, model: retryModel })
-        if (impl != null) return impl  // 重试成功
-      } catch (e) {
-        const s = String(e?.message || e || '').toLowerCase()
-        if (/quota|rate.?limit|429/i.test(s)) return { halted: true, reason: 'model_unavailable', diag: { model: retryModel, error: String(e) } }
-        throw e
-      }
-    }
-    // 重试失败或无 retryModel，halt
-    return { halted: true, reason: 'model_unavailable', diag: { model, error: 'agent returned null (quota exhausted or capability failure)' } }
-  }
-  return impl
+// 提取 finalReportWithFallback 函数体
+function extractFinalReportWithFallback(src) {
+  const re = /async function finalReportWithFallback\([\s\S]*?\n(?=\n(?:async )?function |$)/
+  const m = src.match(re)
+  assert.ok(m, 'run-plans.js 须含 finalReportWithFallback 定义')
+  return m[0]
 }
 
-describe('dispatchImpl retryModel parameter', () => {
-  it('should halt when agent returns null without retryModel', async () => {
-    const mockAgent = createMockAgent([null])
-    const result = await dispatchImpl('prompt', {}, 'sonnet', null, mockAgent)
-
-    assert.strictEqual(result.halted, true)
-    assert.strictEqual(result.reason, 'model_unavailable')
-    assert.strictEqual(result.diag.model, 'sonnet')
-  })
-
-  it('should retry with retryModel when first attempt returns null', async () => {
-    const mockAgent = createMockAgent([
-      null,  // first attempt with sonnet returns null
-      { status: 'ok', result: 'success' }  // retry with opus succeeds
-    ])
-    const result = await dispatchImpl('prompt', {}, 'sonnet', 'opus', mockAgent)
-
-    assert.strictEqual(result.halted, undefined)
-    assert.strictEqual(result.status, 'ok')
-    assert.strictEqual(result.result, 'success')
-  })
-
-  it('should halt when retryModel also returns null', async () => {
-    const mockAgent = createMockAgent([
-      null,  // first attempt with sonnet returns null
-      null   // retry with opus also returns null
-    ])
-    const result = await dispatchImpl('prompt', {}, 'sonnet', 'opus', mockAgent)
-
-    assert.strictEqual(result.halted, true)
-    assert.strictEqual(result.reason, 'model_unavailable')
-  })
-
-  it('should not retry when retryModel equals model', async () => {
-    const mockAgent = createMockAgent([null])
-    const result = await dispatchImpl('prompt', {}, 'sonnet', 'sonnet', mockAgent)
-
-    assert.strictEqual(result.halted, true)
-    assert.strictEqual(result.reason, 'model_unavailable')
-  })
-
-  it('should handle quota error on first attempt', async () => {
-    const mockAgent = createMockAgent([new Error('Quota exceeded')])
-    const result = await dispatchImpl('prompt', {}, 'sonnet', 'opus', mockAgent)
-
-    assert.strictEqual(result.halted, true)
-    assert.strictEqual(result.reason, 'model_unavailable')
-    assert.strictEqual(result.diag.model, 'sonnet')
-  })
-
-  it('should handle quota error on retry attempt', async () => {
-    const mockAgent = createMockAgent([
-      null,  // first attempt returns null
-      new Error('Quota exceeded')  // retry hits quota
-    ])
-    const result = await dispatchImpl('prompt', {}, 'sonnet', 'opus', mockAgent)
-
-    assert.strictEqual(result.halted, true)
-    assert.strictEqual(result.reason, 'model_unavailable')
-    assert.strictEqual(result.diag.model, 'opus')  // quota error on opus
-  })
-
-  it('should pass through successful first attempt', async () => {
-    const mockAgent = createMockAgent([{ status: 'ok', result: 'immediate success' }])
-    const result = await dispatchImpl('prompt', {}, 'sonnet', 'opus', mockAgent)
-
-    assert.strictEqual(result.halted, undefined)
-    assert.strictEqual(result.status, 'ok')
-    assert.strictEqual(result.result, 'immediate success')
-  })
-
-  it('should handle model_unavailable status on first attempt', async () => {
-    const mockAgent = createMockAgent([{ status: 'model_unavailable', diagnostics: { error: 'rate limit' } }])
-    const result = await dispatchImpl('prompt', {}, 'sonnet', 'opus', mockAgent)
-
-    assert.strictEqual(result.halted, true)
-    assert.strictEqual(result.reason, 'model_unavailable')
-    assert.strictEqual(result.diag.error, 'rate limit')
-  })
-
-  it('should inject model into opts on first agent call (QH1)', async () => {
-    let capturedOpts = null
-    const mockAgent = async (prompt, opts) => {
-      capturedOpts = opts
-      return { status: 'ok' }
-    }
-    const result = await dispatchImpl('prompt', { schema: 'test', label: 'test' }, 'sonnet', null, mockAgent)
-
-    assert.strictEqual(result.status, 'ok')
-    assert.strictEqual(capturedOpts.model, 'sonnet', 'model should be injected into opts')
-    assert.strictEqual(capturedOpts.schema, 'test', 'original opts should be preserved')
-    assert.strictEqual(capturedOpts.label, 'test', 'original opts should be preserved')
-  })
-
-  it('should override opts.model with dispatchImpl model parameter (QH1)', async () => {
-    let capturedOpts = null
-    const mockAgent = async (prompt, opts) => {
-      capturedOpts = opts
-      return { status: 'ok' }
-    }
-    // Caller passes model: 'wrong' in opts, but dispatchImpl model param is 'sonnet'
-    const result = await dispatchImpl('prompt', { schema: 'test', model: 'wrong' }, 'sonnet', null, mockAgent)
-
-    assert.strictEqual(result.status, 'ok')
-    assert.strictEqual(capturedOpts.model, 'sonnet', 'dispatchImpl model should override opts.model')
-  })
+test('dispatchImpl 定义存在且含关键分支', () => {
+  const body = extractDispatchImpl(runSrc)
+  // QH1: 首次调用注入 model 到 opts（{ ...opts, model }）
+  assert.match(body, /\.\.\.opts,\s*model/, 'dispatchImpl 首次调用须注入 model 到 opts（QH1）')
+  // quota 检测：调 isQuotaError（非手写正则）
+  assert.match(body, /isQuotaError\(e\)/, 'dispatchImpl 须调 isQuotaError（非手写正则）')
+  // null guard：agent 返回 null → model_unavailable halt
+  assert.match(body, /impl == null/, 'dispatchImpl 须有 null guard')
+  assert.match(body, /model_unavailable/, 'dispatchImpl null/限额 → model_unavailable halt')
+  // retryModel 逻辑：有 retryModel 且不同于 model → 重试
+  assert.match(body, /retryModel && retryModel !== model/, 'dispatchImpl 须有 retryModel 重试条件')
+  // 重试也注入 model 到 opts
+  assert.match(body, /\.\.\.opts,\s*model:\s*retryModel/, 'dispatchImpl 重试须注入 retryModel 到 opts')
 })
 
-// QC1: tsAgent error handling — 验证期望行为（halt 而非 crash）
-// 修复后：tsAgent 调用包 try/catch，非 quota 异常 → halt('model_unavailable')，不 crash
-describe('Bootstrap tsAgent error handling (QC1)', () => {
-  it('should return halted result instead of crashing when tsAgent throws non-quota error', async () => {
-    // 模拟修复后的行为：tsAgent 抛错 → catch → 返回 {halted:true, reason:'model_unavailable'}
-    // 而非让错误冒泡到顶层 crash workflow
-    function simulateTsAgentCall(agentFn) {
-      try {
-        const ts = agentFn()  // 同步抛错模拟
-        return { ok: true, ts }
-      } catch (e) {
-        return { halted: true, reason: 'model_unavailable', diag: { error: String(e?.message || e) } }
-      }
-    }
-    const result = simulateTsAgentCall(() => { throw new Error('Network failure') })
-    assert.strictEqual(result.halted, true, 'tsAgent 抛错应 halt 而非 crash')
-    assert.strictEqual(result.reason, 'model_unavailable')
-    assert.match(result.diag.error, /Network failure/)
-  })
+test('dispatchImpl-retry 正则与生产 isQuotaError 同步（QH2 遗留）', () => {
+  // QH2: 旧测试用 /quota|rate.?limit|429/i 手写正则，缺生产 isQuotaError 的中文关键词。
+  // 改为源码断言：dispatchImpl 须调 isQuotaError（生产正则），不得手写正则。
+  const body = extractDispatchImpl(runSrc)
+  assert.match(body, /isQuotaError/, 'dispatchImpl 须调 isQuotaError（生产正则含中文限额）')
+  // 不得含手写 quota 正则（旧副本残留）
+  assert.doesNotMatch(body, /\/quota\|rate\.\?limit\|429\/i/, 'dispatchImpl 不得手写 quota 正则（须调 isQuotaError）')
 })
 
-// QC2: finalReportWithFallback — 验证期望行为（全失败时返回 null 而非 crash）
-// 修复后：fallback 链末尾的环境默认 model 调用包 try/catch，失败 → 返回 null（不阻塞 manifest）
-describe('finalReportWithFallback fallback chain exhaustion (QC2)', () => {
-  it('should return null instead of crashing when all fallback models fail', async () => {
-    // 模拟修复后的 finalReportWithFallback：全链失败 → catch → 返回 null
-    async function simulateFinalReportWithFallback(agentFn) {
-      const models = ['opus', 'sonnet', 'haiku']
-      for (const m of models) {
-        try {
-          return await agentFn(m)
-        } catch (e) { /* 试下一个 */ }
-      }
-      // 环境默认 model 兜底（修复后加 try/catch）
-      try {
-        return await agentFn(null)
-      } catch (e) {
-        return null  // 修复：全失败返回 null，不 crash
-      }
-    }
-    const result = await simulateFinalReportWithFallback(() => { throw new Error('All models exhausted') })
-    assert.strictEqual(result, null, '全 fallback 失败应返回 null 而非 crash')
-  })
+test('QC1: tsAgent 调用包 try/catch + Date.now() 降级兜底', () => {
+  // tsAgent 错误 → catch → 降级用 new Date().toISOString() 兜底（不 crash）
+  assert.match(runSrc, /let tsAgent/, 'tsAgent 须用 let 声明（便于 catch 重新赋值）')
+  assert.match(runSrc, /tsAgent = await agent\([\s\S]*?get-ts/, 'tsAgent 须在 try 块中调用')
+  assert.match(runSrc, /new Date\(\)\.toISOString/, 'tsAgent catch 须降级用 Date.now() 兜底')
 })
 
-// SH2: distiller 独立调用验证（orchestrator 无 fs，distiller 自己读 lessonsPath）
-// 修复后：distiller 是 halt() 中的独立 agent 调用（非 finalReport 内部），
-// 自己读 lessonsPath + 自己写回。不需要 state.existingLessons。
-describe('Lesson distiller independent invocation (SH2)', () => {
-  it('should invoke distiller as independent agent that reads lessonsPath itself', async () => {
-    // 模拟修复后的 halt() 路径：distiller 收到 lessonsPath（非 existingLessons 内容）
-    let capturedCtx = null
-    const mockLessonDistillerWithFallback = async (ctx) => {
-      capturedCtx = ctx
-      return { decisions: [{ action: 'skip', id: 'none', title: 'test', detail: 'test' }] }
-    }
-    // 模拟 halt() 调用 distiller
-    const distillInput = JSON.stringify({ mode: 'halted', halt_info: { task: 'T1' }, review_history: [], failed_approaches: [] })
-    await mockLessonDistillerWithFallback({ distillInput, lessonsPath: 'docs/superpowers/lessons.md' })
-    // 验证：distiller 收到 lessonsPath（自己读文件），而非 existingLessons 内容
-    assert.ok(capturedCtx.lessonsPath, 'distiller 应收到 lessonsPath 路径')
-    assert.strictEqual(capturedCtx.lessonsPath, 'docs/superpowers/lessons.md')
-    assert.ok(!capturedCtx.existingLessons, 'distiller 不应收到 existingLessons（自己读文件）')
-  })
+test('QC2: finalReportWithFallback 末尾 try/catch + 返回 null', () => {
+  const body = extractFinalReportWithFallback(runSrc)
+  // 环境默认 model 调用须包 try/catch
+  assert.match(body, /label: 'final-report:default'/, '须有环境默认 model 兜底调用')
+  assert.match(body, /return null/, '全链失败须返回 null（不 crash）')
+  // 不得裸 return await agent(...)（旧 QC2 bug：末尾无 try/catch）
+  const defaultPart = body.slice(body.indexOf("label: 'final-report:default'"))
+  assert.match(defaultPart, /catch/, '环境默认 model 调用须包 try/catch')
+})
+
+test('SH2: distiller 是 halt() 中独立 agent 调用（非 finalReport 内部）', () => {
+  // halt() 须调 lessonDistillerWithFallback（独立 agent，自己读 lessonsPath）
+  assert.match(runSrc, /async function lessonDistillerWithFallback/, '须有 lessonDistillerWithFallback 函数定义')
+  assert.match(runSrc, /lessonDistillerWithFallback\(\{[^}]*distillInput/, 'halt() 须调 lessonDistillerWithFallback 传 distillInput')
+  assert.match(runSrc, /lessonsPath/, 'distiller 须收到 lessonsPath 路径（自己读文件）')
+  // finalReport step5 须说明 distiller 已执行（不再自己调 distiller）
+  const finalReportPrompt = runSrc.match(/finalReport: `([\s\S]*?)`/)?.[1] || ''
+  assert.match(finalReportPrompt, /ALREADY been invoked/i, 'finalReport 须说明 distiller 已独立执行')
 })
