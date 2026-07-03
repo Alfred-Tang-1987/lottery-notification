@@ -7,7 +7,7 @@
 
 `run-plans` 是一个**自动执行 implementation plan 的编排器**。给它一份或多份 plan，它会：
 
-- **每 task**：派 implementor subagent（TDD RED→GREEN→REFACTOR）→ review chain 并行（spec 逐行比对 ‖ quality 架构 ‖ silent-failure-hunter）→ git commit → 精简 simplify（git diff 触发 re-review，全绿 amend / 失败 checkout 回退）
+- **每 task**：派 implementor subagent（TDD RED→GREEN→REFACTOR）→ review chain 并行（spec 逐行比对 ‖ quality 架构 ‖ silent-failure-hunter）→ git commit → 精简 simplify（git status 触发 re-review，全绿 amend / 失败 checkout 回退）
 - **plan 级**：独立 gate（在 committed SHA 上重跑 test + lint_command + extra_lint_commands，任一非 0 halt，不信 implementor 自报）
 - **全流程**：多 plan 串行、振荡检测、BLOCKED 升级链、限额容错（halt，恢复后用全新跑续跑，见 §7.1）
 
@@ -226,6 +226,11 @@ review 链 max-rounds halt 后，task 留在「未 commit」状态（implementor
       "files_touched_per_round": [...],
       "review_history": [{ "round": 1, "spec": { "status": "ok", "findings": [] }, "quality": { "status": "failed", "findings": [{ "title": "...", "severity": "high" }] }, "hunter": { "status": "ok", "findings": [] } }],
       "commit_sha": "abc1234",
+      "simplify_reverted": false,
+      "simplify_review_findings": [],
+      "destructive_review_failed": false,
+      "destructive_review_findings": [],
+      "concerns": [],
       "blocked_info": { "reason": "...", "quota_exhausted": false, "last_error": "...", "suggested_fix": "...", "likely_source": "implementor changes | gate restored | bootstrap frontmatter | unknown" }
     }
   },

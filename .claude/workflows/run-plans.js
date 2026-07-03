@@ -158,8 +158,33 @@ function haltLikelySource(reason) {
   const r = String(reason || '')
   if (r === 'plan gate failed' || /gate/.test(r)) return 'gate restored'        // gate 已 checkout 回原 HEAD
   if (/^bootstrap /.test(r)) return 'bootstrap frontmatter'                      // bootstrap 可能写了 plan frontmatter
-  if (/max rounds|OSCILLATING|fix-round|commit failed|simplify reported|BLOCKED|after (context-fetch|retry)|agent_error|model_unavailable|review_empty|review_failed_no_findings/.test(r)) return 'implementor changes'
+  if (/max rounds|OSCILLATING|fix-round|commit failed|commit out_of_scope|simplify (diff check|amend|checkout) failed|simplify reported|BLOCKED|after (context-fetch|retry)|agent_error|model_unavailable|review_empty|review_failed_no_findings/.test(r)) return 'implementor changes'
   return 'unknown'
+}
+
+// 校验 amend subagent 返回值（Q1/Q8：边界条件纯函数化，可 node:test 行为测试）—— inline 自 lib.js
+// amend 须返回 {ok:true, sha:"<40-hex>"}；ok:false / 空 sha / 非 40 位 / 非 hex → invalid。
+// 调用方据此 halt（不静默继续用旧 SHA → gate 在旧 SHA 跑漏检 simplify 改动）。
+function validateAmendResult(result) {
+  const sha = String(result?.sha || '').trim()
+  if (!result?.ok || !/^[0-9a-f]{40}$/.test(sha)) {
+    return { valid: false, error: result?.error || result?.sha || 'invalid sha' }
+  }
+  return { valid: true, sha }
+}
+
+// 校验 checkout subagent 返回值（Q4/Q8：兜底验证工作树真 clean，防 ok:true 谎报）—— inline 自 lib.js
+// checkout 须返回 {ok:true, porcelain:""}——porcelain 非空表示工作树仍有残留（权限/只读 fs 异常）。
+// ok:false / porcelain 非空 / null → invalid，调用方 halt（不无条件设 simplify_reverted=true）。
+function validateCheckoutResult(result) {
+  if (!result?.ok) {
+    return { valid: false, error: result?.error || 'checkout failed' }
+  }
+  const porcelain = String(result?.porcelain || '').trim()
+  if (porcelain !== '') {
+    return { valid: false, error: `working tree not clean after checkout: ${porcelain}` }
+  }
+  return { valid: true }
 }
 
 // fix-round implementor 的 model 选择（§5.1 难度递增：最后 1 轮 fix 用最强 model）—— inline 自 lib.js
@@ -251,12 +276,12 @@ async function dispatchImpl(prompt, opts, model, retryModel = null) {
 // phaseLabel：主轮+destructive 传 `Plan ${plan.id}`（Workflow UI 显示阶段），simplify 传空。
 // 返回 { spec, qual, hunt, haltReason, emptyFailed }。haltReason 非空时 emptyFailed=null（短路）。
 async function runReviewRound(taskId, cfg, plan, fc, concernsHint, labelSuffix, phaseLabel) {
-  const specOpts = { schema: SCHEMAS.specReview, model: 'opus', label: `spec:${taskId}${labelSuffix}` }
-  if (phaseLabel) specOpts.phase = phaseLabel
+  // Q7: 三处 opts 都设 phase（若 phaseLabel 非空）——/workflows UI 中 spec/qual/hunt 按阶段分组一致
+  const commonOpts = phaseLabel ? { phase: phaseLabel } : {}
   const [spec, qual, hunt] = await parallel([
-    async () => safeAgent(buildPrompt('specReview', { taskId, specPath: cfg.spec_path, planFilePath: plan.file, filesChanged: fc, concernsHint, referencePaths: formatReferencePaths(cfg.reference_paths) }), specOpts),
-    async () => safeAgent(buildPrompt('qualityReviewer', { taskId, filesChanged: fc, languageChecklist: languageChecklist(cfg.language) }), { schema: SCHEMAS.qualityReviewer, model: 'opus', label: `qual:${taskId}${labelSuffix}` }),
-    async () => safeAgent(buildPrompt('hunter', { taskId, filesChanged: fc, silentFailureContext: formatSilentFailureContext(cfg.silent_failure_context) }), { schema: SCHEMAS.hunter, model: 'sonnet', label: `hunt:${taskId}${labelSuffix}` }),
+    async () => safeAgent(buildPrompt('specReview', { taskId, specPath: cfg.spec_path, planFilePath: plan.file, filesChanged: fc, concernsHint, referencePaths: formatReferencePaths(cfg.reference_paths) }), { schema: SCHEMAS.specReview, model: 'opus', ...commonOpts, label: `spec:${taskId}${labelSuffix}` }),
+    async () => safeAgent(buildPrompt('qualityReviewer', { taskId, filesChanged: fc, languageChecklist: languageChecklist(cfg.language) }), { schema: SCHEMAS.qualityReviewer, model: 'opus', ...commonOpts, label: `qual:${taskId}${labelSuffix}` }),
+    async () => safeAgent(buildPrompt('hunter', { taskId, filesChanged: fc, silentFailureContext: formatSilentFailureContext(cfg.silent_failure_context) }), { schema: SCHEMAS.hunter, model: 'sonnet', ...commonOpts, label: `hunt:${taskId}${labelSuffix}` }),
   ])
   const haltReason = reviewHaltReason(spec, qual, hunt)
   const emptyFailed = haltReason ? null : reviewHaltForEmptyFailed(spec, qual, hunt)
@@ -699,7 +724,7 @@ Inputs: mode={{mode}} state={{stateJson}} blockedInfo={{blockedInfo}} runsDir={{
 
 Steps:
 1. mkdir -p {{runsDir}}.
-2. Write {{runsDir}}/manifest.json = {run_ts:{{runTs}}, mode:{{mode}}, plans:[...], per_task:{<taskId>:{status,model,review_rounds,files_touched_per_round,review_history,commit_sha,simplify_reverted,destructive_review_failed,destructive_review_findings,blocked_info}}, result}.
+2. Write {{runsDir}}/manifest.json = {run_ts:{{runTs}}, mode:{{mode}}, plans:[...], per_task:{<taskId>:{status,model,review_rounds,files_touched_per_round,review_history,commit_sha,simplify_reverted,simplify_review_findings,destructive_review_failed,destructive_review_findings,concerns,blocked_info}}, result}.
 3. If mode=halted: write {{runsDir}}/blocked.md from {{blockedInfo}} (the blocked task's blocked_info JSON — render EACH field human-readably: plan, task, reason, category, last_error, suggested_fix, quota_exhausted, likely_source, failed_approach). For failed_approach, render as: "Failed Approach: <failed_approach.task_id>: <failed_approach.reason> — <failed_approach.error>". Do NOT hunt for these fields in state — they are provided inline in blockedInfo.
 4. If mode=halted: run "git status --porcelain" and "git diff --stat". BEST-EFFORT — if git fails (not a repo / index corrupt), skip this section (do NOT block manifest.json write).
    If "git status --porcelain" output is non-empty, append a "## Working Tree (dirty)" section to blocked.md with: the porcelain output (file list) + the diff --stat output (change summary) + 接手指引（implementor 改动未提交，留在工作树。选项：git diff <file> 查看 / git checkout -- <file> 丢弃 / 手动修后 git commit -m "feat(plan-X/T-Y): ..." 再全新跑续，见 USAGE.md §7.1）。
@@ -845,7 +870,8 @@ async function halt(plan, task, r) {
       log(`⚠ lesson distiller 失败（best-effort 跳过）: ${errStr(e)}`)
     }
   }
-  await finalReportWithFallback({ mode: 'halted', stateJson: JSON.stringify(state), blockedInfo, runsDir: 'runs', runTs: state.runTs, lessonsPath, lessonsAutoDistill: String(lessonsAutoDistill) })
+  const fr = await finalReportWithFallback({ mode: 'halted', stateJson: JSON.stringify(state), blockedInfo, runsDir: 'runs', runTs: state.runTs, lessonsPath, lessonsAutoDistill: String(lessonsAutoDistill) })
+  if (!fr) log('✗✗ 致命：finalReport 全链失败，manifest 未写入！请手动检查 runs/ 目录')
   log(`✗ HALT: ${r.reason} (plan ${plan?.id}, task ${tid})`)
 }
 
@@ -856,18 +882,25 @@ async function halt(plan, task, r) {
 //                                                       └─failed──→ retry ─→ halt 'implementor X after context-fetch retry'
 //              └─failed──→ retry once ─→ halt 'implementor X after retry'
 //              └─ok/done_with_concerns──→ REVIEW rounds(spec‖qual‖hunt 并行)
-//   REVIEW ──全绿──→ COMMIT ──非 ok──→ halt 'commit failed'
+//   REVIEW ──全绿──→ COMMIT ──非 ok──→ halt 'commit failed'；out_of_scope──→ halt 'commit out_of_scope'
 //         └─任一❌──→ IMPL(fix-round, 最后 1 轮强制 opus) ──blocked/failed/needs_context──→ halt 'implementor X in fix-round N'
+//         └─任一 review 空响应/异常──→ halt 'agent_error'/'model_unavailable'/'review_empty'（reviewHaltReason）
+//         └─任一 review failed 但 0 findings──→ halt 'review_failed_no_findings'（reviewHaltForEmptyFailed）
 //         └─max N 轮（默认 4，可配 0=无限）──→ halt 'review max rounds'；振荡──→ halt 'OSCILLATING'
-//   COMMIT ──→ SIMPLIFY ──git diff 有改动──→ re-review ──全绿──→ git commit --amend
-//                                                  └─失败──→ git checkout -- . 回退
-//                            └─无改动──→ 跳过 review（省成本）
+//   COMMIT ──→ SIMPLIFY ──git status --porcelain 有改动──→ re-review ──全绿──→ git commit --amend（validateAmendResult 校验 SHA）
+//              │                                └─失败──→ git checkout -- . + git clean -fd（validateCheckoutResult 兜底验证 porcelain 空）
+//              │                                              └─失败──→ halt 'simplify checkout failed'
+//              │                                └─空响应/异常──→ halt 'agent_error'/'model_unavailable'/'review_empty'
+//              └─diff subagent 失败──→ halt 'simplify diff check failed'
+//              └─amend 失败/SHA 格式错──→ halt 'simplify amend failed'
+//              └─无改动──→ 跳过 review（省成本）
+//   destructive_changes 非空──→ 额外 review round（:destructive）──失败/异常不 halt，记 destructive_review_failed + findings
 // 任一 agent 限额/异常──→ halt 'model_unavailable' / 'agent_error'（reviewHaltReason 判定）
 async function runTask(plan, task) {
   state.currentTask = task.id
   const cfg = state.config
   const planIdShort = `plan-${String(plan.seq).padStart(2, '0')}`
-  state.perTask[task.id] = { planId: plan.id, status: 'in_progress', model: task.model || 'sonnet', review_rounds: 0, files_touched_per_round: [], review_history: [], commit_sha: null, blocked_info: null }
+  state.perTask[task.id] = { planId: plan.id, status: 'in_progress', model: task.model || 'sonnet', review_rounds: 0, files_touched_per_round: [], review_history: [], commit_sha: null, simplify_reverted: false, simplify_review_findings: [], destructive_review_failed: false, destructive_review_findings: [], concerns: [], blocked_info: null }
   log(`▶ ${task.id} (${task.model || 'sonnet'}): 派发 implementor — TDD 可能含长命令(uv sync/build/全量测试)，正常耗时请等待；/workflows 可看实时工具调用`)
 
   // —— implementor + BLOCKED 升级链（§2.3）——
@@ -932,7 +965,7 @@ async function runTask(plan, task) {
   const maxRounds = resolveMaxRounds(cfg)
   for (let round = 1; maxRounds === 0 ? true : round <= maxRounds; round++) {
     state.perTask[task.id].review_rounds = round
-    const fc = filesChanged.join(',')
+    const fc = filesChanged.join('\n')
     const { spec, qual, hunt, haltReason: reviewReason, emptyFailed: emptyFailedReason } = await runReviewRound(task.id, cfg, plan, fc, concernsHint, `:r${round}`, `Plan ${plan.id}`)
     if (reviewReason) {
       return { halted: true, reason: reviewReason, diag: { spec: spec?.diagnostics, qual: qual?.diagnostics, hunt: hunt?.diagnostics } }
@@ -986,7 +1019,7 @@ async function runTask(plan, task) {
 
   // —— simplify（max 1，§5.2 方案 C：git diff 独立验证是否动代码）——
   let simp
-  simp = await dispatchImpl(buildPrompt('simplify', { taskId: task.id, filesChanged: filesChanged.join(',') }), { schema: SCHEMAS.simplify, label: `simp:${task.id}` }, model)
+  simp = await dispatchImpl(buildPrompt('simplify', { taskId: task.id, filesChanged: filesChanged.join('\n') }), { schema: SCHEMAS.simplify, label: `simp:${task.id}` }, model)
   if (simp.halted) return simp
   // commit 后工作树 clean → git status --porcelain 非空即 simplify 动了代码（不信任 simp.evidence.changed 自报）。
   // Q5: 用 git status --porcelain 替代 git diff --stat——同时检测 staged + unstaged，
@@ -1002,7 +1035,7 @@ async function runTask(plan, task) {
   const simpChanged = diffResult.changed === true
   const simpFiles = Array.isArray(diffResult.files) ? diffResult.files : []
   if (simpChanged) {
-    const fc = simpFiles.join(',')
+    const fc = simpFiles.join('\n')
     const { spec: spec2, qual: qual2, hunt: hunt2, haltReason: simpReviewReason, emptyFailed: simpEmptyFailed } = await runReviewRound(task.id, cfg, plan, fc, '', ':simp', '')
     if (simpReviewReason) {
       // model_unavailable/agent_error/review_empty：不 amend 也不 checkout，直接 halt。
@@ -1015,29 +1048,33 @@ async function runTask(plan, task) {
     }
     if (allGreen(spec2, qual2, hunt2)) {
       // review 全绿 → amend commit（合并 simplify 改动到 HEAD，保持原子性）
-      // Q1: amend 后用 git rev-parse HEAD 独立获取 SHA + 正则校验 40 位 hex（不信任 agent 自报字符串）
+      // Q1/Q8: amend 后用 git rev-parse HEAD 独立获取 SHA + validateAmendResult 纯函数校验
       // Q2: amend 失败（pre-commit hook 阻断等）→ staged 区域可能残留 → halt（不静默继续用旧 SHA）
       const amendSchema = { type: 'object', required: ['ok'], properties: { ok: { type: 'boolean' }, sha: { type: 'string' }, error: { type: 'string' } } }
       const amendResult = await safeAgent('Run `git add -A && git commit --amend --no-edit`. Then run `git rev-parse HEAD` and return JSON {"ok": true, "sha": "<40-char-hex>"}. If amend failed (e.g. pre-commit hook blocked), return {"ok": false, "sha": "", "error": "<message>"}.', { schema: amendSchema, label: `amend:${task.id}` })
-      const newSha = String(amendResult?.sha || '').trim()
-      if (!amendResult?.ok || !/^[0-9a-f]{40}$/.test(newSha)) {
-        // Q1/Q2: amend 失败或 SHA 格式错 → halt（防 gate 在旧 SHA 跑漏检 simplify 改动）
-        return { halted: true, reason: 'simplify amend failed', diag: { task: task.id, amendError: amendResult?.error || amendResult?.sha || 'invalid sha', commitSha: commit.evidence.commit_sha } }
+      const amendCheck = validateAmendResult(amendResult)
+      if (!amendCheck.valid) {
+        // Q1/Q2/Q8: amend 失败或 SHA 格式错 → halt（防 gate 在旧 SHA 跑漏检 simplify 改动）
+        return { halted: true, reason: 'simplify amend failed', diag: { task: task.id, amendError: amendCheck.error, commitSha: commit.evidence.commit_sha } }
       }
-      state.perTask[task.id].commit_sha = newSha
-      log(`✓ ${task.id} simplify review green — amended commit @ ${newSha}`)
+      state.perTask[task.id].commit_sha = amendCheck.sha
+      log(`✓ ${task.id} simplify review green — amended commit @ ${amendCheck.sha}`)
     } else {
       // review 失败 → git checkout -- . + git clean -fd 回退 simplify 改动（HEAD 不变，保留原 commit）
-      // Q3: checkout 须同时 git clean -fd（处理 simplify 新建的 untracked 文件）+ 验证返回值
-      // Q3: checkout 失败 → halt（不无条件设 simplify_reverted=true 谎报已回退）
-      const checkoutSchema = { type: 'object', required: ['ok'], properties: { ok: { type: 'boolean' }, error: { type: 'string' } } }
-      const checkoutResult = await safeAgent('Run `git checkout -- . && git clean -fd` to discard simplify changes (both tracked modifications and untracked new files). Return JSON {"ok": true} on success or {"ok": false, "error": "<message>"} on failure.', { schema: checkoutSchema, label: `checkout:${task.id}` })
-      if (!checkoutResult?.ok) {
-        // Q3: checkout 失败 → halt（simplify 改动可能仍残留工作树，不谎报 simplify_reverted）
-        return { halted: true, reason: 'simplify checkout failed', diag: { task: task.id, checkoutError: checkoutResult?.error || 'unknown', commitSha: commit.evidence.commit_sha } }
+      // Q3: checkout 须同时 git clean -fd（处理 simplify 新建的 untracked 文件）
+      // Q4/Q8: checkout 后再跑 git status --porcelain 兜底验证工作树真 clean + validateCheckoutResult 纯函数校验
+      // Q3: checkout 失败或兜底验证非空 → halt（不无条件设 simplify_reverted=true 谎报已回退）
+      // Q3: simplify review findings 须持久化到 simplify_review_findings（不丢，用户无需考古 transcript）
+      const checkoutSchema = { type: 'object', required: ['ok'], properties: { ok: { type: 'boolean' }, porcelain: { type: 'string' }, error: { type: 'string' } } }
+      const checkoutResult = await safeAgent('Run `git checkout -- . && git clean -fd` to discard simplify changes (both tracked modifications and untracked new files). Then run `git status --porcelain` to verify the working tree is clean. Return JSON {"ok": true, "porcelain": "<porcelain output>"} on success or {"ok": false, "porcelain": "<output>", "error": "<message>"} on failure.', { schema: checkoutSchema, label: `checkout:${task.id}` })
+      const checkoutCheck = validateCheckoutResult(checkoutResult)
+      if (!checkoutCheck.valid) {
+        // Q3/Q4/Q8: checkout 失败或兜底验证工作树仍脏 → halt（simplify 改动残留，不谎报 simplify_reverted）
+        return { halted: true, reason: 'simplify checkout failed', diag: { task: task.id, checkoutError: checkoutCheck.error, commitSha: commit.evidence.commit_sha } }
       }
       log(`⚠ ${task.id} simplify review NOT green — reverted simplify changes (HEAD unchanged @ ${commit.evidence.commit_sha})`)
       state.perTask[task.id].simplify_reverted = true
+      state.perTask[task.id].simplify_review_findings = collectReviewFindings(spec2, qual2, hunt2)
     }
   }
 
@@ -1158,6 +1195,7 @@ for (const plan of boot.evidence.plans) {
 }
 
 phase('Finalize')
-await finalReportWithFallback({ mode: 'done', stateJson: JSON.stringify(state), blockedInfo: '', runsDir: 'runs', runTs: state.runTs, lessonsPath: state.config?.lessons_path || '', lessonsAutoDistill: String(resolveLessonsAutoDistill(state.config)) })
+const frDone = await finalReportWithFallback({ mode: 'done', stateJson: JSON.stringify(state), blockedInfo: '', runsDir: 'runs', runTs: state.runTs, lessonsPath: state.config?.lessons_path || '', lessonsAutoDistill: String(resolveLessonsAutoDistill(state.config)) })
+if (!frDone) log('✗✗ 致命：finalReport 全链失败，manifest 未写入！请手动检查 runs/ 目录')
 log('✓ workflow done')
 return { result: 'done', perTask: state.perTask }

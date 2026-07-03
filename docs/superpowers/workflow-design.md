@@ -97,11 +97,16 @@ agent(model=opus/sonnet) 调用
        } catch (e) { log(`finalReport ${m} 不可用: ${errStr(e)}, 试下一个`) }
      }
      log('fallback 链全失败，用环境默认 model 保存')
-     return await agent(buildPrompt('finalReport', ctx),
-                        {schema: SCHEMAS.finalReport, label: 'final-report:default'})
+     try {
+       return await agent(buildPrompt('finalReport', ctx),
+                          {schema: SCHEMAS.finalReport, label: 'final-report:default'})
+     } catch (e) {
+       log(`✗ 环境默认 model 也失败，finalReport 无法保存: ${errStr(e)}`)
+       return null  // QC2: 全链失败返回 null，调用方检查并 log 致命错误
+     }
    }
    ```
-   halt() 调用 finalReportWithFallback。**确保至少 haiku（最便宜、限额最宽）或环境默认能保存进度**。fallback 链**只此一处用途**——runTask 的主 agent 调用**不**用 fallback（不降级继续开发）。
+   halt()/done 调用 finalReportWithFallback，须检查返回值（null 时 log 致命错误，manifest 未写入）。**确保至少 haiku（最便宜、限额最宽）或环境默认能保存进度**。fallback 链**只此一处用途**——runTask 的主 agent 调用**不**用 fallback（不降级继续开发）。
 4. **runTask 限额捕获**：implementor/review/commit/gate 的 agent() 包 try/catch。捕获错误若含限额关键词 → 返回 `{halted:true, reason:'model_unavailable', diag:{model, error}}` → halt → finalReportWithFallback 保存。非限额错误 → 正常错误处理（retry/halt）。
 5. **resume 走 §13h**：额度恢复后 `resumeFromRunId`，native resume 重跑中断 task（此时额度可用）。manifest 的 `quota_exhausted` 字段提醒用户确认恢复再续跑。
 
@@ -129,7 +134,7 @@ orchestrator 是 JS sandbox：**无 fs、无 subprocess、无 Date.now/Math.rand
 
 ```json
 {
-  "status": "ok" | "failed" | "blocked" | "needs_context" | "model_unavailable",
+  "status": "ok" | "failed" | "blocked" | "needs_context" | "model_unavailable" | "done_with_concerns",
   "evidence": {
     "tests_exit_code": 0,
     "commit_sha": "abc1234",
@@ -180,26 +185,31 @@ orchestrator 是 JS sandbox：**无 fs、无 subprocess、无 Date.now/Math.rand
 orchestrator 维护 in-memory 状态（JS 变量），从 agent 返回值更新，据此做路由：
 
 ```javascript
-// orchestrator in-memory state（每个 plan 执行开始时重置）
+// orchestrator in-memory state（perTask 嵌套结构，task 开始时初始化）
 let state = {
-  current_plan: null,
-  current_task: null,
-  tasks_completed: [],      // from bootstrap or commit subagent returns
-  task_status: {},          // {taskId: 'pending'|'in_progress'|'committed'|'blocked'}
-  review_round: 0,          // 当前 task 的 review round 计数
-  simplify_invoked: false,  // 当前 task simplify 是否已触发
-  files_touched_per_round: [], // [[file1,file2], [file2,file3], ...] 用于振荡检测
-  review_history: [],          // 每轮 review findings 摘要 [{round, spec/quality/hunter:{status, findings:[{title,severity}]}}] —— halt 后定位振荡点（§4.4 末）
+  currentTask: null,
+  completed: [],              // 已完成 task key（plan-XX/TY）from bootstrap or commit
+  perTask: {},                // {taskId: {planId, status, model, review_rounds, files_touched_per_round,
+                              //   review_history, commit_sha, simplify_reverted, simplify_review_findings,
+                              //   destructive_review_failed, destructive_review_findings, concerns, blocked_info}}
+  failedApproaches: {},       // {taskId: [{reason, error}]} 跨 session 失败方案（bootstrap 扫 runs/ 提取）
+  taskLessons: {},            // {taskId: [lesson]} bootstrap 按 task 标题关键词匹配的 lessons
+  taskWriteFiles: {},         // {taskId: [file]} bootstrap 提取的 plan declared write_files
+  config: null,               // workflow.config.json（test_command/spec_path/...）
+  runTs: null,                // 运行时间戳（get-ts agent 生成）
 }
+// perTask[taskId] 初始化（runTask 顶部）：status='in_progress'，所有持久化字段初始化为默认值
+// （false/[]/null），确保 manifest JSON 序列化时字段完整、schema 稳定。
 
-// 路由逻辑
+// 路由逻辑（伪代码，实现见 run-plans.js runTask）
 switch (agentReturn.status) {
-  case 'ok':
-    // review round 全 ✅ → next phase (simplify/commit/next-task)
+  case 'ok' | 'done_with_concerns':
+    // done_with_concerns: 记 concerns，继续进 review（不 halt）
+    // ok: review round 全 ✅ → next phase (simplify/commit/next-task)
     break
   case 'blocked':
-    if (state.upgraded_to_opus) halt()  // opus 仍 blocked → halt
-    else retry_with_opus()              // 升级
+    if (model === 'opus') halt()  // opus 仍 blocked → halt（model 是局部变量，非 state 字段）
+    else retry_with_opus()        // 升级
     break
   case 'needs_context':
     dispatch_context_fetcher(agentReturn.diagnostics)
@@ -214,15 +224,10 @@ switch (agentReturn.status) {
     break
 }
 
-// 振荡检测（§9/§13g）
-if (state.files_touched_per_round.length >= 2) {
-  const prev = state.files_touched_per_round.at(-2)
-  const curr = state.files_touched_per_round.at(-1)
-  if (same_files_reversing(prev, curr)) {
-    mark_oscillating()
-    halt_and_surface()
-  }
-}
+// 振荡检测（§13g 实际算法，非伪代码）：
+// detectOscillation(filesTouchedPerRound) —— length<3 → 不振荡；
+// 规则 1：同文件出现在 ≥3 个 round → 振荡；规则 2：连续 2 round files 完全重叠且 ≥2 → 振荡。
+// 详见 §13g。allGreen break 必须在 detectOscillation 之前（防收敛误报，REGRESSION 测试守护）。
 ```
 
 **orchestrator 不"理解"返回值语义**——它只做模式匹配（status enum → 路由）。诊断（为什么 blocked、是否振荡）由 agent 在 `diagnostics` 字段预计算，orchestrator 据此路由。
@@ -280,33 +285,47 @@ if (state.files_touched_per_round.length >= 2) {
 
 review 不是对静态 artifact 的独立观察，是对**当前 working tree** 的 verdict。若 spec 触发修复，tree 变，并行的 quality/hunter 的 verdict 立刻过时。"每 reviewer 独立循环直到✅"自相矛盾。正确形态：**round 内并行（同 snapshot）、round 间串行（任一 ❌ 触发新 round）、max N（默认 4，可配）**。
 
-### 5.2 simplify 流程：方案 C（commit 提前 + git diff 触发 review + amend/checkout 回退，2026-07-03）
+### 5.2 simplify 流程：方案 C（commit 提前 + git status 触发 review + amend/checkout 回退，2026-07-03）
 
 **旧设计（无条件 review）问题**：orchestrator 无法 diff，不能信任 simplify 自报"是否改了代码"，故无条件触发 review round——但 simplify 多数情况只改注释/格式，3 个 review 全绿空跑，成本浪费。
 
-**方案 C 新流程**（commit 提前到 simplify 前，git diff 独立验证触发 review）：
+**方案 C 新流程**（commit 提前到 simplify 前，git status --porcelain 独立验证触发 review）：
 
 ```
-review 全绿 → COMMIT → SIMPLIFY → git diff --stat 检查有无改动
-                                         ├─ 有改动 → re-review (spec‖qual‖hunt)
-                                         │            ├─ 全绿 → git commit --amend（合并 simplify 改动到 HEAD）
-                                         │            └─ 失败 → git checkout -- .（回退 simplify 改动，HEAD 不变）
+review 全绿 → COMMIT → SIMPLIFY → git status --porcelain subagent 检查有无改动（staged+unstaged）
+                                         ├─ 有改动 → re-review (spec‖qual‖hunt, runReviewRound helper)
+                                         │            ├─ 全绿 → git commit --amend + git rev-parse HEAD（validateAmendResult 校验 40 位 hex）
+                                         │            └─ 失败 → git checkout -- . && git clean -fd（validateCheckoutResult 兜底验证 porcelain 空）
+                                         │                          └─ checkout 失败/工作树仍脏 → halt 'simplify checkout failed'
                                          └─ 无改动 → 跳过 review（省成本）
+   diff subagent 失败 → halt 'simplify diff check failed'；amend 失败/SHA 格式错 → halt 'simplify amend failed'
 ```
 
 **关键设计决策**：
 
-1. **commit 提前**：旧流程 `simplify → commit` 让 commit 兜底 simplify 失败；新流程 `commit → simplify` 让 simplify 改动可被 git diff 精确观测。commit 后工作树本应 clean，simplify 若动代码 → git diff 非空 → 触发 review。
-2. **git diff 独立验证**（不信任 `simp.evidence.changed` 自报）：用 subagent 跑 `git diff --stat` 和 `git diff --name-only`，返回 `{changed, files}`。runtime 禁止 orchestrator 直接调 shell，故走 subagent。
+1. **commit 提前**：旧流程 `simplify → commit` 让 commit 兜底 simplify 失败；新流程 `commit → simplify` 让 simplify 改动可被 git status 精确观测。commit 后工作树本应 clean，simplify 若动代码 → git status --porcelain 非空 → 触发 review。
+2. **git status --porcelain 独立验证**（不信任 `simp.evidence.changed` 自报）：用 subagent 跑 `git status --porcelain`，返回 `{changed, files}`。同时检测 staged + unstaged 改动（防 simplify 误 `git add` 后 staged 改动被 `git diff --stat` 漏检）。runtime 禁止 orchestrator 直接调 shell，故走 subagent。三个 subagent（diff/amend/checkout）均用 `safeAgent` 包装 + 返回值验证 + 失败 halt（§5.2 健壮化）。
 3. **amend/checkout 回退**：
-   - review 全绿 → `git add -A && git commit --amend --no-edit` 合并 simplify 改动到 HEAD（保持单 commit 原子性，避免 HEAD 多一个 simplify commit 污染 git log）
-   - review 失败 → `git checkout -- .` 丢弃 simplify 改动（HEAD 不变，task 仍 committed 在原 SHA）
+   - review 全绿 → `git add -A && git commit --amend --no-edit` 合并 simplify 改动到 HEAD（保持单 commit 原子性，避免 HEAD 多一个 simplify commit 污染 git log）；amend 后用 `git rev-parse HEAD` 独立获取新 SHA + `validateAmendResult` 纯函数校验 40 位 hex（不信任 agent 自报字符串）
+   - review 失败 → `git checkout -- . && git clean -fd` 丢弃 simplify 改动（tracked 修改 + untracked 新文件，HEAD 不变，task 仍 committed 在原 SHA）；checkout 后再跑 `git status --porcelain` 兜底验证工作树真 clean（`validateCheckoutResult` 纯函数校验 porcelain 空，防 ok:true 谎报）
+   - review 失败时 simplify review findings 持久化到 `perTask.simplify_review_findings`（不丢，用户无需考古 transcript）
 4. **省成本**：simplify 没动代码则跳过 review（旧设计无条件 review 的成本浪费被消除）。
-5. **max 1** 由 orchestrator JS 计数强制（同旧设计）。
+5. **max 1** 由线性流程强制（simplify 在 runTask 中单次调用，非计数器；旧 `simplify_invoked` 字段已删除）。
 
-**为什么不用 simplify 自报 changed 触发 review**：simplify agent 的 `evidence.changed` 是 LLM 自报，存在误报风险（模型可能说没改但实际改了，或反之）。git diff 是 ground truth，确定性触发。
+**为什么不用 simplify 自报 changed 触发 review**：simplify agent 的 `evidence.changed` 是 LLM 自报，存在误报风险（模型可能说没改但实际改了，或反之）。git status 是 ground truth，确定性触发。
 
-**状态机守卫不变**：simplify review 轮同样接 `reviewHaltReason` + `reviewHaltForEmptyFailed` 双守卫（同主 review 轮）。
+**状态机守卫不变**：simplify review 轮同样接 `reviewHaltReason` + `reviewHaltForEmptyFailed` 双守卫（同主 review 轮，复用 `runReviewRound` helper）。
+
+### 5.2.1 Destructive Change Detection（commit 后额外 review round）
+
+commit agent 在 step 3.6 检测 `deleted_code` / `file_deletion` / `signature_change`，写入 `diagnostics.destructive_changes`。非空 → 触发 spec+quality+hunter 并行额外 review（`runReviewRound` helper，`:destructive` label）。
+
+**与主 review 轮的区别**：
+- 不计入 `review_rounds` 限额（destructive 是增强保护，非主流程）
+- 失败/异常**不 halt**，记录 `destructive_review_failed` + `destructive_review_findings` 到 perTask 继续
+- 全绿则正常继续下一 task
+
+**设计动机**：destructive change（删除代码/文件/改签名）风险高于普通改动，值得独立 review。但不阻断流程——若 review 发现问题，记录到 manifest 供用户事后审计；若 review 异常（model 限额等），不应阻塞已 committed 的 task。
 
 ### 5.3 review max rounds 可配 + 最后 1 轮 fix 强制 opus（2026-07-03）
 
@@ -463,6 +482,8 @@ runs/<run-id>/
 
 **全自动**：workflow 全程无人工介入，`requesting-code-review` 由用户结束后主动发起。
 
+> **待实现**：当前 run-plans.js 降级为 `finalReport` only（写 manifest + digest），下方 pr-test-analyzer / verification-before-completion / finishing-a-development-branch 流程尚未实现。跨 plan 全量测试由每个 plan 末尾的 plan gate（§3）部分覆盖。
+
 ```
 所有 plan 完成
   → 跨 plan 全量测试（含覆盖率）
@@ -492,6 +513,7 @@ runs/<run-id>/
   "silent_failure_context": ["<项目特定静默失败纪律数组>"],
   "lessons_path": "docs/superpowers/lessons.md",
   "lessons_auto_distill": true,
+  "review_max_rounds": 4,
   "schema_tool": "alembic",
   "model_paths": ["app/models/"],
   "migration_paths": ["alembic/versions/"]
@@ -500,7 +522,9 @@ runs/<run-id>/
 
 启动 config smoke：`test_command --collect-only`（fail loud，2 秒发现 typo 而非 20 分钟）。
 
-> **可选字段**：`extra_lint_commands`（架构纪律 lint，如 domain 层纯度护栏）/ `reference_paths`（spec 外权威文档）/ `silent_failure_context`（项目特定静默失败纪律，hunter 优先核查）/ `lessons_path`（跨任务失败知识库，bootstrap 按 task 关键词匹配注入 implementor，halt 时调 lessonDistiller agent 自读写 `lessonsPath` 提炼可复用根因，§5.4 写盘契约）/ `lessons_auto_distill`（控制 halt 时自动提炼 lesson，默认 true，§5.4）/ `schema_tool` + `model_paths` + `migration_paths`（schema 迁移一致性检查三件套，gate 用 `git diff --name-only HEAD~1..HEAD` 查 model 有变更但无迁移文件 → `migration_missing=true` 触发 gate failed）均可选，不配即对应 prompt 段消失（条件渲染）。通用性原则：项目特有内容只走 config，不写进 prompt。
+> **可选字段**：`extra_lint_commands`（架构纪律 lint，如 domain 层纯度护栏）/ `reference_paths`（spec 外权威文档）/ `silent_failure_context`（项目特定静默失败纪律，hunter 优先核查）/ `lessons_path`（跨任务失败知识库，bootstrap 按 task 关键词匹配注入 implementor，halt 时调 lessonDistiller agent 自读写 `lessonsPath` 提炼可复用根因，§5.4 写盘契约）/ `lessons_auto_distill`（控制 halt 时自动提炼 lesson，默认 true，§5.4）/ `review_max_rounds`（review 最大轮数，默认 4，0=无限模式靠 detectOscillation 防线 halt，§5.3）/ `schema_tool` + `model_paths` + `migration_paths`（schema 迁移一致性检查三件套，gate 用 `git diff --name-only HEAD~1..HEAD` 查 model 有变更但无迁移文件 → `migration_missing=true` 触发 gate failed）均可选，不配即对应 prompt 段消失（条件渲染）。通用性原则：项目特有内容只走 config，不写进 prompt。
+
+> **跨 session 失败方案追踪（failed_approaches）**：bootstrap agent 扫 `runs/*/manifest.json` 提取历史 halt task 的 `failed_approach`（reason + error），注入 implementor prompt 的 `failedApproaches` 占位符。此机制让新 run 的 implementor 知晓历史失败方案、避免重蹈覆辙。`state.failedApproaches` 由 bootstrap 填充，runTask 通过 `formatFailedApproaches` 序列化注入。
 
 ### 11.2 plan frontmatter（YAML，writing-plans 产出约定）
 
@@ -548,8 +572,10 @@ PROMPTS{}          // 每个 role 的 prompt 模板字符串（内联，因 orch
 state{}            // §4.4 in-memory 状态
 detectOscillation(filesTouchedPerRound)   // §13g，copy
 buildPrompt(role, ctx)                    // 用 ctx 填充 PROMPTS[role]
-leafTasks(plan)                           // §13e 叶子优先规则
-main()
+runReviewRound(taskId, cfg, plan, fc, concernsHint, labelSuffix, phaseLabel)  // 并行 spec‖qual‖hunt + 双守卫（主轮/simplify/destructive 共用）
+validateAmendResult(result)               // amend subagent 返回值校验纯函数（Q8）
+validateCheckoutResult(result)            // checkout subagent 返回值校验纯函数（Q4/Q8）
+main()                                    // leafTasks(plan) 由 bootstrap agent 完成（§13e），runtime 不 inline
 ```
 
 **主流程（main）**：
@@ -610,12 +636,12 @@ return {result: 'done', state}
 | role | prompt 核心职责 | model | evidence 必填（§13c） |
 |---|---|---|---|
 | `bootstrap` | 读 config（§11.1）+ plan files（§13e 生成 frontmatter、叶子优先解析）+ git log（completed）+ dirty_tree | sonnet | config, plans[], completed[], dirty_tree |
-| `implementor` | TDD（RED→GREEN→REFACTOR），跑 `test_command`，self-review；BLOCKED 时填 diagnostics | task.model\|\|sonnet | tests_exit_code, files_changed[], pytest_summary |
+| `implementor` | TDD（RED→GREEN→REFACTOR），跑 `test_command`，self-review；BLOCKED 时填 diagnostics；done_with_concerns 时填 concerns[] | task.model\|\|sonnet | tests_exit_code, files_changed[], pytest_summary |
 | `specReviewer` | 代码 vs spec（`spec_path`）逐行比对，记 files_touched | opus | status, issues[] |
 | `qualityReviewer` | 质量/架构/边界/类型/不可变性，记 files_touched | opus | status, issues[] |
 | `hunter` | 静默失败/吞错/bad fallback（ECC silent-failure-hunter 语义），记 files_touched。**只读审查**：禁止跑 pytest/ruff/build（那是 implementor/gate 职责）；项目特定静默失败纪律经 `silent_failure_context` config 注入，hunter 优先核查 | sonnet | status, silent_failures[] |
 | `simplify` | 精简代码（ECC simplify 语义），**如实报 `changed(bool)`** | sonnet | changed, files_changed[] |
-| `commit` | status check → test → `git commit -m "feat(plan-X/T-Y): ..."`，返回 commit_sha | sonnet | commit_sha, committed_files[], tests_at_commit |
+| `commit` | status check → test → `git commit -m "feat(plan-X/T-Y): ..."`，返回 commit_sha；检测 out_of_scope / destructive_changes | sonnet | commit_sha, committed_files[], tests_at_commit |
 | `contextFetcher` | NEEDS_CONTEXT 兑现（grep/glob/LSP/读 spec/Context7/WebSearch） | sonnet | context |
 | `gate` | committed SHA 上 `git checkout <sha>` + 跑 `full_test_command` + **`git checkout -` 回原 HEAD**，真实 exit code（§3 独立 gate） | sonnet | tests_exit_code, pytest_summary |
 | `finalReport` | 读 orchestrator 传入的 in-memory state，写 `runs/<run-id>/manifest.json`（§13d），输出 digest | sonnet | — |
@@ -637,14 +663,14 @@ return {result: 'done', state}
 
 | agent | evidence 必填 | diagnostics 必填 |
 |---|---|---|
-| **implementor** | `tests_exit_code`, `files_changed`, `pytest_summary` | — |
+| **implementor** | `tests_exit_code`, `files_changed`, `pytest_summary` | `concerns[]`（done_with_concerns 时填，§4.4） |
 | **spec-reviewer** | `status`（ok/failed） | `issues[]`（spec 不符列表） |
 | **quality-reviewer** | `status`（ok/failed） | `issues[]`（质量问题列表） |
 | **silent-failure-hunter** | `status`（ok/failed） | `silent_failures[]`（静默失败列表） |
 | **simplify** | `changed`（bool）, `files_changed[]` | — |
-| **commit** | `commit_sha`, `committed_files[]`, `tests_at_commit` | — |
+| **commit** | `commit_sha`, `committed_files[]`, `tests_at_commit` | `out_of_scope[]`, `destructive_changes[]`（§5.2.1） |
 | **gate**（plan 级） | `tests_exit_code`, `pytest_summary` | — |
-| **bootstrap** | `config`, `plans[]`, `completed[]`, `in_progress`, `dirty_tree` | — |
+| **bootstrap** | `config`, `plans[]`, `completed[]`, `in_progress`, `dirty_tree`, `failed_approaches[]`, `task_lessons[]`, `task_write_files[]` | — |
 | **context-fetcher** | — | `context`（补充的上下文文本） |
 | **state-updater** | — | —（manifest 写入确认由 orchestrator 校验） |
 
@@ -658,7 +684,7 @@ return {result: 'done', state}
 
 ```
 runs/<run-id>/
-  manifest.json     # 仅 workflow 结束时写：{run_id, plans, per_task:{id:{status,model,review_rounds,files_touched_per_round,commit_sha,blocked_info}}, result}
+  manifest.json     # 仅 workflow 结束时写：{run_id, plans, per_task:{id:{status,model,review_rounds,files_touched_per_round,review_history,commit_sha,simplify_reverted,simplify_review_findings,destructive_review_failed,destructive_review_findings,concerns,blocked_info}}, result}
   log.ndjson        # 关键 agent() 返回后 append 一行（ts 由 subagent 调 Bash date）
 ```
 
@@ -752,8 +778,6 @@ function detectOscillation(filesTouchedPerRound) {
 - **真矛盾**（reviewer 持续分歧，如 T7 claims 时区：quality 要 CST「雷 2 同行同时区」vs hunter 要 naive UTC「主流惯例」，CLAUDE.md 两规则冲突）→ 永不全绿 → 落进 detectOscillation halt，让人介入打破规则冲突（手动选一侧 + commit + 全新跑续）。
 
 **files_touched 的来源**：review agent 的返回值 `diagnostics.files_touched` 由 orchestrator 追加到 in-memory `filesTouchedPerRound[]`。review agent 在检查 diff 时顺带记录变更文件列表。注：files_touched 记录的是「review 审查的文件」，核心文件每轮都被审查是正常的——故 detectOscillation 的「≥3 轮」规则只对「真矛盾/反复修同一文件不收敛」有意义，对「收敛」由前置 allGreen 兜底放行。
-
-**files_touched 的来源**：review agent 的返回值 `diagnostics.files_touched` 由 orchestrator 追加到 in-memory `filesTouchedPerRound[]`。review agent 在检查 diff 时顺带记录变更文件列表。
 
 ### 13h. Resume 机制收敛决策
 

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, isQuotaError, errStr, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound, resolveMaxRounds, detectOscillation, distillLessonInput, applyLessonDecisions, formatLessonsForDistill } from '../lib.js'
+import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, isQuotaError, errStr, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound, resolveMaxRounds, detectOscillation, distillLessonInput, applyLessonDecisions, formatLessonsForDistill, validateAmendResult, validateCheckoutResult } from '../lib.js'
 
 const ok = { status: 'ok', diagnostics: { files_touched: ['a.py'] } }
 const ok2 = { status: 'ok', diagnostics: { files_touched: ['b.py'] } }
@@ -182,6 +182,70 @@ test('haltLikelySource: implementor 路径 → implementor changes', () => {
   assert.equal(haltLikelySource('commit failed'), 'implementor changes')
   assert.equal(haltLikelySource('opus BLOCKED after context-fetch'), 'implementor changes')
   assert.equal(haltLikelySource('model_unavailable'), 'implementor changes')
+  // Q1（本轮新增）: 方案 C 三个 simplify halt reason + commit out_of_scope 须映射到 implementor changes
+  // ——simplify 改动可能残留工作树（diff 失败未回退 / amend 失败留 staged / checkout 失败留改动）
+  assert.equal(haltLikelySource('simplify diff check failed'), 'implementor changes')
+  assert.equal(haltLikelySource('simplify amend failed'), 'implementor changes')
+  assert.equal(haltLikelySource('simplify checkout failed'), 'implementor changes')
+  assert.equal(haltLikelySource('commit out_of_scope'), 'implementor changes')
+})
+
+// —— validateAmendResult / validateCheckoutResult（Q8：边界条件纯函数化，可 node:test 行为测试）——
+// 从 run-plans.js 抽出的纯决策函数：subagent 返回值校验。sync.test QC-4 字节比较守护一致性。
+test('validateAmendResult: ok=true + 40 位 hex sha → valid', () => {
+  const r = validateAmendResult({ ok: true, sha: 'a'.repeat(40) })
+  assert.equal(r.valid, true)
+  assert.equal(r.sha, 'a'.repeat(40))
+})
+
+test('validateAmendResult: ok=true + 空 sha → invalid', () => {
+  const r = validateAmendResult({ ok: true, sha: '' })
+  assert.equal(r.valid, false)
+  assert.match(r.error, /invalid sha/i)
+})
+
+test('validateAmendResult: ok=true + 短 sha（非 40 位）→ invalid', () => {
+  const r = validateAmendResult({ ok: true, sha: 'abc123' })
+  assert.equal(r.valid, false)
+})
+
+test('validateAmendResult: ok=true + sha 含非 hex 字符 → invalid', () => {
+  const r = validateAmendResult({ ok: true, sha: 'z'.repeat(40) })
+  assert.equal(r.valid, false)
+})
+
+test('validateAmendResult: ok=false → invalid，error 透传', () => {
+  const r = validateAmendResult({ ok: false, sha: '', error: 'pre-commit hook blocked' })
+  assert.equal(r.valid, false)
+  assert.equal(r.error, 'pre-commit hook blocked')
+})
+
+test('validateAmendResult: null/undefined → invalid', () => {
+  assert.equal(validateAmendResult(null).valid, false)
+  assert.equal(validateAmendResult(undefined).valid, false)
+})
+
+test('validateCheckoutResult: ok=true + porcelain 空 → valid（工作树真 clean）', () => {
+  const r = validateCheckoutResult({ ok: true, porcelain: '' })
+  assert.equal(r.valid, true)
+})
+
+test('validateCheckoutResult: ok=true + porcelain 含残留文件 → invalid（Q4 兜底验证）', () => {
+  // Q4: checkout 返回 ok:true 但 git status --porcelain 非空 → 实际未 clean，须 halt
+  const r = validateCheckoutResult({ ok: true, porcelain: ' M app/foo.py' })
+  assert.equal(r.valid, false)
+  assert.match(r.error, /working tree not clean|porcelain/i)
+})
+
+test('validateCheckoutResult: ok=false → invalid，error 透传', () => {
+  const r = validateCheckoutResult({ ok: false, error: 'permission denied' })
+  assert.equal(r.valid, false)
+  assert.equal(r.error, 'permission denied')
+})
+
+test('validateCheckoutResult: null/undefined → invalid', () => {
+  assert.equal(validateCheckoutResult(null).valid, false)
+  assert.equal(validateCheckoutResult(undefined).valid, false)
 })
 
 test('haltLikelySource: gate 路径 → gate restored（已 checkout 回原 HEAD）', () => {

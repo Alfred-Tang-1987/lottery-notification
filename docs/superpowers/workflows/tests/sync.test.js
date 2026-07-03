@@ -51,6 +51,7 @@ function extractFunctionBody(src, fnName) {
 
 test('QC-4: 关键 helper 函数体 lib.js ↔ run-plans.js 字节一致', () => {
   // Q7/S5: 扩展覆盖——影响路由/识别/反馈的关键决策函数须字节比较，不仅存在性正则
+  // Q8（本轮新增）: validateAmendResult / validateCheckoutResult 纯函数化后纳入字节比较
   const fns = [
     'fixModelForRound', 'resolveMaxRounds', 'haltLikelySource', 'reviewHaltReason',
     'reviewHaltForEmptyFailed', 'detectOscillation', 'classifyThrown',
@@ -58,6 +59,8 @@ test('QC-4: 关键 helper 函数体 lib.js ↔ run-plans.js 字节一致', () =>
     'isQuotaError', 'commitSubject', 'normalizeCompleted', 'matchesPlanFilter',
     'collectReviewFindings', 'summarizeReviewRound', 'formatFindings',
     'resolveLessonsAutoDistill', 'distillLessonInput',
+    // Q8 新增：方案 C subagent 返回值校验纯函数（边界条件可 node:test 行为测试）
+    'validateAmendResult', 'validateCheckoutResult',
   ]
   for (const fn of fns) {
     const libBody = extractFunctionBody(libSrc, fn)
@@ -243,4 +246,90 @@ test('halt 自动提炼 lesson 经独立 distiller agent（非 finalReport 内�
     assert.match(p, /lessonsPath=\{\{lessonsPath\}\}/, `${name} lessonDistiller 输入应为 lessonsPath 路径`)
     assert.doesNotMatch(p, /existingLessons=\{\{existingLessons\}\}/, `${name} lessonDistiller 不应依赖 existingLessons 传入`)
   }
+})
+
+// ===== 本轮（commit 1057400 后 review）Q2-Q10 健壮化 TDD 断言 =====
+
+test('Q2: perTask 初始化须含 simplify_reverted / destructive_review_* / concerns 字段（manifest 输出稳定）', () => {
+  // Q2: 未初始化的字段仅在对应路径触发时赋值 → manifest JSON 序列化时被省略 → schema 不稳定
+  // 须在 task 开始时就初始化为 false / [] 默认值
+  assert.match(runSrc, /simplify_reverted:\s*false/, 'perTask 初始化须含 simplify_reverted: false')
+  assert.match(runSrc, /destructive_review_failed:\s*false/, 'perTask 初始化须含 destructive_review_failed: false')
+  assert.match(runSrc, /destructive_review_findings:\s*\[\]/, 'perTask 初始化须含 destructive_review_findings: []')
+  assert.match(runSrc, /concerns:\s*\[\]/, 'perTask 初始化须含 concerns: []（done_with_concerns 路径未触发时也要有默认值）')
+})
+
+test('Q3: simplify review 失败后 findings 须持久化（不丢，用户无需考古 transcript）', () => {
+  // Q3: simplify review 不全绿时 checkout 回退，但 review 发现的具体 issues 完全丢失
+  // ——对比 destructive review 失败有 destructive_review_findings，simplify 也须等价持久化
+  assert.match(runSrc, /simplify_review_findings/, 'simplify review 失败须持久化 findings 到 perTask.simplify_review_findings')
+  // finalReport prompt per_task 结构须含 simplify_review_findings 字段（防 agent 丢弃）
+  for (const src of [libSrc, runSrc]) {
+    const p = promptBody(src, 'finalReport')
+    assert.match(p, /simplify_review_findings/, 'finalReport per_task 须含 simplify_review_findings 字段')
+  }
+})
+
+test('Q4: checkout subagent 须兜底验证（再跑 git status --porcelain 确认工作树真 clean）', () => {
+  // Q4: checkout 返回 ok:true 但可能实际未 clean（权限/只读 fs/.gitignore 异常）→ 须独立验证
+  // 用 validateCheckoutResult 纯函数校验 ok + porcelain 双字段（Q8 抽出，可行为测试）
+  assert.match(runSrc, /git checkout -- \. && git clean -fd/, 'checkout 命令须含 git checkout -- . && git clean -fd')
+  assert.match(runSrc, /git status --porcelain/, 'checkout 后须再跑 git status --porcelain 兜底验证（Q4）')
+  assert.match(runSrc, /validateCheckoutResult/, '须用 validateCheckoutResult 纯函数校验 checkout 返回值（Q8 抽出）')
+  // checkout schema 须含 porcelain 字段（用于兜底验证）
+  assert.match(runSrc, /porcelain/, 'checkout schema 须含 porcelain 字段（兜底验证工作树状态）')
+})
+
+test('Q6: filesChanged.join 须用换行分隔（避免逗号/空格文件路径歧义）', () => {
+  // Q6: join(',') 对含逗号文件路径（如 data,v2.json）歧义；reviewer 用 git diff 作 ground truth，
+  // changedHint 仅是聚焦提示，换行分隔更安全
+  assert.doesNotMatch(runSrc, /filesChanged\.join\(','\)/, '不得用 join(",") 拼接文件列表（逗号歧义）')
+  assert.doesNotMatch(runSrc, /simpFiles\.join\(','\)/, 'simplify 文件列表不得用 join(",")')
+  assert.match(runSrc, /filesChanged\.join\('\\n'\)/, '主轮文件列表须用 join("\\n") 换行分隔')
+  assert.match(runSrc, /simpFiles\.join\('\\n'\)/, 'simplify 文件列表须用 join("\\n") 换行分隔')
+})
+
+test('Q7: runReviewRound helper 须给 spec/qual/hunt 三处都设 phase（UI 分组一致）', () => {
+  // Q7: 旧实现仅 specReview 设 phase → /workflows UI 中 qual/hunt 不按阶段分组
+  // helper 须给三处 opts 都设 phase（若 phaseLabel 非空）
+  const helperStart = runSrc.indexOf('async function runReviewRound')
+  const helperEnd = runSrc.indexOf('\n}', helperStart)
+  const helperBody = runSrc.slice(helperStart, helperEnd + 2)
+  // 三处 label 都应在 helper 内出现（spec/qual/hunt）
+  assert.match(helperBody, /spec:/, 'helper 须含 spec label')
+  assert.match(helperBody, /qual:/, 'helper 须含 qual label')
+  assert.match(helperBody, /hunt:/, 'helper 须含 hunt label')
+  // phase 须对三处都设（不能只设 spec）——检查 phaseLabel 传播
+  assert.match(helperBody, /phase/, 'helper 须处理 phaseLabel')
+  // 不得出现"仅 specOpts 设 phase"的旧模式
+  assert.doesNotMatch(helperBody, /if \(phaseLabel\) specOpts\.phase = phaseLabel/, '不得仅给 specOpts 设 phase（须三处都设）')
+})
+
+test('Q9: finalReportWithFallback 返回值须被调用方检查（全链失败时不静默继续）', () => {
+  // Q9: finalReportWithFallback 全链失败返回 null 时，halt()/done 路径不感知 → 用户误以为进度已保存
+  // 须检查返回值，null 时 log 致命错误
+  assert.match(runSrc, /const fr = await finalReportWithFallback|finalReportWithFallback.*\n.*if\s*\(!fr\)/, 'halt/done 路径须检查 finalReportWithFallback 返回值')
+  assert.match(runSrc, /manifest 未写入|manifest.*not.*written|无法保存/i, 'finalReport 返回 null 时须 log 致命错误提示')
+})
+
+test('Q10: concerns 须进 finalReport prompt per_task 结构（跨 session 可追溯 implementor 疑虑）', () => {
+  // Q10: concerns 存 state.perTask 但 finalReport prompt per_task 未列 → manifest 不记录 → 跨 session 丢失
+  for (const src of [libSrc, runSrc]) {
+    const p = promptBody(src, 'finalReport')
+    assert.match(p, /concerns/, 'finalReport per_task 须含 concerns 字段（implementor 疑虑可追溯）')
+  }
+})
+
+test('Q1: haltLikelySource 须覆盖本轮新增的 simplify halt reason + commit out_of_scope', () => {
+  // Q1: 方案 C 健壮化新增三个 halt reason，haltLikelySource 正则须覆盖
+  // ——simplify 改动可能残留工作树是 likely_source 设计的核心场景
+  // halt reason 字面量只在 run-plans.js（runtime 字符串）；lib.js 只含 haltLikelySource 正则
+  assert.match(runSrc, /simplify diff check failed/, 'run-plans.js 须含 simplify diff check failed halt reason')
+  assert.match(runSrc, /simplify amend failed/, 'run-plans.js 须含 simplify amend failed halt reason')
+  assert.match(runSrc, /simplify checkout failed/, 'run-plans.js 须含 simplify checkout failed halt reason')
+  assert.match(runSrc, /commit out_of_scope/, 'run-plans.js 须含 commit out_of_scope halt reason')
+  // haltLikelySource 正则须含新 reason（不能 fall through 到 unknown）—— 两副本字节一致，查 lib.js 即可
+  const libHalt = extractFunctionBody(libSrc, 'haltLikelySource')
+  assert.match(libHalt, /simplify \(diff check\|amend\|checkout\) failed/, 'haltLikelySource 正则须匹配 simplify diff/amend/checkout failed')
+  assert.match(libHalt, /commit out_of_scope/, 'haltLikelySource 正则须匹配 commit out_of_scope')
 })

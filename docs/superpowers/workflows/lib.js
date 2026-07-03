@@ -183,8 +183,33 @@ export function haltLikelySource(reason) {
   const r = String(reason || '')
   if (r === 'plan gate failed' || /gate/.test(r)) return 'gate restored'        // gate 已 checkout 回原 HEAD
   if (/^bootstrap /.test(r)) return 'bootstrap frontmatter'                      // bootstrap 可能写了 plan frontmatter
-  if (/max rounds|OSCILLATING|fix-round|commit failed|simplify reported|BLOCKED|after (context-fetch|retry)|agent_error|model_unavailable|review_empty|review_failed_no_findings/.test(r)) return 'implementor changes'
+  if (/max rounds|OSCILLATING|fix-round|commit failed|commit out_of_scope|simplify (diff check|amend|checkout) failed|simplify reported|BLOCKED|after (context-fetch|retry)|agent_error|model_unavailable|review_empty|review_failed_no_findings/.test(r)) return 'implementor changes'
   return 'unknown'
+}
+
+// 校验 amend subagent 返回值（Q1/Q8：边界条件纯函数化，可 node:test 行为测试）。
+// amend 须返回 {ok:true, sha:"<40-hex>"}；ok:false / 空 sha / 非 40 位 / 非 hex → invalid。
+// run-plans.js 调用方据此 halt（不静默继续用旧 SHA → gate 在旧 SHA 跑漏检 simplify 改动）。
+export function validateAmendResult(result) {
+  const sha = String(result?.sha || '').trim()
+  if (!result?.ok || !/^[0-9a-f]{40}$/.test(sha)) {
+    return { valid: false, error: result?.error || result?.sha || 'invalid sha' }
+  }
+  return { valid: true, sha }
+}
+
+// 校验 checkout subagent 返回值（Q4/Q8：兜底验证工作树真 clean，防 ok:true 谎报）。
+// checkout 须返回 {ok:true, porcelain:""}——porcelain 非空表示工作树仍有残留（权限/只读 fs 异常）。
+// ok:false / porcelain 非空 / null → invalid，调用方 halt（不无条件设 simplify_reverted=true）。
+export function validateCheckoutResult(result) {
+  if (!result?.ok) {
+    return { valid: false, error: result?.error || 'checkout failed' }
+  }
+  const porcelain = String(result?.porcelain || '').trim()
+  if (porcelain !== '') {
+    return { valid: false, error: `working tree not clean after checkout: ${porcelain}` }
+  }
+  return { valid: true }
 }
 
 // fix-round implementor 的 model 选择（§5.1 难度递增：最后 1 轮 fix 用最强 model）。
@@ -764,7 +789,7 @@ Inputs: mode={{mode}} state={{stateJson}} blockedInfo={{blockedInfo}} runsDir={{
 
 Steps:
 1. mkdir -p {{runsDir}}.
-2. Write {{runsDir}}/manifest.json = {run_ts:{{runTs}}, mode:{{mode}}, plans:[...], per_task:{<taskId>:{status,model,review_rounds,files_touched_per_round,review_history,commit_sha,simplify_reverted,destructive_review_failed,destructive_review_findings,blocked_info}}, result}.
+2. Write {{runsDir}}/manifest.json = {run_ts:{{runTs}}, mode:{{mode}}, plans:[...], per_task:{<taskId>:{status,model,review_rounds,files_touched_per_round,review_history,commit_sha,simplify_reverted,simplify_review_findings,destructive_review_failed,destructive_review_findings,concerns,blocked_info}}, result}.
 3. If mode=halted: write {{runsDir}}/blocked.md from {{blockedInfo}} (the blocked task's blocked_info JSON — render EACH field human-readably: plan, task, reason, category, last_error, suggested_fix, quota_exhausted, likely_source, failed_approach). For failed_approach, render as: "Failed Approach: <failed_approach.task_id>: <failed_approach.reason> — <failed_approach.error>". Do NOT hunt for these fields in state — they are provided inline in blockedInfo.
 4. If mode=halted: run "git status --porcelain" and "git diff --stat". BEST-EFFORT — if git fails (not a repo / index corrupt), skip this section (do NOT block manifest.json write).
    If "git status --porcelain" output is non-empty, append a "## Working Tree (dirty)" section to blocked.md with: the porcelain output (file list) + the diff --stat output (change summary) + 接手指引（implementor 改动未提交，留在工作树。选项：git diff <file> 查看 / git checkout -- <file> 丢弃 / 手动修后 git commit -m "feat(plan-X/T-Y): ..." 再全新跑续，见 USAGE.md §7.1）。
