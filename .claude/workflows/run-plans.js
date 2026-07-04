@@ -14,6 +14,9 @@ export const meta = {
   ],
 }
 
+await (async () => {
+
+
 // ===== 纯函数（inline 自 lib.js Task 2-4，逐字复制）=====
 function detectOscillation(filesTouchedPerRound) {
   if (filesTouchedPerRound.length < 3) return { oscillating: false }
@@ -898,7 +901,8 @@ async function halt(plan, task, r) {
       likely_source: haltLikelySource(r.reason),
       failed_approach: { task_id: tid, reason: r.reason, error: r.diag?.last_error || r.reason },
       raw: r.diag || {},
-    } }
+    }
+  })
   phase('Finalize')
   const blockedInfo = JSON.stringify(state.perTask[tid].blocked_info)
   // SH2 修复（§5.4）：distiller 是独立 agent 调用（非 finalReport 内部调）。
@@ -1335,3 +1339,5 @@ const frDone = await agentWithFallback('finalReport', { mode: 'done', stateJson:
 if (!frDone) log('✗✗ 致命：finalReport 全链失败，manifest 未写入！请手动检查 runs/ 目录')
 log('✓ workflow done')
 return { result: 'done', perTask: state.perTask }
+
+})()
