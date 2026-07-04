@@ -43,8 +43,15 @@ function detectOscillation(filesTouchedPerRound) {
   return { oscillating: false }
 }
 function buildPrompt(role, ctx = {}) {
-  const tpl = PROMPTS[role]; if (!tpl) throw new Error(`unknown role: ${role}`)
-  return tpl.replace(/\{\{(\w+)\}\}/g, (_, k) => (k in ctx ? String(ctx[k]) : `{{${k}}}`))
+  const tpl = PROMPTS[role]
+  if (!tpl) throw new Error(`unknown role: ${role}`)
+  // P1-7（第 6 轮）: undefined/null 值渲染为空串（防 "undefined" 污染 prompt）。
+  //   key 缺失（k in ctx=false）保留 {{k}} 占位符（debug 用）；key 存在但值为 undefined → 空串。
+  return tpl.replace(/\{\{(\w+)\}\}/g, (_, k) => {
+    if (!(k in ctx)) return `{{${k}}}`
+    if (ctx[k] === undefined || ctx[k] === null) return ''
+    return String(ctx[k])
+  })
 }
 function allGreen(...reviews) { return reviews.every(r => r && r.status === 'ok') }
 function unionFiles(...reviews) {
@@ -165,9 +172,20 @@ function reviewHaltReason(s, q, h) {
 // 与 finalReport 的 git status ground truth 并存：halt() 填 blocked_info.likely_source。
 function haltLikelySource(reason) {
   const r = String(reason || '')
-  if (r === 'plan gate failed' || /gate/.test(r)) return 'gate restored'        // gate 已 checkout 回原 HEAD
-  if (/^bootstrap /.test(r)) return 'bootstrap frontmatter'                      // bootstrap 可能写了 plan frontmatter
-  if (/max rounds|OSCILLATING|fix-round|commit failed|commit out_of_scope|simplify (diff check|amend|checkout) failed|BLOCKED|after (context-fetch|retry)|agent_error|model_unavailable|review_empty|review_failed_no_findings/.test(r)) return 'implementor changes'
+  if (r === 'plan gate failed' || r.includes('gate')) return 'gate restored'        // gate 已 checkout 回原 HEAD
+  if (r.startsWith('bootstrap ')) return 'bootstrap frontmatter'                      // bootstrap 可能写了 plan frontmatter
+  // P1-8（第 6 轮）: 显式 reason→source 映射（替代大正则，防误匹配 + 易维护）。
+  //   静态 reason 用 Set；动态 reason（implementor ${status} after/in fix-round）用 startsWith。
+  const implReasons = new Set([
+    'model_unavailable', 'agent_error',
+    'opus BLOCKED', 'opus BLOCKED after context-fetch',
+    'OSCILLATING', 'review max rounds',
+    'commit failed', 'commit out_of_scope',
+    'simplify diff check failed', 'simplify amend failed', 'simplify checkout failed',
+    'review_empty', 'review_failed_no_findings',
+  ])
+  if (implReasons.has(r)) return 'implementor changes'
+  if (r.startsWith('implementor ')) return 'implementor changes'
   return 'unknown'
 }
 
@@ -201,7 +219,9 @@ function validateCheckoutResult(result) {
 // 无限模式（maxRounds=0）：前 3 轮用 baseModel；round>=4 强制 opus（前 3 轮没修好说明问题复杂）。
 // maxRounds 未传（向后兼容）→ 默认 3（round=2 升级 opus）。已是 opus 返回 'opus'（语义等价）。
 function fixModelForRound(round, baseModel, maxRounds) {
-  const max = (maxRounds === undefined) ? 3 : maxRounds
+  // P2-10（第 6 轮）: 删除 maxRounds 未传显式分支（resolveMaxRounds 总返回 number，死代码）。
+  //   保留 ?? 3 容错（直接调用时默认 3，向后兼容 helpers.test.js）。
+  const max = maxRounds ?? 3
   if (max === 0) return round >= 4 ? 'opus' : baseModel   // 无限模式：round>=4 升级 opus
   if (round === max - 1) return 'opus'                     // 有限模式：最后 1 轮 fix 强制 opus
   return baseModel
@@ -254,8 +274,11 @@ async function dispatchImpl(prompt, opts, model, retryModel = null) {
   // 与 dispatchImpl 的 model 参数不一致，retryModel 逻辑也失效）。
   try { impl = await agent(prompt, { ...opts, model }) }
   catch (e) {
+    // P0-4（第 6 轮）: 非 quota 异常须封装 agent_error 返回（不 throw）。
+    //   旧代码 throw e → 被顶层 catch 捕获误判为 model_unavailable → 用户无效 resume。
+    //   quota → model_unavailable；其余 → agent_error（TypeError/ReferenceError 等真实 bug）。
     if (isQuotaError(e)) return { halted: true, reason: 'model_unavailable', diag: { model, error: errStr(e) } }
-    throw e
+    return { halted: true, reason: 'agent_error', diag: { model, error: errStr(e) } }
   }
   if (impl?.status === 'model_unavailable') return { halted: true, reason: 'model_unavailable', diag: impl.diagnostics }
   // agent() 返回 null：可能是限额耗尽（router 中文错误如"已达到 5 小时的使用上限"常被 runtime
@@ -275,7 +298,8 @@ async function dispatchImpl(prompt, opts, model, retryModel = null) {
         }
       } catch (e) {
         if (isQuotaError(e)) return { halted: true, reason: 'model_unavailable', diag: { model: retryModel, error: errStr(e) } }
-        throw e
+        // P0-4（第 6 轮）: retry 路径同样封装 agent_error（不 throw）
+        return { halted: true, reason: 'agent_error', diag: { model: retryModel, error: errStr(e) } }
       }
     }
     // Q6（第 5 轮）: 消息须根据是否有 retryModel 分支——无 retry 时说 "retry exhausted" 误导（从未 retry）。
@@ -533,16 +557,16 @@ Steps:
 2. Config smoke: run test_command with --collect-only. 判断：命令本身不存在（command not found / No such file: pytest）→ status=failed（环境/typo）；命令存在但 collect 失败（no module named pytest / pyproject.toml 不存在 / no tests collected / 业务代码未初始化）→ 记录 'project not yet initialized' 到 summary，status 仍 ok（业务代码由后续 task 创建，预期）。
 3. For each {{plansDir}}/*.md: if frontmatter (starts with ---) read task models; else generate — extract LEAF ids (## Task N with ### Task NX children → only NX; else N), modelHint (title contains 安全|加密|认证|JWT|CSRF|Fernet|算法|比对|策略|边界|集成|接口 → opus, else omit), write frontmatter at file top. Idempotent. Record each plan's file (full path) and seq (last two digits of filename, e.g. 01). Also read write_files from frontmatter if present (format: "write_files:\n  T1:\n    - src/a.py\n    - src/b.py"). Return as task_write_files in evidence: [{task_id, plan_seq, files:[...]}] (plan_seq = this plan's seq). Absent → empty array.
 4. git log → completed task ids via convention feat(plan-X/T-Y).
-5. git status --porcelain → dirty_tree.
+5. git status --porcelain → dirty_tree. If dirty_tree=true (uncommitted changes from a crashed previous run, §6.2 半提交自愈): run \`git reset --hard HEAD\` to clean the working tree (orchestrator has no shell, so bootstrap must self-heal here), then re-run \`git status --porcelain\` to confirm clean; set dirty_tree=false in evidence. If git reset fails, leave dirty_tree=true and record the error in summary.
 6. For each leaf task return its model (sonnet|opus|undefined→sonnet) and title (the description text from the Task header).
-7. If runs/ directory exists: scan runs/*/manifest.json files. For each, read per_task object. For each task_id in per_task that has blocked_info, extract {task_id, reason (from blocked_info.reason), error (from blocked_info.last_error)}. Filter to task_ids that match leaf tasks in the current plans. Return as failed_approaches in evidence. If runs/ does not exist → failed_approaches=[].
+7. If runs/ directory exists: scan runs/*/manifest.json files. For each, read per_task object. For each task_id in per_task that has blocked_info, extract {task_id, reason (from blocked_info.reason), error (from blocked_info.last_error)}. Filter to task_ids that match leaf tasks in the current plans. Return as failed_approaches in evidence. Also check if any task has status='in_progress' → in_progress=true (else false). If runs/ does not exist → failed_approaches=[], in_progress=false.
 
-Return {status, evidence:{config (include ALL fields read in step 1, even optional ones if present), plans:[{id, file, seq, tasks:[{id, model, title}]}], completed:[...], dirty_tree, failed_approaches:[{task_id, reason, error}], task_write_files:[{task_id, plan_seq, files:[...]}], task_lessons:[{task_id, plan_seq, lessons:[{id, title, detail}]}]}, summary}.
+Return {status, evidence:{config (include ALL fields read in step 1, even optional ones if present), plans:[{id, file, seq, tasks:[{id, model, title}]}], completed:[...], dirty_tree, in_progress, failed_approaches:[{task_id, reason, error}], task_write_files:[{task_id, plan_seq, files:[...]}], task_lessons:[{task_id, plan_seq, lessons:[{id, title, detail}]}]}, summary}.
 RED FLAG: evidence 必须是真实读取结果，绝不编造。`,
 
   implementor: `You are the IMPLEMENTOR for {{taskId}} (plan {{planId}}). TDD strict (RED→GREEN→REFACTOR). {{retryNote}}
 
-Inputs: specPath={{specPath}} testCommand={{testCommand}} planFile={{planFilePath}} taskId={{taskId}} fixIssues={{fixIssues}}
+Inputs: specPath={{specPath}} testCommand={{testCommand}} buildCommand={{buildCommand}} planFile={{planFilePath}} taskId={{taskId}} fixIssues={{fixIssues}}
 {{referencePaths}}
 {{failedApproaches}}
 {{lessons}}
@@ -552,7 +576,7 @@ Steps:
 1. Read {{planFilePath}}, locate {{taskId}} section: files to create/modify, tests to write.
 2. Read {{specPath}} relevant section; implement to spec. If reference documents are listed above, read the relevant rule section BEFORE writing number/play/prize logic.
 3. RED: write ONE minimal failing test for one behavior. Run {{testCommand}}; CONFIRM it fails — and fails for the RIGHT reason (feature missing), not a typo/import error. A test that passes immediately proves nothing (you may be testing existing behavior) — fix the test.
-4. GREEN: minimal code to pass the test. Don't add features or refactor beyond the test.
+4. GREEN: minimal code to pass the test. Don't add features or refactor beyond the test. If {{buildCommand}} is non-empty, run it before tests to verify the project builds.
 5. REFACTOR: clean up (dedupe, better names, extract helpers). Tests stay green.
 6. Self-review (see checklist below).
 7. Run {{testCommand}}; record pytest summary + exit code. If fixIssues non-empty, this round fixes them (review findings from spec/quality/hunter). If fetchedContext non-empty, it is REFERENCE MATERIAL to read — do NOT modify or "fix" it; use it to unblock.
@@ -939,7 +963,8 @@ async function runTask(plan, task) {
   // S1（第 5 轮）: failedApproaches 查找须用 taskKey（存储键来自 manifest per_task，已 plan-scoped）。
   //   S3（第 5 轮）: taskLessons 查找同须用 taskKey（存储键已 plan-scoped，防跨 plan 同名 task 覆盖）。
   //   旧代码用裸 task.id → 查找永远 undefined → failedApproaches/lessons 占位符不注入 implementor prompt。
-  const implCtx = (fix, note, ctx = '') => ({ planId: plan.id, taskId: task.id, planFilePath: plan.file, specPath: cfg.spec_path, testCommand: cfg.test_command, fixIssues: fix, retryNote: note, fetchedContext: ctx, referencePaths: formatReferencePaths(cfg.reference_paths), failedApproaches: formatFailedApproaches(state.failedApproaches?.[taskKey] || []), lessons: formatLessons(state.taskLessons?.[taskKey] || []) })
+  // P1-11（第 6 轮）: implCtx 传 buildCommand（implementor GREEN 前跑 build 验证可构建性）。
+  const implCtx = (fix, note, ctx = '') => ({ planId: plan.id, taskId: task.id, planFilePath: plan.file, specPath: cfg.spec_path, testCommand: cfg.test_command, buildCommand: cfg.build_command || '', fixIssues: fix, retryNote: note, fetchedContext: ctx, referencePaths: formatReferencePaths(cfg.reference_paths), failedApproaches: formatFailedApproaches(state.failedApproaches?.[taskKey] || []), lessons: formatLessons(state.taskLessons?.[taskKey] || []) })
   let impl
   impl = await dispatchImpl(buildPrompt('implementor', implCtx('', '')), { schema: SCHEMAS.implementor, model, label: `impl:${task.id}` }, model)
   if (impl.halted) return impl
@@ -958,7 +983,7 @@ async function runTask(plan, task) {
       needType: impl.diagnostics?.blocked_category || 'file',
       query: impl.diagnostics?.last_error || impl.diagnostics?.suggested_fix || '',
       specPath: cfg.spec_path, workdir: '.',
-    }), { schema: SCHEMAS.contextFetcher, label: `ctx:${task.id}` }, model)
+    }), { schema: SCHEMAS.contextFetcher, label: `ctx:${task.id}` }, 'sonnet')
     if (ctxr.halted) return ctxr
     const fetchedCtx = ctxr.diagnostics?.context || ''
     impl = await dispatchImpl(buildPrompt('implementor', implCtx('', `补充上下文后重试。`, fetchedCtx)), { schema: SCHEMAS.implementor, model, label: `impl:${task.id}:ctx` }, model)
@@ -1055,7 +1080,9 @@ async function runTask(plan, task) {
 
   // —— commit（提前到 simplify 前；§5 状态原子转换）——
   let commit
-  commit = await dispatchImpl(buildPrompt('commit', { taskId: task.id, planId: plan.id, planIdShort, commitMsg: commitSubject(plan.seq, task.id, task.title || task.id), testCommand: cfg.test_command, writeFilesScope: formatWriteFilesScope(state.taskWriteFiles?.[taskKey] || []) }), { schema: SCHEMAS.commit, label: `commit:${task.id}` }, model)
+  // P1-5（第 6 轮）: commit/simplify/contextFetcher 硬编码 sonnet（spec §13b least-powerful-model；
+  //   task model 可能因 BLOCKED 升级为 opus，commit/simplify 不应跟随升级，保持 sonnet 控成本）。
+  commit = await dispatchImpl(buildPrompt('commit', { taskId: task.id, planId: plan.id, planIdShort, commitMsg: commitSubject(plan.seq, task.id, task.title || task.id), testCommand: cfg.test_command, writeFilesScope: formatWriteFilesScope(state.taskWriteFiles?.[taskKey] || []) }), { schema: SCHEMAS.commit, label: `commit:${task.id}` }, 'sonnet')
   if (commit.halted) return commit
   if (commit.status === 'failed' && Array.isArray(commit.diagnostics?.out_of_scope) && commit.diagnostics.out_of_scope.length) return { halted: true, reason: 'commit out_of_scope', diag: commit.diagnostics }
   if (commit.status !== 'ok') return { halted: true, reason: 'commit failed', diag: commit.diagnostics }
@@ -1065,7 +1092,7 @@ async function runTask(plan, task) {
 
   // —— simplify（max 1，§5.2 方案 C：git diff 独立验证是否动代码）——
   let simp
-  simp = await dispatchImpl(buildPrompt('simplify', { taskId: task.id, filesChanged: filesChanged.join('\n') }), { schema: SCHEMAS.simplify, label: `simp:${task.id}` }, model)
+  simp = await dispatchImpl(buildPrompt('simplify', { taskId: task.id, filesChanged: filesChanged.join('\n') }), { schema: SCHEMAS.simplify, label: `simp:${task.id}` }, 'sonnet')
   if (simp.halted) return simp
   // commit 后工作树 clean → git status --porcelain 非空即 simplify 动了代码（不信任 simp.evidence.changed 自报）。
   // Q5: 用 git status --porcelain 替代 git diff --stat——同时检测 staged + unstaged，
@@ -1189,12 +1216,15 @@ let boot
 try {
   boot = await dispatchImpl(buildPrompt('bootstrap', { configPath: args.configPath, plansDir: args.plansDir, runTs: state.runTs }), { schema: SCHEMAS.bootstrap, label: 'bootstrap' }, 'sonnet', 'opus')
 } catch (e) {
-  // dispatchImpl 仅吞 quota 错（→halted）；其余非 quota 错抛出，此处兜底 halt
-  return await halt(null, null, { reason: 'model_unavailable', diag: { model: 'sonnet', error: errStr(e) } })
+  // P0-3（第 6 轮）: dispatchImpl 已封装 agent_error（不 throw），此处兜底仅防 runtime 异常。
+  //   旧代码一律标 model_unavailable → 误导用户无效 resume。改 agent_error（真实 bug 语义）。
+  return await halt(null, null, { reason: 'agent_error', diag: { model: 'sonnet', error: errStr(e) } })
 }
-if (boot.halted) { return await halt(null, null, { reason: 'model_unavailable', diag: boot.diag }) }
+if (boot.halted) { return await halt(null, null, { reason: boot.reason, diag: boot.diag }) }
 if (boot.status !== 'ok') { return await halt(null, null, { reason: `bootstrap ${boot.status}`, diag: boot.diagnostics }) }
 state.config = boot.evidence.config
+// P0-2（第 6 轮）: state.plans 须写入（finalReport stateJson 须含 plans，manifest 完整性）
+state.plans = boot.evidence.plans
 // 归一化为 "plan-{seq}/T-{id}"。run-2 旧逻辑【去】plan 前缀→单 plan 内能匹配，但跨 plan 同名
 // task（Plan 01/02 都有 T1-T10）会让 Plan 02 的 T2 被 Plan 01 的 T2 误 skip → domain layer 残缺。
 // plan-scoped key 修复：见下方比对 `plan-${plan.seq}/${task.id}`。
@@ -1238,24 +1268,32 @@ for (const plan of boot.evidence.plans) {
     try {
       r = await runTask(plan, task)
     } catch (e) {
-      // §2.4：uncaught error 视同 model_unavailable——本环境 agent 抛错（含 429 落 router stderr、不在 Error.message）≈ model 不可用。
-      // halt + 保存进度（finalReportWithFallback 依次试 opus/sonnet/haiku），等用户指令 resume，不降级继续开发。
-      r = { halted: true, reason: 'model_unavailable', diag: { model: task.model || 'sonnet', error: errStr(e) } }
+      // P0-3（第 6 轮）: uncaught error 须按 quota 与否分流（旧代码一律 model_unavailable 误导）。
+      //   quota（429/限额）→ model_unavailable；其余 → agent_error（TypeError 等真实 bug）。
+      //   halt + 保存进度（finalReportWithFallback 依次试 opus/sonnet/haiku），等用户指令 resume。
+      const reason = isQuotaError(e) ? 'model_unavailable' : 'agent_error'
+      r = { halted: true, reason, diag: { model: task.model || 'sonnet', error: errStr(e) } }
     }
     if (r.halted) { return await halt(plan, { id: task.id }, r) }
   }
   // plan 级独立 gate（§3）：本 plan 最后 commit SHA 上重跑 test + lint_command + extra_lint_commands
-  const lastSha = Object.values(state.perTask).filter(p => p.planId === plan.id && p.commit_sha).at(-1)?.commit_sha
+  // P2-9（第 6 轮）: lastSha 须按 plan.tasks 反向查找（非 Object.values 插入顺序，后者依赖 perTask 写入顺序）。
+  //   plan.tasks 是 plan frontmatter 定义的 task 顺序，反向遍历找最后一个有 commit_sha 的 task。
+  let lastSha = null
+  for (let i = plan.tasks.length - 1; i >= 0; i--) {
+    const tk = `plan-${plan.seq}/${plan.tasks[i].id}`
+    if (state.perTask[tk]?.commit_sha) { lastSha = state.perTask[tk].commit_sha; break }
+  }
   if (lastSha) {
     const cmds = gateCommands(state.config)
     let gate
     try {
       gate = await dispatchImpl(buildPrompt('gate', { sha: lastSha, gateCommands: JSON.stringify(cmds), schemaCheck: formatSchemaCheck(state.config?.schema_tool || '', state.config?.model_paths || [], state.config?.migration_paths || []) }), { schema: SCHEMAS.gate, label: `gate:${plan.id}`, phase: `Plan ${plan.id}` }, 'sonnet')
     } catch (e) {
-      // dispatchImpl 仅吞 quota 错（→halted）；其余非 quota 错抛出，此处兜底 halt
-      return await halt(plan, null, { reason: 'model_unavailable', diag: { model: 'sonnet', error: errStr(e) } })
+      // P0-3（第 6 轮）: dispatchImpl 已封装 agent_error，此处兜底改 agent_error（非 model_unavailable）
+      return await halt(plan, null, { reason: 'agent_error', diag: { model: 'sonnet', error: errStr(e) } })
     }
-    if (gate.halted) { return await halt(plan, null, { reason: 'model_unavailable', diag: gate.diag }) }
+    if (gate.halted) { return await halt(plan, null, { reason: gate.reason, diag: gate.diag }) }
     if (gate.status !== 'ok' || gate.evidence?.migration_missing) {
       return await halt(plan, null, { reason: 'plan gate failed', diag: { sha: lastSha, tests_exit_code: gate.evidence?.tests_exit_code, summary: gate.evidence?.pytest_summary, lint_results: gate.evidence?.lint_results, migration_missing: gate.evidence?.migration_missing } })
     }

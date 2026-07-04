@@ -44,7 +44,7 @@
 |---|---|---|
 | `test_command` | 是 | implementor/commit 跑的单测命令 |
 | `full_test_command` | 是 | plan gate 跑的全量测试命令 |
-| `build_command` | 否 | 构建（当前未在 gate 强制） |
+| `build_command` | 否 | 构建（**implementor GREEN 前跑验证可构建性**，第 6 轮 P1-11；空串/未配 → 跳过构建验证） |
 | `lint_command` | 否 | 通用 lint（gate 会跑，非 0 即 halt） |
 | `extra_lint_commands` | 否 | **架构/专项 lint 数组**（gate 依次跑）。承载项目架构纪律——如本项目的 `uv run lint-imports`（domain 层零 IO 纯度护栏）。不配即不约束 |
 | `spec_path` | 是 | 设计 spec（specReview 逐条对照） |

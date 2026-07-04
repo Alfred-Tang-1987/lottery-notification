@@ -351,10 +351,13 @@ test('Q1: haltLikelySource 须覆盖本轮新增的 simplify halt reason + commi
   assert.match(runSrc, /simplify amend failed/, 'run-plans.js 须含 simplify amend failed halt reason')
   assert.match(runSrc, /simplify checkout failed/, 'run-plans.js 须含 simplify checkout failed halt reason')
   assert.match(runSrc, /commit out_of_scope/, 'run-plans.js 须含 commit out_of_scope halt reason')
-  // haltLikelySource 正则须含新 reason（不能 fall through 到 unknown）—— 两副本字节一致，查 lib.js 即可
+  // haltLikelySource 须含新 reason（不能 fall through 到 unknown）—— 两副本字节一致，查 lib.js 即可
+  // P1-8（第 6 轮）: 改显式 Set 映射后，检查 reason 字面量存在（非大正则）
   const libHalt = extractFunctionBody(libSrc, 'haltLikelySource')
-  assert.match(libHalt, /simplify \(diff check\|amend\|checkout\) failed/, 'haltLikelySource 正则须匹配 simplify diff/amend/checkout failed')
-  assert.match(libHalt, /commit out_of_scope/, 'haltLikelySource 正则须匹配 commit out_of_scope')
+  assert.match(libHalt, /'simplify diff check failed'/, 'haltLikelySource 须含 simplify diff check failed（显式映射）')
+  assert.match(libHalt, /'simplify amend failed'/, 'haltLikelySource 须含 simplify amend failed（显式映射）')
+  assert.match(libHalt, /'simplify checkout failed'/, 'haltLikelySource 须含 simplify checkout failed（显式映射）')
+  assert.match(libHalt, /'commit out_of_scope'/, 'haltLikelySource 须含 commit out_of_scope（显式映射）')
 })
 
 // ===== 第 4 轮 review 修复断言（S1-S4 spec + Q1-Q11 quality）=====
@@ -579,4 +582,122 @@ test('Q15（第 5 轮）: review_history.push 须在 halt 检查之前（halt �
   assert.notEqual(pushIdx, -1, '须有 files_touched_per_round.push')
   assert.notEqual(reviewReasonIdx, -1, '须有 reviewReason halt 检查')
   assert.ok(pushIdx < reviewReasonIdx, 'push 须在 halt 检查之前（Q15：halt 轮状态须持久化）')
+})
+
+// ===== 第 6 轮 review 修复断言（P0/P1/P2，共 11 项修复 + 1 项 wontfix）=====
+// wontfix: log.ndjson / validate-plans / post-plan（大功能，spec 标注「实现期」，文档标 TODO）
+
+test('P0-1（第 6 轮）: bootstrap prompt 须说明 in_progress 字段（schema required 补齐）', () => {
+  // S6 补了 schema required 但 prompt 未说明如何获取 → agent 可能漏返 → schema 校验失败
+  // 修：prompt Steps + Return 行补 in_progress（检查 plan 是否有 in_progress task）
+  for (const src of [libSrc, runSrc]) {
+    const p = promptBody(src, 'bootstrap')
+    // Steps 须说明 in_progress 的获取方式
+    assert.match(p, /in_progress/, 'bootstrap prompt 须含 in_progress 字段（P0-1）')
+    // Return 行须列出 in_progress
+    assert.match(p, /Return \{status, evidence:\{[\s\S]*?in_progress/, 'bootstrap Return 行须含 in_progress（P0-1）')
+  }
+})
+
+test('P0-2（第 6 轮）: state.plans 须写入（finalReport stateJson 须含 plans）', () => {
+  // state 未保存 plans 数组 → finalReport 收到的 stateJson 缺 plans → manifest 不完整
+  assert.match(runSrc, /state\.plans\s*=\s*boot\.evidence\.plans/, 'state.plans 须赋值（P0-2）')
+})
+
+test('P0-3（第 6 轮）: 顶层 catch 须用 agent_error（非 model_unavailable）', () => {
+  // 顶层 catch 处理 dispatchImpl 抛出的非 quota 异常（TypeError 等），
+  // 旧代码一律标 model_unavailable → 误导用户无效 resume。修：改 agent_error
+  // 顶层 catch 位置：bootstrap try/catch、gate try/catch、runTask try/catch
+  // 这些 catch 不得用 model_unavailable（除非 dispatchImpl 已归类）
+  // 检查：bootstrap catch 块不得有 reason: 'model_unavailable'
+  const bootstrapCatchIdx = runSrc.indexOf("boot = await dispatchImpl(buildPrompt('bootstrap'")
+  const bootstrapCatchEnd = runSrc.indexOf('}', runSrc.indexOf('catch (e) {', bootstrapCatchIdx)) + 1
+  const bootstrapCatch = runSrc.slice(bootstrapCatchIdx, bootstrapCatchEnd)
+  assert.doesNotMatch(bootstrapCatch, /reason: 'model_unavailable'/, 'bootstrap 顶层 catch 不得用 model_unavailable（P0-3：非 quota 错误误归类）')
+  assert.match(bootstrapCatch, /reason: 'agent_error'/, 'bootstrap 顶层 catch 须用 agent_error（P0-3）')
+})
+
+test('P0-4（第 6 轮）: dispatchImpl 非 quota 异常须封装 agent_error（不 throw）', () => {
+  // dispatchImpl catch 非 quota 错时 throw e → 被顶层 catch 捕获误判为 model_unavailable
+  // 修：封装为 {halted:true, reason:'agent_error'} 返回（不 throw）
+  const dispatchMatch = runSrc.match(/async function dispatchImpl[\s\S]*?\n\}/)
+  assert.ok(dispatchMatch, '须有 dispatchImpl 函数')
+  // 不得有 throw e（非 quota 异常不得抛出）
+  assert.doesNotMatch(dispatchMatch[0], /if \(isQuotaError\(e\)\) return[\s\S]*?else throw e|throw e\s*$/, 'dispatchImpl 非 quota 异常不得 throw（P0-4）')
+  // 须返回 agent_error
+  assert.match(dispatchMatch[0], /reason: 'agent_error'/, 'dispatchImpl 非 quota 异常须封装 agent_error（P0-4）')
+})
+
+test('P1-5（第 6 轮）: commit/simplify/contextFetcher 须硬编码 sonnet（least-powerful-model）', () => {
+  // spec §13b 表注三者用 sonnet，不得用 task model（可能因 BLOCKED 升级为 opus）
+  // commit dispatchImpl 调用须用 model: 'sonnet'
+  assert.match(runSrc, /buildPrompt\('commit'[\s\S]*?\{[^}]*model: 'sonnet'/, 'commit 须用 sonnet（P1-5：least-powerful-model）')
+  assert.match(runSrc, /buildPrompt\('simplify'[\s\S]*?\{[^}]*model: 'sonnet'/, 'simplify 须用 sonnet（P1-5）')
+  assert.match(runSrc, /buildPrompt\('contextFetcher'[\s\S]*?\{[^}]*model: 'sonnet'/, 'contextFetcher 须用 sonnet（P1-5）')
+})
+
+test('P1-6（第 6 轮）: bootstrap prompt 须含 dirty_tree 自愈逻辑（git reset --hard HEAD）', () => {
+  // spec §6.2：dirty_tree=true 时 bootstrap agent 须自愈（git reset --hard HEAD 清理半提交）
+  // 不 halt（orchestrator 无 shell，但 bootstrap agent 有 Bash 访问）
+  for (const src of [libSrc, runSrc]) {
+    const p = promptBody(src, 'bootstrap')
+    assert.match(p, /git reset --hard HEAD/, 'bootstrap prompt 须含 git reset --hard HEAD 自愈（P1-6：dirty_tree 不 halt）')
+  }
+})
+
+test('P1-7（第 6 轮）: buildPrompt undefined 须渲染为空串（非 "undefined"）', () => {
+  // buildPrompt 用 String(ctx[k]) → undefined 渲染为 "undefined" 污染 prompt
+  // 修：ctx[k] === undefined 时渲染空串
+  for (const src of [libSrc, runSrc]) {
+    const fn = extractFunctionBody(src, 'buildPrompt')
+    assert.ok(fn, '须有 buildPrompt 函数')
+    // 不得直接 String(ctx[k])（undefined → "undefined"）
+    assert.doesNotMatch(fn, /=> \(k in ctx \? String\(ctx\[k\]\)/, 'buildPrompt 不得直接 String(ctx[k])（P1-7：undefined→"undefined"）')
+    // 须检查 undefined 或 null
+    assert.match(fn, /ctx\[k\] (?:===?\s*undefined|!=?\s*null|!==?\s*undefined)/, 'buildPrompt 须检查 undefined/null（P1-7）')
+  }
+})
+
+test('P1-8（第 6 轮）: haltLikelySource 须用显式映射（非大正则）', () => {
+  // 旧实现用大正则 /max rounds|OSCILLATING|.../ 维护困难、易误匹配
+  // 修：改显式 reason→source 映射（Set + startsWith）
+  for (const src of [libSrc, runSrc]) {
+    const fn = extractFunctionBody(src, 'haltLikelySource')
+    assert.ok(fn, '须有 haltLikelySource 函数')
+    // 不得用大正则（单行含 | 分隔 5+ 关键词）
+    assert.doesNotMatch(fn, /\([a-z_ ]+(?:\|[a-z_ ]+){4,}/, 'haltLikelySource 不得用大正则（P1-8：维护困难）')
+    // 须用 Set 或显式映射
+    assert.match(fn, /Set\(\[|\.has\(/, 'haltLikelySource 须用显式映射（Set/has，P1-8）')
+  }
+})
+
+test('P2-9（第 6 轮）: lastSha 须按 plan.tasks 反向查找（非 Object.values 插入顺序）', () => {
+  // Object.values 插入顺序依赖 perTask 写入顺序，不保证 plan.tasks 顺序
+  // 修：按 plan.tasks 反向查找最后一个有 commit_sha 的 task
+  assert.doesNotMatch(runSrc, /Object\.values\(state\.perTask\)\.filter\([^)]*\)\.at\(-1\)/, 'lastSha 不得用 Object.values 插入顺序（P2-9）')
+  // 须按 plan.tasks 查找（反向遍历或 reverse）
+  const gateIdx = runSrc.indexOf('lastSha')
+  const gateCtx = runSrc.slice(gateIdx, gateIdx + 300)
+  assert.match(gateCtx, /plan\.tasks/, 'lastSha 须按 plan.tasks 查找（P2-9）')
+})
+
+test('P2-10（第 6 轮）: fixModelForRound 不得有 undefined 分支（死代码）', () => {
+  // resolveMaxRounds 总返回 number，maxRounds === undefined 分支不可达
+  // 修：删除 undefined 分支（死代码清理）
+  for (const src of [libSrc, runSrc]) {
+    const fn = extractFunctionBody(src, 'fixModelForRound')
+    assert.ok(fn, '须有 fixModelForRound 函数')
+    assert.doesNotMatch(fn, /maxRounds === undefined/, 'fixModelForRound 不得有 maxRounds === undefined 分支（P2-10 死代码）')
+  }
+})
+
+test('P1-11（第 6 轮）: implementor prompt 须接入 build_command', () => {
+  // config 有 build_command 但无 prompt 使用 → 未验证可构建性
+  // 修：implementor prompt 加 buildCommand 占位符 + GREEN 前跑 build 验证
+  for (const src of [libSrc, runSrc]) {
+    const p = promptBody(src, 'implementor')
+    assert.match(p, /buildCommand/, 'implementor prompt 须含 buildCommand 占位符（P1-11）')
+  }
+  // orchestrator 须传 buildCommand 到 implCtx
+  assert.match(runSrc, /buildCommand:/, 'implCtx 须传 buildCommand（P1-11）')
 })

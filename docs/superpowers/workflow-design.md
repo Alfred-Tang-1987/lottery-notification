@@ -39,6 +39,7 @@ model = task.model || 'sonnet'   // 未标注默认 sonnet
 
 - modelHint 是**唯一确定性来源**（workflow JS 无法执行 LLM 打分）
 - loader subagent 校验 enum，unknown → fail loud（不静默降级）
+  > **wontfix（第 6 轮，低风险）**：当前 bootstrap agent 直接读 `task.model` 不做 enum 校验，invalid 值（如 `claude-3.5`）会透传到 `dispatchImpl` → `agent()` 调用失败 → halt `agent_error`。fail loud 语义已达成（不静默降级），只是错误路径稍晚（agent dispatch 时 vs bootstrap 校验时）。补 enum 校验为低优先级，详见 §14 wontfix 决策记录。
 
 **来源链**（依赖 writing-plans 增强，§13e）：
 ```
@@ -107,8 +108,11 @@ agent(model=opus/sonnet) 调用
    }
    ```
    halt()/done 调用 finalReportWithFallback，须检查返回值（null 时 log 致命错误，manifest 未写入）。**确保至少 haiku（最便宜、限额最宽）或环境默认能保存进度**。fallback 链**只此一处用途**——runTask 的主 agent 调用**不**用 fallback（不降级继续开发）。
-4. **runTask 限额捕获**：implementor/review/commit/gate 的 agent() 包 try/catch。捕获错误若含限额关键词 → 返回 `{halted:true, reason:'model_unavailable', diag:{model, error}}` → halt → finalReportWithFallback 保存。非限额错误 → 正常错误处理（retry/halt）。
-5. **resume 走 §13h**：额度恢复后 `resumeFromRunId`，native resume 重跑中断 task（此时额度可用）。manifest 的 `quota_exhausted` 字段提醒用户确认恢复再续跑。
+4. **runTask 限额捕获 + agent_error 分类**（P0-3/P0-4，第 6 轮）：implementor/review/commit/gate 的 agent() 包 try/catch。捕获错误经 `classifyThrown(e)`（`isQuotaError` ? `model_unavailable` : `agent_error`）分流：
+   - **限额错误** → 返回 `{halted:true, reason:'model_unavailable', diag:{model, error}}` → halt → finalReportWithFallback 保存。
+   - **非限额错误**（TypeError/ReferenceError 等真实 bug）→ 返回 `{halted:true, reason:'agent_error', diag:{model, error}}` → halt。**`agent_error` 语义**：orchestrator 代码或 agent runtime 异常（非限额、非任务难度），用户 resume 无效（相同 bug 会复现），须人工修代码。旧代码一律标 `model_unavailable` → 误导用户无效 resume。
+   - **`dispatchImpl` 非 quota 异常须封装 agent_error 返回（不 throw）**（P0-4）：旧代码 `throw e` → 顶层 catch 一律标 `model_unavailable`（误判）。改：dispatchImpl catch 块按 `isQuotaError` 分流，封装 `{halted:true, reason:'agent_error'/'model_unavailable'}` 返回；顶层 catch 仅兜底 runtime 异常（同样按 quota 分流）。retry 路径同样封装 agent_error。
+5. **resume 走 §13h**：额度恢复后 `resumeFromRunId`，native resume 重跑中断 task（此时额度可用）。manifest 的 `quota_exhausted` 字段提醒用户确认恢复再续跑。`agent_error` halt 的 task 不建议直接 resume（须先修 bug）。
 
 **blocked_info + 工作树脏状态**：`halt()` 给 `blocked_info` 填 `likely_source`（基于 reason 的确定性映射：`implementor changes` / `gate restored` / `bootstrap frontmatter` / `unknown`——纯字符串映射，**非 dirty 推断**）。finalReport 写 `blocked.md` 时跑 `git status --porcelain` + `git diff --stat`（ground truth，best-effort 失败不阻塞 manifest），结果写 Working Tree 段 + 接手指引。`likely_source`（语义线索）与 git status（真实状态）并存：用户既有定位线索，也有真实脏状态。orchestrator 无 shell，git 探查委托 finalReport agent（与 gate/commit/bootstrap 跑命令同路径）。
 
@@ -189,6 +193,7 @@ orchestrator 维护 in-memory 状态（JS 变量），从 agent 返回值更新�
 let state = {
   currentTask: null,
   completed: [],              // 已完成 task key（plan-XX/TY）from bootstrap or commit
+  plans: [],                  // bootstrap 解析的 plan 列表（P0-2，§13a main 流程 `state.plans = boot.evidence.plans`，finalReport stateJson 须含 plans 保 manifest 完整性）
   perTask: {},                // {taskKey: {planId, status, model, review_rounds, files_touched_per_round,
                               //   review_history, commit_sha, simplify_reverted, simplify_review_findings,
                               //   destructive_review_failed, destructive_review_findings, concerns, blocked_info}}
@@ -421,7 +426,7 @@ orchestrator 路由:
 
 ### 6.2 半提交状态清理（DX5）
 
-崩溃在 implementor 完成但 commit 未执行时，working tree 有半成品。**native resume 会重跑未完成的 implementor**，TDD 重写自然覆盖半成品，无需显式 `git reset`。兜底：bootstrap 检测 `dirty_tree` 且该 task 无对应 commit → 视为半提交，`git reset --hard HEAD` 清理后由 native resume 重派。**commit 是状态原子转换**：commit subagent 返回 `{commit_sha}` 即 git commit 已落盘；崩在此点之后 → git log 有 commit → 视为 completed 跳过。
+崩溃在 implementor 完成但 commit 未执行时，working tree 有半成品。**native resume 会重跑未完成的 implementor**，TDD 重写自然覆盖半成品，无需显式 `git reset`。兜底：bootstrap agent 检测 `dirty_tree=true` → **自愈**（orchestrator 无 shell，bootstrap agent 有 Bash 访问，执行 `git reset --hard HEAD` 清理后 re-run `git status --porcelain` 确认 clean，设 `dirty_tree=false`）；git reset 失败则保留 `dirty_tree=true` 并在 summary 记录错误。**commit 是状态原子转换**：commit subagent 返回 `{commit_sha}` 即 git commit 已落盘；崩在此点之后 → git log 有 commit → 视为 completed 跳过。
 
 ## 7. 串行调度
 
@@ -485,7 +490,7 @@ runs/<run-id>/
 
 **全自动**：workflow 全程无人工介入，`requesting-code-review` 由用户结束后主动发起。
 
-> **待实现**：当前 run-plans.js 降级为 `finalReport` only（写 manifest + digest），下方 pr-test-analyzer / verification-before-completion / finishing-a-development-branch 流程尚未实现。跨 plan 全量测试由每个 plan 末尾的 plan gate（§3）部分覆盖。
+> **TODO（未实现，第 6 轮 wontfix）**：当前 run-plans.js 降级为 `finalReport` only（写 manifest + digest），下方 pr-test-analyzer / verification-before-completion / finishing-a-development-branch 流程尚未实现。跨 plan 全量测试由每个 plan 末尾的 plan gate（§3）部分覆盖。实现优先级低（plan gate 已覆盖核心测试门禁），待后续按需补全。详见 §14 wontfix 决策记录。
 
 ```
 所有 plan 完成
@@ -546,6 +551,8 @@ tasks:
 frontmatter 是机器读，正文是人读，单文件不分离。
 
 ### 11.3 validator + onboarding
+
+> **TODO（未实现，第 6 轮 wontfix）**：`workflow validate-plans` 与 `workflow init` 命令尚未实现。当前 bootstrap agent 在启动时做 frontmatter schema 校验（fail loud），但无独立 CLI 命令。实现优先级低（bootstrap 已覆盖核心校验路径），待后续按需补 CLI。详见 §14 wontfix 决策记录。
 
 - `workflow validate-plans docs/superpowers/plans/`：校验 frontmatter schema + task header 匹配 + ID 唯一。启动前必跑，schema 错 fail loud。
 - `workflow init`：读现有 plan 目录，emit config 模板 + 跑 validator + 打印 next steps。TTHW 目标 15-20 分钟。
@@ -609,6 +616,8 @@ return {result: 'done', state}
 
 **runTask(plan, task) 控制流（要点）**：
 
+> **wontfix（第 6 轮，风险高）**：runTask 函数较长（~180 行）但拆分风险高——控制流涉及 5 阶段（implementor → review rounds → commit → simplify → destructive review）+ 多异常分支（halt/agent_error/model_unavailable/review_empty/OSCILLATING），拆分易引入状态转移 bug。已通过抽出 helper（`runReviewRound`/`ensurePerTaskDefaults`/`dispatchImpl`/`safeAgent`/`classifyThrown`/`reviewHaltReason`/`reviewHaltForEmptyFailed`/`haltLikelySource`/`formatFindings`/`formatConcernsHint`）降低单函数复杂度，主控制流保留单函数保证状态转移可读性。详见 §14 wontfix 决策记录。
+
 1. **implementor**（`model = task.model || 'sonnet'`）；`status='blocked'` → §2.3 升级链（sonnet→opus→halt，带上限）
 2. **review rounds（max N，默认 4，可配 0=无限；§5.3）**：每轮 `spec ‖ quality ‖ hunter` 并行（同 tree snapshot）；收集各 `diagnostics.files_touched` → 振荡检测（§13g）；全绿 break，任一 ❌ → implementor 修复（`collectReviewFindings` 归一化三类 review 的不同 diagnostics key + `formatFindings` 序列化为可读反馈；`fetchedContext` 独立占位符传参考上下文，不混入 fixIssues）→ 下一轮；最后 1 轮 fix 强制 opus（有限模式 `round===maxRounds-1` / 无限模式 `round>=4`，§5.3）；max N 耗尽 → halt（maxRounds=0 无此 halt，仅靠 detectOscillation）。**review 异常/空响应 → halt**：`reviewHaltReason` 扫 status，sentinel 优先级 `agent_error > model_unavailable > review_empty`——`review_empty` 守 status 缺失/为空/非法（含 thinking-only 空响应：agent() 静默返回 null/空对象，无异常），防 hunter/quality/spec 哑火（旧逻辑漏过 → 不 halt → implementor 跑空修复 → max rounds 误 halt）。**第二道守卫 `reviewHaltForEmptyFailed`**（在 `reviewHaltReason` 之后、fix-round 之前）：任一 review `status==='failed'` 但该 review 的 findings 产出 0 项（`issues`/`silent_failures` 空）→ halt `review_failed_no_findings`。堵「合法 failed + 空诊断」漏过 `reviewHaltReason`（status 合法不 halt）→ `collectReviewFindings` 空 → implementor 收「0 项发现」跑空修复 → max rounds 误 halt 的同类洞；与 `review_empty` 区分（后者 status 缺失，本守卫 status 合法但无发现）。**schema items 约束**：quality/hunter 的 `issues`/`silent_failures` 元素强制对象 `{title, fix}`（specReview 保持字符串模板走 `reviewSchema`，qualityReviewer 拆出 `qualityReviewSchema`）——防 LLM 返回纯字符串/缺 fix/用错字段名 → `collectReviewFindings` 的 `it.title||String(it)` 兜底为 `[object Object]`。
 3. **commit（§5.2 方案 C：commit 提前到 simplify 前）**：status check → test → `git commit -m "feat(plan-X/T-Y): ..."`；返回 `commit_sha` → `state.perTask[taskKey].status='committed'`（中间态）
@@ -639,14 +648,14 @@ return {result: 'done', state}
 
 | role | prompt 核心职责 | model | evidence 必填（§13c） |
 |---|---|---|---|
-| `bootstrap` | 读 config（§11.1）+ plan files（§13e 生成 frontmatter、叶子优先解析）+ git log（completed）+ dirty_tree | sonnet | config, plans[], completed[], dirty_tree |
-| `implementor` | TDD（RED→GREEN→REFACTOR），跑 `test_command`，self-review；BLOCKED 时填 diagnostics；done_with_concerns 时填 concerns[] | task.model\|\|sonnet | tests_exit_code, files_changed[], pytest_summary |
+| `bootstrap` | 读 config（§11.1）+ plan files（§13e 生成 frontmatter、叶子优先解析）+ git log（completed）+ dirty_tree（自愈 `git reset --hard HEAD`，§6.2）+ in_progress（扫 `runs/*/manifest.json`，§13c） | sonnet | config, plans[], completed[], dirty_tree, in_progress, failed_approaches[], task_lessons[], task_write_files[] |
+| `implementor` | TDD（RED→GREEN→REFACTOR），跑 `test_command`，self-review；**`build_command` 非空时 GREEN 前跑构建验证可构建性**（P1-11，§11.1 build_command 字段）；BLOCKED 时填 diagnostics；done_with_concerns 时填 concerns[] | task.model\|\|sonnet | tests_exit_code, files_changed[], pytest_summary |
 | `specReviewer` | 代码 vs spec（`spec_path`）逐行比对，记 files_touched | opus | status, issues[] |
 | `qualityReviewer` | 质量/架构/边界/类型/不可变性，记 files_touched | opus | status, issues[] |
 | `hunter` | 静默失败/吞错/bad fallback（ECC silent-failure-hunter 语义），记 files_touched。**只读审查**：禁止跑 pytest/ruff/build（那是 implementor/gate 职责）；项目特定静默失败纪律经 `silent_failure_context` config 注入，hunter 优先核查 | sonnet | status, silent_failures[] |
-| `simplify` | 精简代码（ECC simplify 语义），**如实报 `changed(bool)`** | sonnet | changed, files_changed[] |
-| `commit` | status check → test → `git commit -m "feat(plan-X/T-Y): ..."`，返回 commit_sha；检测 out_of_scope / destructive_changes | sonnet | commit_sha, committed_files[], tests_at_commit |
-| `contextFetcher` | NEEDS_CONTEXT 兑现（grep/glob/LSP/读 spec/Context7/WebSearch） | sonnet | context |
+| `simplify` | 精简代码（ECC simplify 语义），**如实报 `changed(bool)`** | **sonnet**（硬编码，非 task model，P1-5） | changed, files_changed[] |
+| `commit` | status check → test → `git commit -m "feat(plan-X/T-Y): ..."`，返回 commit_sha；检测 out_of_scope / destructive_changes | **sonnet**（硬编码，非 task model，P1-5） | commit_sha, committed_files[], tests_at_commit |
+| `contextFetcher` | NEEDS_CONTEXT 兑现（grep/glob/LSP/读 spec/Context7/WebSearch） | **sonnet**（硬编码，非 task model，P1-5） | context |
 | `gate` | committed SHA 上 `git checkout <sha>` + 跑 `full_test_command` + **`git checkout -` 回原 HEAD**，真实 exit code（§3 独立 gate） | sonnet | tests_exit_code, pytest_summary |
 | `finalReport` | 读 orchestrator 传入的 in-memory state，写 `runs/<run-id>/manifest.json`（§13d），输出 digest | sonnet | — |
 
@@ -654,7 +663,7 @@ return {result: 'done', state}
 
 **agentType 映射**（实现时核对实际可用 subagent_type）：
 
-- `hunter` → `agentType: 'silent-failure-hunter'`（ECC 存在）
+- `hunter` → default workflow subagent + prompt（**wontfix，第 6 轮**：runtime 限制——Workflow 工具的 subagent dispatch 不支持自定义 `agentType: 'silent-failure-hunter'`，ECC skill-based agent 无法在 workflow runtime 直接调用。改用 default subagent + hunter prompt 模拟 silent-failure-hunter 语义。详见 §14 wontfix 决策记录。）
 - `simplify` → default workflow subagent + prompt（simplify 是 skill 非 agent type）
 - `specReviewer` / `qualityReviewer` → default + prompt + `model: 'opus'`（upstream 角色语义，无专门 agent type）
 - 其余（bootstrap/implementor/commit/contextFetcher/gate/finalReport）→ default workflow subagent + prompt
@@ -689,7 +698,7 @@ return {result: 'done', state}
 ```
 runs/<run-id>/
   manifest.json     # 仅 workflow 结束时写：{run_id, plans, per_task:{id:{status,model,review_rounds,files_touched_per_round,review_history,commit_sha,simplify_reverted,simplify_review_findings,destructive_review_failed,destructive_review_findings,concerns,blocked_info}}, result}
-  log.ndjson        # 关键 agent() 返回后 append 一行（ts 由 subagent 调 Bash date）
+  log.ndjson        # TODO（未实现，第 6 轮 wontfix）：关键 agent() 返回后 append 一行（ts 由 subagent 调 Bash date）。当前 orchestrator 仅 `log()`（in-memory console 输出），无 ndjson 文件写盘。实现需额外 subagent dispatch 写盘（成本 vs 观测价值不划算），且 `/workflows` 面板已提供实时观测。详见 §14 wontfix 决策记录。
 ```
 
 **写入时机（收敛后）**：
@@ -801,3 +810,31 @@ function detectOscillation(filesTouchedPerRound) {
 **代价**：崩溃中途无盘上 manifest（靠 `/workflows` 面板 + native resume + git log）。
 
 **Resume 能力边界（与 Claude Code 官方规范对齐）**：native `resumeFromRunId` **仅在同一个 Claude Code session 内有效**——退出 CC 后再启动会 fresh start（规范原文："Resume works within the same Claude Code session. If you exit Claude Code while a workflow is running, the next session starts the workflow fresh."）。故跨 session 重启时 journal 缓存失效，但 **bootstrap 以 git log 为 ground truth 识别已完成 task**（§6.1），fresh start 也能正确跳过已 commit 的 task，韧性不依赖 resume。manifest 仅供人读观测，不参与 resume 决策——这与规范的"runtime tracks each agent's result"不冲突，因为我们不读 manifest 做 resume。
+
+## 14. Wontfix / TODO 决策记录（第 6 轮 review 收敛）
+
+本节记录第 6 轮 Spec/Quality Review 后的 wontfix 与未实现决策，含决策理由 + 复盘触发条件。每个条目标注 inline 引用位置（§章节号）便于追溯。
+
+### 14.1 未实现功能（标 TODO，待后续按需补全）
+
+| # | 项目 | inline 位置 | 决策理由 | 复盘触发 |
+|---|---|---|---|---|
+| 1 | `log.ndjson` 逐事件写盘 | §13d | 当前 orchestrator 仅 `log()`（in-memory console 输出），无 ndjson 文件写盘。实现需额外 subagent dispatch 写盘（成本 vs 观测价值不划算），且 `/workflows` 面板已提供实时观测。 | 用户需要离线分析 agent 调用链 / `/workflows` 面板不可用 |
+| 2 | `workflow validate-plans` / `workflow init` CLI | §11.3 | 当前 bootstrap agent 在启动时做 frontmatter schema 校验（fail loud），无独立 CLI 命令。bootstrap 已覆盖核心校验路径。 | 多人协作时需 plan 作者独立校验 / 新项目 onboarding 需 init 模板 |
+| 3 | post-plan 全流程（pr-test-analyzer / verification-before-completion / finishing-a-development-branch） | §10 | 当前 run-plans.js 降级为 `finalReport` only。跨 plan 全量测试由每个 plan 末尾的 plan gate（§3）部分覆盖。 | 需要测试覆盖质量分析 / 自动清理开发分支 / 跨 plan 覆盖率报告 |
+
+### 14.2 Wontfix（设计决策，不修）
+
+| # | 项目 | inline 位置 | 决策理由 | 复盘触发 |
+|---|---|---|---|---|
+| 4 | `hunter` agentType 用 default subagent + prompt（非 ECC `silent-failure-hunter`） | §13b | runtime 限制——Workflow 工具的 subagent dispatch 不支持自定义 `agentType: 'silent-failure-hunter'`，ECC skill-based agent 无法在 workflow runtime 直接调用。default subagent + hunter prompt 模拟 silent-failure-hunter 语义已足够（hunter schema 强制 `silent_failures[]` items 结构）。 | Workflow 工具支持自定义 agentType / ECC 提供 workflow-native agent type |
+| 5 | `runTask` 不拆分（保留单函数 ~180 行） | §13a | 控制流涉及 5 阶段 + 多异常分支（halt/agent_error/model_unavailable/review_empty/OSCILLATING），拆分易引入状态转移 bug。已通过抽出 10+ helper（`runReviewRound`/`ensurePerTaskDefaults`/`dispatchImpl`/`safeAgent`/`classifyThrown`/`reviewHaltReason`/`reviewHaltForEmptyFailed`/`haltLikelySource`/`formatFindings`/`formatConcernsHint`）降低单函数复杂度。主控制流保留单函数保证状态转移可读性。 | runTask 行数继续膨胀（新增阶段/异常分支）/ 状态转移 bug 频发 |
+| 6 | `task.model` enum 校验不做（bootstrap 直接读） | §2.2 | invalid 值（如 `claude-3.5`）会透传到 `dispatchImpl` → `agent()` 调用失败 → halt `agent_error`。fail loud 语义已达成（不静默降级），只是错误路径稍晚（agent dispatch 时 vs bootstrap 校验时）。低风险。 | invalid model 值导致难以定位的 halt 频发 / bootstrap 阶段需提前 fail |
+
+### 14.3 误报（review 判断有误，不修）
+
+第 6 轮 review 中以下发现经核查为误报，不修：
+
+- **`fixModelForRound` 无限模式 round>=4 升级 opus**：review 认为"无限模式不应强制 opus，应保持 baseModel"。但设计意图是"前 3 轮没修好说明问题复杂，后续用 opus 提升修复质量"（§5.3 设计理由），且与 §2.4「限额 halt 不降级」纪律一致（是升级而非降级）。spec §5.3 已有明确说明，不修。
+- **`haltLikelySource` 用 Set 替代大正则**：review 认为"Set 查找比正则慢"。但 Set.has 是 O(1) 且代码可读性远优于大正则，P1-8 修复正是为了"防误匹配 + 易维护"。性能差异在 halt 路径（非热路径）可忽略，不修。
+- **`buildPrompt` undefined/null 渲染为空串**：review 认为"应保留 `{{k}}` 占位符以便 debug"。但实现已区分：key 缺失（`k in ctx=false`）保留 `{{k}}` 占位符（debug 用）；key 存在但值为 undefined → 空串（防 `"undefined"` 污染 prompt）。两者并存，不冲突。

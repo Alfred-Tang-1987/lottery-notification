@@ -47,7 +47,13 @@ export function detectOscillation(filesTouchedPerRound) {
 export function buildPrompt(role, ctx = {}) {
   const tpl = PROMPTS[role]
   if (!tpl) throw new Error(`unknown role: ${role}`)
-  return tpl.replace(/\{\{(\w+)\}\}/g, (_, k) => (k in ctx ? String(ctx[k]) : `{{${k}}}`))
+  // P1-7（第 6 轮）: undefined/null 值渲染为空串（防 "undefined" 污染 prompt）。
+  //   key 缺失（k in ctx=false）保留 {{k}} 占位符（debug 用）；key 存在但值为 undefined → 空串。
+  return tpl.replace(/\{\{(\w+)\}\}/g, (_, k) => {
+    if (!(k in ctx)) return `{{${k}}}`
+    if (ctx[k] === undefined || ctx[k] === null) return ''
+    return String(ctx[k])
+  })
 }
 
 export function allGreen(...reviews) {
@@ -189,9 +195,20 @@ export function reviewHaltReason(s, q, h) {
 // halt() 填 blocked_info.likely_source，finalReport 写进 blocked.md。
 export function haltLikelySource(reason) {
   const r = String(reason || '')
-  if (r === 'plan gate failed' || /gate/.test(r)) return 'gate restored'        // gate 已 checkout 回原 HEAD
-  if (/^bootstrap /.test(r)) return 'bootstrap frontmatter'                      // bootstrap 可能写了 plan frontmatter
-  if (/max rounds|OSCILLATING|fix-round|commit failed|commit out_of_scope|simplify (diff check|amend|checkout) failed|BLOCKED|after (context-fetch|retry)|agent_error|model_unavailable|review_empty|review_failed_no_findings/.test(r)) return 'implementor changes'
+  if (r === 'plan gate failed' || r.includes('gate')) return 'gate restored'        // gate 已 checkout 回原 HEAD
+  if (r.startsWith('bootstrap ')) return 'bootstrap frontmatter'                      // bootstrap 可能写了 plan frontmatter
+  // P1-8（第 6 轮）: 显式 reason→source 映射（替代大正则，防误匹配 + 易维护）。
+  //   静态 reason 用 Set；动态 reason（implementor ${status} after/in fix-round）用 startsWith。
+  const implReasons = new Set([
+    'model_unavailable', 'agent_error',
+    'opus BLOCKED', 'opus BLOCKED after context-fetch',
+    'OSCILLATING', 'review max rounds',
+    'commit failed', 'commit out_of_scope',
+    'simplify diff check failed', 'simplify amend failed', 'simplify checkout failed',
+    'review_empty', 'review_failed_no_findings',
+  ])
+  if (implReasons.has(r)) return 'implementor changes'
+  if (r.startsWith('implementor ')) return 'implementor changes'
   return 'unknown'
 }
 
@@ -228,7 +245,9 @@ export function validateCheckoutResult(result) {
 // maxRounds 未传（向后兼容）→ 默认 3（旧行为：round=2 升级 opus）。
 // 已是 opus 的 task 返回 'opus'（语义等价，不重复升级）。是升级而非降级，与 §2.4「限额 halt 不降级」纪律一致。
 export function fixModelForRound(round, baseModel, maxRounds) {
-  const max = (maxRounds === undefined) ? 3 : maxRounds
+  // P2-10（第 6 轮）: 删除 maxRounds 未传显式分支（resolveMaxRounds 总返回 number，死代码）。
+  //   保留 ?? 3 容错（直接调用时默认 3，向后兼容 helpers.test.js）。
+  const max = maxRounds ?? 3
   if (max === 0) return round >= 4 ? 'opus' : baseModel   // 无限模式：round>=4 升级 opus
   if (round === max - 1) return 'opus'                     // 有限模式：最后 1 轮 fix 强制 opus
   return baseModel
@@ -589,16 +608,16 @@ Steps:
 2. Config smoke: run test_command with --collect-only. 判断：命令本身不存在（command not found / No such file: pytest）→ status=failed（环境/typo）；命令存在但 collect 失败（no module named pytest / pyproject.toml 不存在 / no tests collected / 业务代码未初始化）→ 记录 'project not yet initialized' 到 summary，status 仍 ok（业务代码由后续 task 创建，预期）。
 3. For each {{plansDir}}/*.md: if frontmatter (starts with ---) read task models; else generate — extract LEAF ids (## Task N with ### Task NX children → only NX; else N), modelHint (title contains 安全|加密|认证|JWT|CSRF|Fernet|算法|比对|策略|边界|集成|接口 → opus, else omit), write frontmatter at file top. Idempotent. Record each plan's file (full path) and seq (last two digits of filename, e.g. 01). Also read write_files from frontmatter if present (format: "write_files:\n  T1:\n    - src/a.py\n    - src/b.py"). Return as task_write_files in evidence: [{task_id, plan_seq, files:[...]}] (plan_seq = this plan's seq). Absent → empty array.
 4. git log → completed task ids via convention feat(plan-X/T-Y).
-5. git status --porcelain → dirty_tree.
+5. git status --porcelain → dirty_tree. If dirty_tree=true (uncommitted changes from a crashed previous run, §6.2 半提交自愈): run \`git reset --hard HEAD\` to clean the working tree (orchestrator has no shell, so bootstrap must self-heal here), then re-run \`git status --porcelain\` to confirm clean; set dirty_tree=false in evidence. If git reset fails, leave dirty_tree=true and record the error in summary.
 6. For each leaf task return its model (sonnet|opus|undefined→sonnet) and title (the description text from the Task header).
-7. If runs/ directory exists: scan runs/*/manifest.json files. For each, read per_task object. For each task_id in per_task that has blocked_info, extract {task_id, reason (from blocked_info.reason), error (from blocked_info.last_error)}. Filter to task_ids that match leaf tasks in the current plans. Return as failed_approaches in evidence. If runs/ does not exist → failed_approaches=[].
+7. If runs/ directory exists: scan runs/*/manifest.json files. For each, read per_task object. For each task_id in per_task that has blocked_info, extract {task_id, reason (from blocked_info.reason), error (from blocked_info.last_error)}. Filter to task_ids that match leaf tasks in the current plans. Return as failed_approaches in evidence. Also check if any task has status='in_progress' → in_progress=true (else false). If runs/ does not exist → failed_approaches=[], in_progress=false.
 
-Return {status, evidence:{config (include ALL fields read in step 1, even optional ones if present), plans:[{id, file, seq, tasks:[{id, model, title}]}], completed:[...], dirty_tree, failed_approaches:[{task_id, reason, error}], task_write_files:[{task_id, plan_seq, files:[...]}], task_lessons:[{task_id, plan_seq, lessons:[{id, title, detail}]}]}, summary}.
+Return {status, evidence:{config (include ALL fields read in step 1, even optional ones if present), plans:[{id, file, seq, tasks:[{id, model, title}]}], completed:[...], dirty_tree, in_progress, failed_approaches:[{task_id, reason, error}], task_write_files:[{task_id, plan_seq, files:[...]}], task_lessons:[{task_id, plan_seq, lessons:[{id, title, detail}]}]}, summary}.
 RED FLAG: evidence 必须是真实读取结果，绝不编造。`,
 
   implementor: `You are the IMPLEMENTOR for {{taskId}} (plan {{planId}}). TDD strict (RED→GREEN→REFACTOR). {{retryNote}}
 
-Inputs: specPath={{specPath}} testCommand={{testCommand}} planFile={{planFilePath}} taskId={{taskId}} fixIssues={{fixIssues}}
+Inputs: specPath={{specPath}} testCommand={{testCommand}} buildCommand={{buildCommand}} planFile={{planFilePath}} taskId={{taskId}} fixIssues={{fixIssues}}
 {{referencePaths}}
 {{failedApproaches}}
 {{lessons}}
@@ -608,7 +627,7 @@ Steps:
 1. Read {{planFilePath}}, locate {{taskId}} section: files to create/modify, tests to write.
 2. Read {{specPath}} relevant section; implement to spec. If reference documents are listed above, read the relevant rule section BEFORE writing number/play/prize logic.
 3. RED: write ONE minimal failing test for one behavior. Run {{testCommand}}; CONFIRM it fails — and fails for the RIGHT reason (feature missing), not a typo/import error. A test that passes immediately proves nothing (you may be testing existing behavior) — fix the test.
-4. GREEN: minimal code to pass the test. Don't add features or refactor beyond the test.
+4. GREEN: minimal code to pass the test. Don't add features or refactor beyond the test. If {{buildCommand}} is non-empty, run it before tests to verify the project builds.
 5. REFACTOR: clean up (dedupe, better names, extract helpers). Tests stay green.
 6. Self-review (see checklist below).
 7. Run {{testCommand}}; record pytest summary + exit code. If fixIssues non-empty, this round fixes them (review findings from spec/quality/hunter). If fetchedContext non-empty, it is REFERENCE MATERIAL to read — do NOT modify or "fix" it; use it to unblock.
