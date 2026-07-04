@@ -1270,7 +1270,7 @@ for (const plan of boot.evidence.plans) {
   if (!matchesPlanFilter(plan, args.plan)) continue
   state.currentPlan = plan.id
   phase(`Plan ${plan.id}`)
-  const want = (args.tasks && args.tasks.length) ? new Set(args.tasks.map(String)) : null
+  const want = (Array.isArray(args.tasks) && args.tasks.length) ? new Set(args.tasks.map(String)) : null  // P2-9a（第 9 轮）: Array.isArray 防御字符串误传（字符串有 .length，.map(String) 会 TypeError）
   const tasks = plan.tasks.filter(t => !want || want.has(t.id))
   for (const task of tasks) {
     const taskKey = `plan-${String(plan.seq).padStart(2, '0')}/${task.id}`  // plan-scoped：跨 plan 同名 task 不误跳过，seq 归一化为 2 位填充

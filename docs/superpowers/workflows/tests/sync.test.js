@@ -759,4 +759,14 @@ test('P2-8b（第 8 轮）: state 字面量须含 currentPlan（与 spec §4.4 �
   assert.match(ctx, /currentPlan/, 'state 字面量须含 currentPlan（P2-8b，与 spec §4.4 一致）')
 })
 
+// ===== 第 9 轮 TDD red 断言 =====
+
+test('P2-9a（第 9 轮）: args.tasks 须用 Array.isArray 防御（防字符串误传 .map TypeError）', () => {
+  // :1273 旧代码 `(args.tasks && args.tasks.length)` 通过字符串（有 .length）→ .map(String) 抛 TypeError
+  // 修：改用 Array.isArray(args.tasks) 严格类型校验
+  assert.match(runSrc, /Array\.isArray\(args\.tasks\)/,
+    'args.tasks 须用 Array.isArray 防御（P2-9a，防字符串误传 .map TypeError）')
+})
+
+
 

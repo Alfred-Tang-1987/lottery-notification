@@ -187,10 +187,10 @@ run-plans.js 这种 git-log 驱动的编排器是**错配**，会踩两个坑：
    halt 结果，**瞬间 halt、0 token、0 agent**，没有任何推进。bootstrap 的 git-log 重解析逻辑
    在 resume 路径下被缓存跳过了。
 
-2. **resume 不传 `args` 会直接 crash**。脚本体访问 `args.configPath`（bootstrap prompt 构造处）。
-   resume 调用若省略 `args`，`args` 为 `undefined`，`undefined.configPath` 抛
-   `Error: undefined is not an object (evaluating 'args.configPath')`，workflow 立刻失败。
-   要 resume 必须带上 `args: {}`——但即便带上了，坑 1 仍在。
+2. **resume 不传 `args` 会直接 crash**。脚本体访问 `args.configPath`（bootstrapprompt 构造处）。
+   resume 调用若省略 `args`，`args` 为 `undefined`，`if (!args) throw` 抛
+   `Error: args must be a non-null object (Workflow runtime contract)`，workflow 立刻失败。
+   要 resume 必须带上 `args: { configPath, plansDir }`——但即便带上了，坑 1 仍在。
 
 **resume 唯一真正合适的场景**：在**同一个 session 内**、**没有任何 workflow 外改动**的前提下，
 限额 halt 后立刻恢复额度、想省掉重跑已完成 agent 的 token。即便如此，全新跑也能正确续跑，只是

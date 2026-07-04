@@ -592,25 +592,37 @@ main()                                    // leafTasks(plan) 由 bootstrap agent
 
 ```javascript
 phase('Bootstrap')
-const boot = await agent(buildPrompt('bootstrap', {configPath, plansDir}),
+// P2-7（第 7 轮）: args 入口校验 fail-fast（configPath/plansDir 必填非空字符串）
+// P1-8a（第 8 轮）: if(!args) 防御 undefined
+const boot = await agent(buildPrompt('bootstrap', {configPath: args.configPath, plansDir: args.plansDir}),
                          {schema: SCHEMAS.bootstrap, label: 'bootstrap'})
-Object.assign(state, {config: boot.config, plans: boot.plans})
+state.config = boot.evidence.config
+state.plans = boot.evidence.plans                          // P0-2（第 6 轮）: state.plans 须写入
+state.runTs = boot.runTs || 'unknown-ts'                   // S2（第 4 轮）: 非 string 降级 'unknown-ts'
+state.completed = normalizeCompleted(boot.evidence.completed || [])  // normalizeCompleted 兼容 -// 分隔符
 
-for (const plan of boot.plans) {
+for (const plan of state.plans) {
+  if (!matchesPlanFilter(plan, args.plan)) continue        // args.plan 限定单 plan（seq 或 id）
+  state.currentPlan = plan.id                              // §4.4 currentPlan 仅内存
   phase(`Plan ${plan.id}`)
-  for (const task of leafTasks(plan)) {
-    if (boot.completed.includes(task.id)) { log(`skip ${task.id}`); continue }
+  // P2-9a（第 9 轮）: args.tasks 须用 Array.isArray 防御（字符串有 .length，.map 会 TypeError）
+  const want = (Array.isArray(args.tasks) && args.tasks.length) ? new Set(args.tasks.map(String)) : null
+  for (const task of plan.tasks.filter(t => !want || want.has(t.id))) {  // leafTasks 解析由 bootstrap 完成
+    const taskKey = `plan-${String(plan.seq).padStart(2, '0')}/${task.id}`  // plan-scoped，seq 归一化 2 位
+    if (state.completed.includes(taskKey)) { log(`skip ${taskKey} (already committed)`); continue }
     const r = await runTask(plan, task)
-    if (r.halted) return halt(plan, task, r)         // 写 .workflow/blocked.md + surface（§8.2）
+    if (r.halted) return halt(plan, task, r)               // 写 .workflow/blocked.md + surface（§8.2）
   }
   // plan 级独立 gate（§3）：committed SHA 上重跑 full_test_command
-  const gate = await agent(buildPrompt('gate', {plan}),
+  const lastSha = /* §5.2 lastSha 按 plan.tasks 反向查找（P0-7 padStart 归一化） */
+  const gate = await agent(buildPrompt('gate', {plan, lastSha, ...}),
                            {schema: SCHEMAS.gate, label: `gate:${plan.id}`})
   if (gate.evidence.tests_exit_code !== 0) return halt(plan, null, {reason: 'plan gate failed', gate})
 }
 
 phase('Finalize')
-await agent(buildPrompt('finalReport', {state}), {schema: SCHEMAS.finalReport, label: 'final-report'})
+await agent(buildPrompt('finalReport', {state, runTs: state.runTs, mode: 'done', ...}),
+            {schema: SCHEMAS.finalReport, label: 'final-report'})  // 写 runs/<run-ts>/manifest.json
 return {result: 'done', state}
 ```
 
