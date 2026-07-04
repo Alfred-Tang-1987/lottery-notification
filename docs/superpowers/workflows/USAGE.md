@@ -83,6 +83,8 @@ Workflow({
 
 ## 4. 参数（args）
 
+> **WAI1 注意**：Claude Code Workflow runtime 在某些版本下会把 `args` 序列化为 JSON 字符串注入（issues #72248 / #68969 / #73899）。`run-plans.js` 入口已做 `JSON.parse` 防御，所以你可按正常对象传参；若仍遇到 `args.configPath must be a non-empty string` 报错，请确认调用了 `Workflow({ ..., args: { ... } })`（args 为对象而非字符串）。
+
 | 参数 | 必填 | 说明 |
 |---|---|---|
 | `configPath` | **是** | workflow.config.json 路径（第 7 轮 P2-7 起必填，缺失/空串 → fail-fast throw） |

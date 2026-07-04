@@ -180,6 +180,7 @@ orchestrator 是 JS sandbox：**无 fs、无 subprocess、无 Date.now/Math.rand
 | 无 Date.now/Math.random | 不做时间戳/随机；run manifest 的时间由 subagent 写入 |
 | agent() 上限 min(16,cpu-2) | serial task → 同时仅 1 task in flight；每 task 最多 implementor + 3 review 并行 + simplify + commit ≈ 6 agent，远低于上限 |
 | 无持久化 | 状态靠 git log + run manifest（subagent 写盘，§6/§9） |
+| args 可能被序列化为字符串 | 入口做 `typeof args === 'string' ? JSON.parse(args) : args` 防御（Claude Code issues #72248 / #68969 / #73899），解析失败 throw 让用户看到真实错误；后续仍按对象校验 configPath/plansDir（2026-07-04，WAI1） |
 
 **代码分层（实现约束）**：纯函数/SCHEMAS/PROMPTS 的真源是 `docs/superpowers/workflows/lib.js`（ES module，`node --test` 单测）；`run-plans.js` inline 复制它们（runtime 禁模块 import），`sync.test.js` 守护字节一致。**纯决策**（如 `collectReviewFindings`/`classifyThrown`/`reviewHaltReason`/`reviewHaltForEmptyFailed`，不调 `agent()`）进 lib.js 可测；**runtime 胶水**（`safeAgent`/`dispatchImpl`，调 `agent()`）只能留 run-plans.js（lib.js 是纯模块不能调 runtime 全局）。`agent_error`（agent() 抛非 quota 异常，catch 块构造）/ `review_empty`（agent() 静默空返回，如 thinking-only 空响应——模型在 thinking 块里"以为"调了 StructuredOutput 实际无 tool_use 块；瞬态模型 hiccup）/ `review_failed_no_findings`（agent 明确判 failed 但 `issues`/`silent_failures` 空——`reviewHaltForEmptyFailed` 构造，第二道守卫）是 orchestrator-internal sentinel，绕过 schema 校验，不入 review schema enum。`reviewHaltReason` 扫三类 review 的 status：`agent_error > model_unavailable > review_empty`，全合法非 sentinel → null；`reviewHaltForEmptyFailed` 随后查 failed-but-0-findings → `review_failed_no_findings`。两道守卫防 review 哑火（旧逻辑漏过 null status / 空诊断 → 不 halt → implementor 跑空修复 → max rounds 误 halt）。
 

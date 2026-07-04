@@ -1207,6 +1207,16 @@ async function runTask(plan, task) {
 phase('Bootstrap')
 // P1-8a（第 8 轮）: 防御 args===undefined。runtime 总是注入 args，但彻底防御零成本。
 if (!args) throw new Error('args must be a non-null object (Workflow runtime contract)')
+// WAI1（2026-07-04）: Workflow runtime 偶发把 args 序列化为 JSON 字符串注入（Claude issue #72248/#68969/#73899）。
+//   若字符串化，入口校验 typeof args.configPath 失败，误报 args 不合法。防御：先尝试 JSON.parse，
+//   失败仍 throw，让真实错误清晰暴露；不吞异常。
+if (typeof args === 'string') {
+  try {
+    args = JSON.parse(args)
+  } catch (parseErr) {
+    throw new Error(`args was a string but failed JSON.parse: ${parseErr.message}`)
+  }
+}
 // P2-7（第 7 轮）: args 入口校验 fail-fast。旧代码直接注入 args.configPath/plansDir，未传时 undefined
 //   被 P1-7 渲染为空串 → bootstrap agent 因 config 路径空而失败，错误信息不直观。改：入口校验类型,
 //   非字符串或空串 → throw fail-fast（Workflow runtime 会 surface 错误，用户立即知晓）。
