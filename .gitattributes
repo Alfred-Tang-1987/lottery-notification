@@ -14,6 +14,9 @@
 # 兜底：未明确指定的文件视为 binary（必须在最前，让后面具体规则覆盖）
 * binary
 
+# P2-12b（第 12 轮）: .gitattributes 自身须启用 text diff（否则 * binary 兜底致自身 diff 不可读）
+.gitattributes text eol=crlf diff
+
 # 源码 / 配置 / 文档：强制 CRLF + 启用 text diff（checkout 与 commit 均保留 CRLF）
 # 后端 Python
 *.py   text eol=crlf diff
