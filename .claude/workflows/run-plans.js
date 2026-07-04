@@ -322,7 +322,7 @@ async function runReviewRound(taskId, cfg, plan, fc, concernsHint, labelSuffix, 
   const [spec, qual, hunt] = await parallel([
     async () => safeAgent(buildPrompt('specReview', { taskId, specPath: cfg.spec_path, planFilePath: plan.file, filesChanged: fc, concernsHint, referencePaths: formatReferencePaths(cfg.reference_paths) }), { schema: SCHEMAS.specReview, model: 'opus', ...commonOpts, label: `spec:${taskId}${labelSuffix}` }),
     async () => safeAgent(buildPrompt('qualityReviewer', { taskId, filesChanged: fc, languageChecklist: languageChecklist(cfg.language) }), { schema: SCHEMAS.qualityReviewer, model: 'opus', ...commonOpts, label: `qual:${taskId}${labelSuffix}` }),
-    async () => safeAgent(buildPrompt('hunter', { taskId, filesChanged: fc, silentFailureContext: formatSilentFailureContext(cfg.silent_failure_context) }), { schema: SCHEMAS.hunter, model: 'sonnet', ...commonOpts, label: `hunt:${taskId}${labelSuffix}` }),
+    async () => safeAgent(buildPrompt('hunter', { taskId, filesChanged: fc, silentFailureContext: formatSilentFailureContext(cfg.silent_failure_context, cfg.silent_failure_intro) }), { schema: SCHEMAS.hunter, model: 'sonnet', ...commonOpts, label: `hunt:${taskId}${labelSuffix}` }),
   ])
   const haltReason = reviewHaltReason(spec, qual, hunt)
   const emptyFailed = haltReason ? null : reviewHaltForEmptyFailed(spec, qual, hunt)
@@ -362,22 +362,23 @@ function matchesPlanFilter(plan, planArg) {
   return false
 }
 
-// ===== 条件渲染 helpers（inline 自 lib.js；通用性：彩票特有内容靠 config 驱动，prompt 保持单一模板）=====
+// ===== 条件渲染 helpers（inline 自 lib.js；通用性：项目特有内容靠 config 驱动，prompt 保持单一模板）=====
 // orchestrator 显式传空串（非 undefined），buildPrompt 才会把占位符替换为空而非残留 {{k}}。
 function formatReferencePaths(paths) {
   if (!Array.isArray(paths) || paths.length === 0) return ''
   const lines = paths.map(p => `- ${p}`).join('\n')
   return `## Reference Documents (authoritative — match these exactly)
 ${lines}
-Read the relevant section(s) BEFORE implementing/reviewing number/play/prize/rule logic. Deviations from these authoritative rules are bugs (e.g. positional vs partition number comparison).`
+Read the relevant section(s) BEFORE implementing/reviewing domain-specific logic or rules. Deviations from these authoritative rules are bugs.`
 }
 // 项目特定静默失败纪律（可选 config 注入）——通用 hunter 清单之上，注入本项目反复踩的领域致命点。
 // 不填 → 空串 → hunter 退化为通用清单（通用性不破坏）。填了 → hunter 重点核查这些项目特定条款。
-function formatSilentFailureContext(items) {
+function formatSilentFailureContext(items, intro) {
   if (!Array.isArray(items) || items.length === 0) return ''
   const lines = items.map(it => `- ${it}`).join('\n')
-  return `## Project-Specific Silent-Failure Risks (HIGHEST PRIORITY — hunt these first)
-This system's core value is "中奖永不静默漏通知". Beyond the generic patterns below, the following project-specific silent-failure traps have caused real misses and MUST be checked explicitly:
+  const heading = intro || 'Project-Specific Silent-Failure Risks (HIGHEST PRIORITY — hunt these first)'
+  return `## ${heading}
+Beyond the generic silent-failure patterns below, the following project-specific traps have caused real misses and MUST be checked explicitly:
 ${lines}
 For each, verify the changed code does not fall into the trap. Report a silent_failure with the specific trap name + file:line + why it violates.`
 }
@@ -476,7 +477,7 @@ function qualityReviewSchema() {
       diagnostics: { type: 'object', properties: { files_touched: { type: 'array' },
         issues: { type: 'array', items: {
           type: 'object', required: ['title', 'fix'],
-          properties: { severity: { type: 'string', enum: ['Critical', 'Important', 'Minor'] }, title: { type: 'string' }, file: { type: 'string' }, fix: { type: 'string' } },
+          properties: { severity: { type: 'string', enum: ['critical', 'important', 'minor'] }, title: { type: 'string' }, file: { type: 'string' }, fix: { type: 'string' } },
         } } } },
       summary: { type: 'string' },
     } }
@@ -488,12 +489,12 @@ const SCHEMAS = {
     properties: {
       status: { type: 'string', enum: ['ok', 'failed', 'blocked'] },
       evidence: { type: 'object', required: ['config', 'plans', 'completed', 'dirty_tree', 'in_progress', 'failed_approaches', 'task_lessons', 'task_write_files'],
-        properties: { config: { type: 'object' }, plans: { type: 'array' }, completed: { type: 'array' }, dirty_tree: { type: 'boolean' }, in_progress: { type: 'boolean' }, failed_approaches: { type: 'array' }, task_write_files: { type: 'array' }, task_lessons: { type: 'array' } } },
+        properties: { config: { type: 'object' }, plans: { type: 'array' }, completed: { type: 'array' }, dirty_tree: { type: 'boolean' }, in_progress: { type: 'boolean' }, failed_approaches: { type: 'array', items: { type: 'object', required: ['task_id', 'plan_seq', 'reason', 'error'], properties: { task_id: { type: 'string' }, plan_seq: { type: 'integer' }, reason: { type: 'string' }, error: { type: 'string' } } } }, task_write_files: { type: 'array' }, task_lessons: { type: 'array' } } },
       diagnostics: { type: 'object' }, summary: { type: 'string' },
     },
   },
   implementor: {
-    type: 'object', required: ['status', 'evidence'], additionalProperties: true,
+    type: 'object', required: ['status'], additionalProperties: true,
     properties: {
       status: { type: 'string', enum: ['ok', 'done_with_concerns', 'failed', 'blocked', 'needs_context', 'model_unavailable'] },
       evidence: { type: 'object', required: ['tests_exit_code', 'files_changed', 'pytest_summary'],
@@ -524,8 +525,8 @@ const SCHEMAS = {
     properties: { diagnostics: { type: 'object', required: ['context'], properties: { context: { type: 'string' } } }, summary: { type: 'string' } } },
   gate: { type: 'object', required: ['status', 'evidence'], additionalProperties: true,
     properties: { status: { type: 'string', enum: ['ok', 'failed', 'model_unavailable'] },
-      evidence: { type: 'object', required: ['tests_exit_code', 'pytest_summary', 'lint_results'],
-        properties: { tests_exit_code: { type: 'integer' }, pytest_summary: { type: 'string' }, lint_results: { type: 'array' }, migration_missing: { type: 'boolean' } } }, summary: { type: 'string' } } },
+      evidence: { type: 'object', required: ['tests_exit_code', 'pytest_summary', 'lint_results', 'restored_head'],
+        properties: { tests_exit_code: { type: 'integer' }, pytest_summary: { type: 'string' }, lint_results: { type: 'array', items: { type: 'object', required: ['command', 'exit_code'], properties: { command: { type: 'string' }, exit_code: { type: 'integer' }, summary: { type: 'string' } } } }, migration_missing: { type: 'boolean' }, restored_head: { type: 'string' } } }, summary: { type: 'string' } } },
   finalReport: { type: 'object', required: ['summary'], additionalProperties: true,
     properties: { evidence: { type: 'object', properties: { manifest_path: { type: 'string' } } }, summary: { type: 'string' } } },
   lessonDistiller: { type: 'object', required: ['decisions'], additionalProperties: true,
@@ -553,15 +554,15 @@ const PROMPTS = {
 Inputs: configPath={{configPath}} plansDir={{plansDir}} runTs={{runTs}}
 
 Steps:
-1. Read {{configPath}} → {test_command, full_test_command, build_command, lint_command, extra_lint_commands, spec_path, reference_paths, language, silent_failure_context, lessons_path}. extra_lint_commands / reference_paths / silent_failure_context / lessons_path are OPTIONAL (may be absent → treat as [] / [] / [] / ''). If config contains lessons_path, read that file. Extract entries (each has id, title, detail). For each task in the current plan, match lessons whose title/detail keywords overlap with the task's title. Return matched lessons per task in evidence as task_lessons: [{task_id, plan_seq, lessons:[{id, title, detail}]}] (plan_seq = the plan's seq from step 3). Absent lessons_path → empty array.
+1. Read {{configPath}} → {test_command, full_test_command, build_command, lint_command, extra_lint_commands, spec_path, reference_paths, language, silent_failure_context, silent_failure_intro, lessons_path}. extra_lint_commands / reference_paths / silent_failure_context / silent_failure_intro / lessons_path are OPTIONAL (may be absent → treat as [] / [] / [] / '' / ''). If config contains lessons_path, read that file. Extract entries (each has id, title, detail). For each task in the current plan, match lessons whose title/detail keywords overlap with the task's title. Return matched lessons per task in evidence as task_lessons: [{task_id, plan_seq, lessons:[{id, title, detail}]}] (plan_seq = the plan's seq from step 3). Absent lessons_path → empty array.
 2. Config smoke: run test_command with --collect-only. 判断：命令本身不存在（command not found / No such file: pytest）→ status=failed（环境/typo）；命令存在但 collect 失败（no module named pytest / pyproject.toml 不存在 / no tests collected / 业务代码未初始化）→ 记录 'project not yet initialized' 到 summary，status 仍 ok（业务代码由后续 task 创建，预期）。
 3. For each {{plansDir}}/*.md: if frontmatter (starts with ---) read task models; else generate — extract LEAF ids (## Task N with ### Task NX children → only NX; else N), modelHint (title contains 安全|加密|认证|JWT|CSRF|Fernet|算法|比对|策略|边界|集成|接口 → opus, else omit), write frontmatter at file top. Idempotent. Record each plan's file (full path) and seq (last two digits of filename, e.g. 01). Also read write_files from frontmatter if present (format: "write_files:\n  T1:\n    - src/a.py\n    - src/b.py"). Return as task_write_files in evidence: [{task_id, plan_seq, files:[...]}] (plan_seq = this plan's seq). Absent → empty array.
 4. git log → completed task ids via convention feat(plan-X/T-Y).
 5. git status --porcelain → dirty_tree. If dirty_tree=true (uncommitted changes from a crashed previous run, §6.2 半提交自愈): run \`git reset --hard HEAD\` to clean the working tree (orchestrator has no shell, so bootstrap must self-heal here), then re-run \`git status --porcelain\` to confirm clean; set dirty_tree=false in evidence. If git reset fails, leave dirty_tree=true and record the error in summary.
 6. For each leaf task return its model (sonnet|opus|undefined→sonnet) and title (the description text from the Task header).
-7. If runs/ directory exists: scan runs/*/manifest.json files. For each, read per_task object. For each task_id in per_task that has blocked_info, extract {task_id, reason (from blocked_info.reason), error (from blocked_info.last_error)}. Filter to task_ids that match leaf tasks in the current plans. Return as failed_approaches in evidence. Also check if any task has status='in_progress' → in_progress=true (else false). If runs/ does not exist → failed_approaches=[], in_progress=false.
+7. If runs/ directory exists: scan runs/*/manifest.json files. For each, read per_task object. For each task_id in per_task that has blocked_info, extract {task_id, plan_seq (the plan sequence this task belongs to, from the task_id prefix 'plan-<seq>/T-Y' or from the plan context), reason (from blocked_info.reason), error (from blocked_info.last_error)}. Filter to task_ids that match leaf tasks in the current plans. Return as failed_approaches in evidence. Also check if any task has status='in_progress' → in_progress=true (else false). If runs/ does not exist → failed_approaches=[], in_progress=false.
 
-Return {status, evidence:{config (include ALL fields read in step 1, even optional ones if present), plans:[{id, file, seq, tasks:[{id, model, title}]}], completed:[...], dirty_tree, in_progress, failed_approaches:[{task_id, reason, error}], task_write_files:[{task_id, plan_seq, files:[...]}], task_lessons:[{task_id, plan_seq, lessons:[{id, title, detail}]}]}, summary}.
+Return {status, evidence:{config (include ALL fields read in step 1, even optional ones if present), plans:[{id, file, seq, tasks:[{id, model, title}]}], completed:[...], dirty_tree, in_progress, failed_approaches:[{task_id, plan_seq, reason, error}], task_write_files:[{task_id, plan_seq, files:[...]}], task_lessons:[{task_id, plan_seq, lessons:[{id, title, detail}]}]}, summary}.
 RED FLAG: evidence 必须是真实读取结果，绝不编造。`,
 
   implementor: `You are the IMPLEMENTOR for {{taskId}} (plan {{planId}}). TDD strict (RED→GREEN→REFACTOR). {{retryNote}}
@@ -574,7 +575,7 @@ Inputs: specPath={{specPath}} testCommand={{testCommand}} buildCommand={{buildCo
 
 Steps:
 1. Read {{planFilePath}}, locate {{taskId}} section: files to create/modify, tests to write.
-2. Read {{specPath}} relevant section; implement to spec. If reference documents are listed above, read the relevant rule section BEFORE writing number/play/prize logic.
+2. Read {{specPath}} relevant section; implement to spec. If reference documents are listed above, read the relevant rule section BEFORE writing domain-specific logic.
 3. RED: write ONE minimal failing test for one behavior. Run {{testCommand}}; CONFIRM it fails — and fails for the RIGHT reason (feature missing), not a typo/import error. A test that passes immediately proves nothing (you may be testing existing behavior) — fix the test.
 4. GREEN: minimal code to pass the test. Don't add features or refactor beyond the test. If {{buildCommand}} is non-empty, run it before tests to verify the project builds.
 5. REFACTOR: clean up (dedupe, better names, extract helpers). Tests stay green.
@@ -603,10 +604,11 @@ Steps:
 If self-review finds issues, fix them now.
 
 Return {status, evidence:{tests_exit_code, files_changed:[...], pytest_summary}, diagnostics:{blocked_category, last_error, suggested_fix, concerns} (diagnostics only if blocked/done_with_concerns), summary}.
-- status=ok: done, tests_exit_code=0.
-- status=done_with_concerns: done (tests green) but you have doubts about correctness/scope → fill diagnostics.concerns (array). Orchestrator records them and proceeds to review.
-- status=blocked: 障碍 (interface|file|spec|dependency|external) → fill diagnostics.
-- status=needs_context: missing info → fill diagnostics.blocked_category + last_error.
+- status=ok: done, tests_exit_code=0. MUST provide evidence with real tests_exit_code / files_changed / pytest_summary.
+- status=done_with_concerns: done (tests green) but you have doubts about correctness/scope → fill diagnostics.concerns (array). MUST provide evidence as in ok.
+- status=failed: tests failed after retry. evidence is OPTIONAL (record real tests_exit_code if available); diagnostics may contain last_error/suggested_fix.
+- status=blocked: 障碍 (interface|file|spec|dependency|external) → fill diagnostics. evidence is OPTIONAL (no real test run).
+- status=needs_context: missing info → fill diagnostics.blocked_category + last_error. evidence is OPTIONAL.
 RED FLAG: tests_exit_code 必须真实，绝不编造 0。绝不跳过测试。遇障碍宁可 blocked 也不要伪造通过。若遇到 model 限额耗尽（quota/rate-limit/429 错误），返回 status:'model_unavailable'（非 failed/blocked），让 orchestrator halt 并保存进度。`,
 
   specReview: `You are the SPEC-REVIEWER (model opus). Verify implementor built EXACTLY what was requested — nothing missing, nothing extra, no misunderstanding. Verdict on CURRENT working tree (HEAD or staged).
@@ -616,7 +618,7 @@ Inputs: specPath={{specPath}} taskId={{taskId}} planFile={{planFilePath}} change
 
 Steps:
 1. git diff (or read changed files) for this task.
-2. Read {{specPath}} section governing {{taskId}}. If reference documents are listed above, verify number/play/prize/rule logic matches them (e.g. positional vs partition comparison must match the lottery type's rule).
+2. Read {{specPath}} section governing {{taskId}}. If reference documents are listed above, verify domain-specific logic and rules match them exactly.
 3. Verify THREE dimensions (don't trust the implementer report — read the actual code):
    a. MISSING requirements: anything in spec not implemented? claimed-working but not actually done?
    b. EXTRA / over-build (YAGNI): anything built that spec did NOT request? unrequested features, over-engineering, "nice to haves"? This is critical — flag any functionality the spec forbids or didn't ask for.
@@ -648,9 +650,9 @@ This is a STATIC READ-ONLY review. You may use 'git diff', 'git status', 'find',
 ## Calibration
 Categorize issues by ACTUAL severity — not everything is Critical. Acknowledge what was done well (strengths) before listing issues; accurate praise helps the implementer trust the rest.
 
-Return {status (ok|failed), diagnostics:{files_touched:[...], issues:[{severity: Critical|Important|Minor, title, file, fix}]}, summary}.
+Return {status (ok|failed), diagnostics:{files_touched:[...], issues:[{severity: critical|important|minor, title, file, fix}]}, summary}.
 issues 元素 MUST 是 object 且必有 title + fix（severity/file 亦建议）——纯字符串或缺 title/fix 的对象会被 schema 拒绝。
-RED FLAG: ok 仅当无 Critical/Important 问题。Critical/Important（架构/安全/正确性）必须 failed；仅 Minor 可 ok（记入 issues）。若遇到 model 限额耗尽（quota/rate-limit/429 错误），返回 status:'model_unavailable'（非 failed），让 orchestrator halt 并保存进度。`,
+RED FLAG: ok 仅当无 critical/important 问题。critical/important（架构/安全/正确性）必须 failed；仅 minor 可 ok（记入 issues）。若遇到 model 限额耗尽（quota/rate-limit/429 错误），返回 status:'model_unavailable'（非 failed），让 orchestrator halt 并保存进度。`,
 
   hunter: `You are the SILENT-FAILURE-HUNTER. Hunt swallowed errors, bad fallbacks, missing error propagation, swallowed exceptions, except:pass, broad except hiding bugs, default values masking failures. Verdict on CURRENT tree.
 
@@ -757,9 +759,15 @@ Steps:
 3. git checkout - (restore previous HEAD). CRITICAL: must restore or downstream tasks break.
 4. If step 3 fails, git checkout <previous-branch> explicitly.
 
-Return {status (ok|failed), evidence:{tests_exit_code, pytest_summary, lint_results:[{command, exit_code}]}, summary}.
-- status=ok ONLY if EVERY command exit_code == 0.
-RED FLAG: every exit_code 必须真实（你在 committed SHA 上亲跑）。必须 checkout 回原 HEAD。任一 exit != 0 → status=failed（包括 lint 命令——架构纪律如层纯度由 lint 强制）。若遇到 model 限额耗尽（quota/rate-limit/429 错误），返回 status:'model_unavailable'（非 failed），让 orchestrator halt 并保存进度。`,
+Return {status (ok|failed), evidence:{tests_exit_code, pytest_summary, lint_results:[{command, exit_code}], restored_head}, summary}.
+- restored_head: 步骤 3/4 恢复后执行 'git rev-parse HEAD' 的 40 位 SHA，供 orchestrator 验证基线已恢复。
+- status=ok ONLY if EVERY command exit_code == 0 AND restored_head 非空。
+RED FLAG: every exit_code 必须真实（你在 committed SHA 上亲跑）。必须 checkout 回原 HEAD 并记录 restored_head。任一 exit != 0 → status=failed（包括 lint 命令——架构纪律如层纯度由 lint 强制）。若遇到 model 限额耗尽（quota/rate-limit/429 错误），返回 status:'model_unavailable'（非 failed），让 orchestrator halt 并保存进度。`,
+
+  headVerifier: `You are HEAD-VERIFIER. Read-only. Run "git rev-parse HEAD" in the repository root and return the current HEAD SHA.
+
+Return {status:"ok", evidence:{head:"<40-char-sha>"}, summary}.
+RED FLAG: head must be the actual output of git rev-parse HEAD, never fabricated.`,
 
   finalReport: `You are FINAL-REPORT (mode={{mode}} done|halted). Write the run manifest (the ONLY on-disk write in this workflow) and emit a digest.
 
@@ -1173,7 +1181,7 @@ async function runTask(plan, task) {
       state.perTask[taskKey].destructive_review_failed = true
       // Q14（第 5 轮）: 异常路径 shape 须与正常路径一致（[{source, severity, title, fix}]），
       //   旧 [{source, title}] 简化 shape 混在同字段 → manifest 消费者需处理两种结构
-      state.perTask[taskKey].destructive_review_findings = [{ source: 'destructive-review', severity: 'Critical', title: dReason || dEmptyFailed, fix: 'investigate review agent failure' }]
+      state.perTask[taskKey].destructive_review_findings = [{ source: 'destructive-review', severity: 'critical', title: dReason || dEmptyFailed, fix: 'investigate review agent failure' }]
       log(`⚠ ${task.id} destructive review 异常 (${dReason || dEmptyFailed}) — 记录并继续`)
     } else if (!allGreen(dSpec, dQual, dHunt)) {
       // 不全绿：不 halt，记录 destructive_review_failed + findings 到 perTask，继续下一 task
@@ -1242,11 +1250,13 @@ state.plans = boot.evidence.plans
 // args.completed 可手动覆盖（resume 时显式传已 commit 的 plan-scoped id 列表，双保险）。
 const _rawCompleted = (Array.isArray(args.completed) && args.completed.length ? args.completed : boot.evidence.completed) || []
 state.completed = normalizeCompleted(_rawCompleted)
-// 跨 session 失败方案追踪：按 task_id 索引存入 state，供 implCtx 注入 implementor prompt
+// 跨 session 失败方案追踪：按 plan-scoped taskKey 索引存入 state，供 implCtx 注入 implementor prompt
+// P1-2（第 13 轮）: bootstrap 返回的 task_id 可能是裸 T1 或 plan-scoped；统一归一化为 plan-scoped key，防跨 plan 同名 task 查找失败
 if (Array.isArray(boot.evidence.failed_approaches)) {
   for (const fa of boot.evidence.failed_approaches) {
-    if (!state.failedApproaches[fa.task_id]) state.failedApproaches[fa.task_id] = []
-    state.failedApproaches[fa.task_id].push(fa)
+    const faKey = fa.task_id.includes('/') ? fa.task_id : `plan-${String(fa.plan_seq).padStart(2, '0')}/${fa.task_id}`
+    if (!state.failedApproaches[faKey]) state.failedApproaches[faKey] = []
+    state.failedApproaches[faKey].push(fa)
   }
 }
 // write_files 边界控制：按 plan-scoped key 索引存入 state，供 commit agent 边界检查
@@ -1308,6 +1318,11 @@ for (const plan of boot.evidence.plans) {
     if (gate.halted) { return await halt(plan, null, { reason: gate.reason, diag: gate.diag }) }
     if (gate.status !== 'ok' || gate.evidence?.migration_missing) {
       return await halt(plan, null, { reason: 'plan gate failed', diag: { sha: lastSha, tests_exit_code: gate.evidence?.tests_exit_code, summary: gate.evidence?.pytest_summary, lint_results: gate.evidence?.lint_results, migration_missing: gate.evidence?.migration_missing } })
+    }
+    // P1-1（第 13 轮）: gate agent 自称恢复 HEAD 后，orchestrator 独立验证当前 HEAD 与 restored_head 一致，防静默在错误基线继续
+    const headVerify = await dispatchImpl(buildPrompt('headVerifier', {}), { schema: { type: 'object', required: ['status', 'evidence'], additionalProperties: true, properties: { status: { type: 'string', enum: ['ok'] }, evidence: { type: 'object', required: ['head'], properties: { head: { type: 'string' } } }, summary: { type: 'string' } } }, label: `head-verify:${plan.id}`, phase: `Plan ${plan.id}` }, 'sonnet')
+    if (headVerify.halted || headVerify.status !== 'ok' || headVerify.evidence?.head !== gate.evidence?.restored_head) {
+      return await halt(plan, null, { reason: 'gate head restore verification failed', diag: { expected: gate.evidence?.restored_head, actual: headVerify.evidence?.head, sha: lastSha } })
     }
     log(`✓ plan ${plan.id} gate green @ ${lastSha} (${cmds.length} cmd${cmds.length === 1 ? '' : 's'})`)
   } else {

@@ -7,6 +7,7 @@
   "spec_path": "docs/superpowers/specs/2026-06-16-lottery-notification-design.md",
   "reference_paths": ["docs/reference/lottery-rules.md"],
   "language": "python",
+  "silent_failure_intro": "本项目特定静默失败风险（最高优先级——优先核查）",
   "silent_failure_context": [
     "DB 写不得 split-commit：一个逻辑操作（如 DrawResult + PendingComparison outbox）必须单事务一次 commit；分两次 commit 时第二次失败会导致重试幂等分支跳过、不补 outbox → 永不比对 → 漏通知。",
     "per-row 异常隔离用 savepoint：循环里逐行处理 + 共享 session 时，单行失败必须 with session.begin_nested()（SAVEPOINT）隔离，否则 flush 时 DB 错毒化 session（PendingRollback），后续好行全丢 + 末尾 commit 变 rollback。bare except Exception 不够。",

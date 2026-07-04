@@ -18,7 +18,7 @@ function promptBody(src, role) {
   return m[1]
 }
 
-const ROLES = ['bootstrap', 'implementor', 'specReview', 'qualityReviewer', 'hunter', 'simplify', 'commit', 'contextFetcher', 'gate', 'finalReport', 'lessonDistiller']
+const ROLES = ['bootstrap', 'implementor', 'specReview', 'qualityReviewer', 'hunter', 'simplify', 'commit', 'contextFetcher', 'gate', 'headVerifier', 'finalReport', 'lessonDistiller']
 
 for (const role of ROLES) {
   test(`PROMPTS.${role} identical between lib.js and run-plans.js`, () => {
@@ -78,8 +78,8 @@ test('run-plans.js SCHEMAS mirror key changes', () => {
   // implementor enum 含 done_with_concerns；diagnostics 含 concerns
   assert.match(runSrc, /'done_with_concerns'/)
   assert.match(runSrc, /concerns:\s*\{\s*type:\s*'array'\s*\}/)
-  // gate evidence required 含 lint_results
-  assert.match(runSrc, /required:\s*\['tests_exit_code',\s*'pytest_summary',\s*'lint_results'\]/)
+  // gate evidence required 含 lint_results + restored_head（P1-1）
+  assert.match(runSrc, /required:\s*\['tests_exit_code',\s*'pytest_summary',\s*'lint_results',\s*'restored_head'\]/)
 })
 
 test('run-plans.js inlines review_empty 空响应守卫 + review_failed_no_findings + quality/hunter items 约束', () => {
@@ -125,7 +125,7 @@ test('run-plans.js orchestrator wires new placeholders + gate lint loop', () => 
   // 方案 C：simplifyRevertNote 已删除（commit 提前 + git diff 触发 + checkout 回退）
   assert.doesNotMatch(runSrc, /simplifyRevertNote/, '方案 C 后不得残留 simplifyRevertNote')
   assert.doesNotMatch(runSrc, /simplifyFailed/, '方案 C 后不得残留 simplifyFailed 变量')
-  assert.match(runSrc, /silentFailureContext: formatSilentFailureContext\(cfg\.silent_failure_context\)/, 'hunter 须注入 silentFailureContext')
+  assert.match(runSrc, /silentFailureContext: formatSilentFailureContext\(cfg\.silent_failure_context,\s*cfg\.silent_failure_intro\)/, 'hunter 须注入 silentFailureContext（含 intro 配置）')
   assert.match(runSrc, /failedApproaches: formatFailedApproaches/, 'implCtx 须注入 failedApproaches')
   assert.match(runSrc, /failed_approaches/, 'SCHEMAS.bootstrap 须含 failed_approaches')
   assert.match(runSrc, /failed_approach:/, 'halt() 须在 blocked_info 中记录 failed_approach')
@@ -499,11 +499,11 @@ test('S7（第 5 轮）: SCHEMAS.commit evidence required 须含 tests_at_commit
 test('Q4（第 5 轮）: SCHEMAS 整块须 lib.js ↔ run-plans.js 字节一致', () => {
   // Q4: sync.test.js 对 PROMPTS 做字节比较，对 helper 函数体做字节比较，
   //   但 SCHEMAS 只用 regex 检查个别字段 → lib.js 改 schema 不会被守护
-  //   修：提取 SCHEMAS 整块字符串做字节比较
+  //   修：提取 SCHEMAS 整块字符串做字节比较（lib.js 为 export const，run-plans.js 为 const）
   function extractSchemas(src) {
-    const m = src.match(/const SCHEMAS = \{[\s\S]*?\n\}/)
+    const m = src.match(/(?:export\s+)?const SCHEMAS = \{[\s\S]*?\n\}/)
     assert.ok(m, '须含 SCHEMAS 定义')
-    return m[0]
+    return m[0].replace(/^export\s+/, '')
   }
   assert.equal(extractSchemas(runSrc), extractSchemas(libSrc), 'SCHEMAS 整块须字节一致（Q4）')
 })
@@ -569,8 +569,9 @@ test('Q13（第 5 轮）: halt() 须返回 {result:"halted", reason} 供调用�
 test('Q14（第 5 轮）: destructive_review_findings 须统一 shape（异常路径与正常路径一致）', () => {
   // Q14: 异常路径存 [{source, title}]，正常路径存 [{source, severity, title, file, fix}]
   //   两种 shape 混在同一字段，manifest 消费者需处理两种结构。修：异常路径统一为完整 shape
+  // P1-3（第 13 轮）: severity 统一小写 → 'critical'
   assert.doesNotMatch(runSrc, /\{ source: 'destructive-review', title: dReason \|\| dEmptyFailed \}/, '不得用简化 shape {source, title}（Q14：shape 不一致）')
-  assert.match(runSrc, /\{ source: 'destructive-review', severity: 'Critical', title: dReason \|\| dEmptyFailed, fix:/, '异常路径须统一为 {source, severity, title, fix} shape（Q14）')
+  assert.match(runSrc, /\{ source: 'destructive-review', severity: 'critical', title: dReason \|\| dEmptyFailed, fix:/, '异常路径须统一为 {source, severity, title, fix} shape（Q14）')
 })
 
 test('Q15（第 5 轮）: review_history.push 须在 halt 检查之前（halt 轮状态须持久化）', () => {
@@ -824,8 +825,102 @@ test('P2-12b（第 12 轮）: .gitattributes 须为自身启用 text diff（防 
     '.gitattributes 须有自身规则 text eol=crlf diff（P2-12b，防 * binary 兜底致自身 diff 不可读）')
 })
 
+// ===== 第 13 轮 TDD red 断言 =====
 
+test('P1-1a（第 13 轮）: gate prompt 须要求返回 restored_head', () => {
+  // gate agent 负责 git checkout - 恢复 HEAD，但 orchestrator 不二次验证
+  // 修：prompt 要求 agent 返回 evidence.restored_head（恢复后 git rev-parse HEAD）
+  for (const src of [libSrc, runSrc]) {
+    const p = promptBody(src, 'gate')
+    assert.match(p, /restored_head/,
+      'gate prompt 须要求返回 restored_head（P1-1a，供 orchestrator 验证 HEAD 已恢复）')
+  }
+})
 
+test('P1-1b（第 13 轮）: gate schema 须要求 evidence.restored_head', () => {
+  // 修：SCHEMAS.gate.evidence required 增加 restored_head
+  // lib.js 是纯函数真源，不含 SCHEMAS；schema 只存在于 run-plans.js
+  assert.match(runSrc, /restored_head:\s*\{\s*type:\s*'string'\s*\}/,
+    'gate schema 须声明 restored_head: {type: "string"}（P1-1b）')
+  assert.match(runSrc, /evidence:\s*\{\s*type:\s*'object',\s*required:\s*\[.*'restored_head'/,
+    'gate evidence required 须包含 restored_head（P1-1b）')
+})
 
+test('P1-1c（第 13 轮）: gate 返回后须 dispatch 验证当前 HEAD', () => {
+  // 修：orchestrator 在 gate ok 后再派 headVerifier subagent，与 restored_head 比对
+  assert.match(runSrc, /headVerifier/,
+    'run-plans.js 须新增 headVerifier prompt 角色（P1-1c）')
+  assert.match(runSrc, /head-verify:/,
+    'run-plans.js 主流程须在 gate 后 dispatch head-verify 子 agent（P1-1c）')
+  assert.match(runSrc, /gate head restore verification failed/,
+    'run-plans.js 须有 gate head restore verification failed  halt reason（P1-1c）')
+})
 
+test('P1-2a（第 13 轮）: bootstrap schema 须要求 failed_approaches[].plan_seq', () => {
+  // 修：failed_approaches items 增加 plan_seq，供 orchestrator 归一化为 plan-scoped key
+  assert.match(runSrc, /failed_approaches:\s*\{\s*type:\s*'array',\s*items:/,
+    'run-plans.js bootstrap schema failed_approaches 须为 items 约束数组（P1-2a）')
+  assert.match(runSrc, /plan_seq:\s*\{\s*type:\s*'integer'\s*\}/,
+    'run-plans.js bootstrap schema 须声明 failed_approaches[].plan_seq（P1-2a）')
+})
+
+test('P1-2b（第 13 轮）: failed_approaches 存储须归一化为 plan-scoped key', () => {
+  // 修：orchestrator 按 plan-${String(fa.plan_seq).padStart(2,'0')}/${fa.task_id} 索引
+  assert.match(runSrc, /fa\.task_id\.includes\('\/'\)\s*\?\s*fa\.task_id\s*:\s*`plan-\$\{String\(fa\.plan_seq\)\.padStart\(2,\s*'0'\)\}\/\$\{fa\.task_id\}`/,
+    'run-plans.js 须对 failed_approaches task_id 做 plan-scoped 归一化（P1-2b）')
+})
+
+test('P1-3a（第 13 轮）: qualityReviewer severity enum 须与 hunter 统一为小写', () => {
+  // 修：qualityReviewer schema severity enum 从 ['Critical', 'Important', 'Minor'] 改为 ['critical', 'important', 'minor']
+  for (const src of [libSrc, runSrc]) {
+    assert.doesNotMatch(src, /severity:\s*\{\s*type:\s*'string',\s*enum:\s*\['Critical',\s*'Important',\s*'Minor'\]\s*\}/,
+      'qualityReviewer schema 不得再用大写 severity enum（P1-3a）')
+    assert.match(src, /severity:\s*\{\s*type:\s*'string',\s*enum:\s*\['critical',\s*'important',\s*'minor'\]\s*\}/,
+      'qualityReviewer schema 须用小写 severity enum（P1-3a）')
+  }
+})
+
+test('P2-1a（第 13 轮）: implementor schema 不强求 evidence 必填', () => {
+  // 修：blocked/needs_context 状态下 agent 无真实 tests_exit_code，移除 evidence 的 required 约束
+  for (const src of [libSrc, runSrc]) {
+    const implMatch = src.match(/implementor:\s*\{\s*type:\s*'object',\s*required:\s*\[([^\]]+)\]/)
+    assert.ok(implMatch, '须找到 implementor schema 的 required 字段')
+    assert.doesNotMatch(implMatch[1], /'evidence'/,
+      'implementor schema required 不得包含 evidence（P2-1a）')
+  }
+})
+
+test('P2-2a（第 13 轮）: gate lint_results schema 须约束 item shape', () => {
+  // 修：lint_results 从 type: 'array' 收紧为 items: { command, exit_code } required
+  for (const src of [libSrc, runSrc]) {
+    assert.match(src, /lint_results:\s*\{\s*type:\s*'array',\s*items:\s*\{\s*type:\s*'object',\s*required:\s*\['command',\s*'exit_code'\]/,
+      'gate schema lint_results 须约束 item shape（P2-2a）')
+  }
+})
+
+// ===== 第 14 轮 TDD red 断言：清理项目特定示例文本 + silent_failure_intro 配置化 =====
+
+test('P2-3b（第 14 轮）: prompt 模板不得残留彩票领域示例文本', () => {
+  // 修：formatReferencePaths / implementor / specReview 中的 number/play/prize/rule/lottery 示例改为中性说明
+  for (const src of [libSrc, runSrc]) {
+    assert.doesNotMatch(src, /number\/play\/prize\/rule/,
+      'prompt 模板不得残留 number/play/prize/rule 等彩票领域示例（P2-3b）')
+    assert.doesNotMatch(src, /lottery type's rule/,
+      'prompt 模板不得残留 lottery type 等彩票领域示例（P2-3b）')
+    assert.doesNotMatch(src, /中奖永不静默漏通知/,
+      'prompt 模板不得残留中文彩票口号（P2-3b）')
+    assert.doesNotMatch(src, /彩票/,
+      '代码注释不得残留“彩票”字样（P2-3b）')
+  }
+})
+
+test('P2-3c（第 14 轮）: formatSilentFailureContext 支持自定义 intro 且默认中性', () => {
+  // 修：函数签名增加 intro 参数，默认标题从“中奖...”改为中性项目特定风险说明
+  for (const src of [libSrc, runSrc]) {
+    assert.match(src, /function formatSilentFailureContext\(items,\s*intro\)/,
+      'formatSilentFailureContext 须支持 intro 参数（P2-3c）')
+    assert.match(src, /Project-Specific Silent-Failure Risks/,
+      'formatSilentFailureContext 默认标题须中性（P2-3c）')
+  }
+})
 

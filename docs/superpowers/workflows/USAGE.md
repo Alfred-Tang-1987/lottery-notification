@@ -32,6 +32,7 @@
   "spec_path": "docs/superpowers/specs/2026-06-16-lottery-notification-design.md",
   "reference_paths": ["docs/reference/lottery-rules.md"],
   "language": "python",
+  "silent_failure_intro": "<项目特定静默失败风险标题，可选>",
   "silent_failure_context": ["<项目特定静默失败纪律条目，见下>"],
   "review_max_rounds": 4,
   "lessons_auto_distill": true
@@ -50,6 +51,7 @@
 | `spec_path` | 是 | 设计 spec（specReview 逐条对照） |
 | `reference_paths` | 否 | **额外权威文档数组**（implementor/specReview 对照）。承载 spec 之外的硬规则——如本项目的彩种规则参考。不配即该 prompt 段消失 |
 | `language` | 否 | `python` / `general`（可扩展 ts/go…）。决定 qualityReviewer 的语言专项清单。未知值 → 通用清单 |
+| `silent_failure_intro` | 否 | **项目特定静默失败风险标题**（hunter 注入段落的 `##` 标题）。不配 → 默认标题 `Project-Specific Silent-Failure Risks (HIGHEST PRIORITY — hunt these first)` |
 | `silent_failure_context` | 否 | **项目特定静默失败纪律数组**（hunter 优先核查）。承载本项目反复踩的领域致命点——如 DB split-commit / savepoint 隔离 / 批量循环兜底 / 更正重置终态 / datetime 时区对齐。hunter 先查这些再查通用 `except:pass` 模式。不配即 hunter 退化为通用清单 |
 | `review_max_rounds` | 否 | **review 最大轮数**（默认 4）。正整数 N → N 轮仍有 ❌ 则 halt；`0`/负数 → 无限模式（永不因轮数 halt，仅靠 `detectOscillation` 同文件 ≥3 round halt）。**最后 1 轮 fix 强制 opus**：有限模式 `round===maxRounds-1`、无限模式 `round>=4`。未配/null/非数字 → 默认 4。详见设计文档 §5.3 |
 | `lessons_auto_distill` | 否 | **halt 时自动提炼 lesson**（默认 true）。halt 时调 `lessonDistiller` agent（opus）从 halt 根因中提炼可复用知识，过滤瞬态事件（review_empty/model_unavailable），语义去重对比现有 lessons 后 append/update/skip。distiller 失败/限额 → best-effort 跳过，不阻塞 manifest。显式 `false` 关闭（旧行为）。详见设计文档 §5.4 |

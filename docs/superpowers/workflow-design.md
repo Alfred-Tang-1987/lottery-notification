@@ -518,6 +518,7 @@ runs/<run-id>/
   "language": "python",
   "extra_lint_commands": ["uv run lint-imports"],
   "reference_paths": ["docs/reference/lottery-rules.md"],
+  "silent_failure_intro": "<项目特定静默失败风险标题，可选>",
   "silent_failure_context": ["<项目特定静默失败纪律数组>"],
   "lessons_path": "docs/superpowers/lessons.md",
   "lessons_auto_distill": true,
@@ -530,7 +531,7 @@ runs/<run-id>/
 
 启动 config smoke：`test_command --collect-only`（fail loud，2 秒发现 typo 而非 20 分钟）。
 
-> **可选字段**：`extra_lint_commands`（架构纪律 lint，如 domain 层纯度护栏）/ `reference_paths`（spec 外权威文档）/ `silent_failure_context`（项目特定静默失败纪律，hunter 优先核查）/ `lessons_path`（跨任务失败知识库，bootstrap 按 task 关键词匹配注入 implementor，halt 时调 lessonDistiller agent 自读写 `lessonsPath` 提炼可复用根因，§5.4 写盘契约）/ `lessons_auto_distill`（控制 halt 时自动提炼 lesson，默认 true，§5.4）/ `review_max_rounds`（review 最大轮数，默认 4，0=无限模式靠 detectOscillation 防线 halt，§5.3）/ `schema_tool` + `model_paths` + `migration_paths`（schema 迁移一致性检查三件套，gate 用 `git diff --name-only HEAD~1..HEAD` 查 model 有变更但无迁移文件 → `migration_missing=true` 触发 gate failed）均可选，不配即对应 prompt 段消失（条件渲染）。通用性原则：项目特有内容只走 config，不写进 prompt。
+> **可选字段**：`extra_lint_commands`（架构纪律 lint，如 domain 层纯度护栏）/ `reference_paths`（spec 外权威文档）/ `silent_failure_intro`（项目特定静默失败风险标题，hunter 注入段落的 `##` 标题，不配即默认标题）/ `silent_failure_context`（项目特定静默失败纪律数组，hunter 优先核查）/ `lessons_path`（跨任务失败知识库，bootstrap 按 task 关键词匹配注入 implementor，halt 时调 lessonDistiller agent 自读写 `lessonsPath` 提炼可复用根因，§5.4 写盘契约）/ `lessons_auto_distill`（控制 halt 时自动提炼 lesson，默认 true，§5.4）/ `review_max_rounds`（review 最大轮数，默认 4，0=无限模式靠 detectOscillation 防线 halt，§5.3）/ `schema_tool` + `model_paths` + `migration_paths`（schema 迁移一致性检查三件套，gate 用 `git diff --name-only HEAD~1..HEAD` 查 model 有变更但无迁移文件 → `migration_missing=true` 触发 gate failed）均可选，不配即对应 prompt 段消失（条件渲染）。通用性原则：项目特有内容只走 config，不写进 prompt。
 
 > **跨 session 失败方案追踪（failed_approaches）**：bootstrap agent 扫 `runs/*/manifest.json` 提取历史 halt task 的 `failed_approach`（reason + error），注入 implementor prompt 的 `failedApproaches` 占位符。此机制让新 run 的 implementor 知晓历史失败方案、避免重蹈覆辙。`state.failedApproaches` 由 bootstrap 填充，runTask 通过 `formatFailedApproaches` 序列化注入。
 
@@ -538,17 +539,16 @@ runs/<run-id>/
 
 ```yaml
 ---
-id: plan-01
-tasks:
-  - id: T1
-    model: sonnet       # enum: sonnet|opus，optional，未标注默认 sonnet
-  - id: T6
-    model: opus         # 高风险 task（安全/算法/集成）标注 opus
+models:
+  T1: sonnet       # enum: sonnet|opus，optional，未标注默认 sonnet
+  T6: opus         # 高风险 task（安全/算法/集成）标注 opus
 ---
 # Plan 01 正文（人读 Markdown，原 writing-plans 输出）
 ```
 
 frontmatter 是机器读，正文是人读，单文件不分离。
+
+> **第 13 轮修正**：实际 on-disk frontmatter 使用 `models: {T1: sonnet, ...}` map（见 `docs/superpowers/plans/*.md`），而非早期 spec 草拟的 `tasks:` array。bootstrap agent 读取该 map 后，内部解析为 `plans: [{id, file, seq, tasks:[{id, model, title}]}]` 供 orchestrator 使用。map 格式更紧凑，且与现有 plan 文件一致。
 
 ### 11.3 validator + onboarding
 
@@ -757,7 +757,7 @@ runs/<run-id>/
 
 ```
 对每个 plan 文件：
-  如果已有 YAML frontmatter（--- 开头）→ 直接读取
+  如果已有 YAML frontmatter（--- 开头，格式为 `models: {T1: sonnet, ...}`）→ 直接读取
   如果没有 → 生成：
     1. 提取 task 列表（**叶子优先规则**，处理 Plan 01 式嵌套）：
        - 扫描 `## Task N` 与 `### Task NX` headers
@@ -769,8 +769,8 @@ runs/<run-id>/
        - 标题/描述含"算法/比对/策略/边界" → opus
        - 标题/描述含"集成/多模块/接口设计" → opus
        - 其余 → 不标注（默认 sonnet）
-    3. 生成 YAML frontmatter 写回 plan 文件头部
-    4. 返回 {plans: [{id, tasks:[{id, model}]}]}
+    3. 生成 YAML frontmatter 写回 plan 文件头部，格式为 `models: {T1: sonnet, T6: opus, ...}` map
+    4. 内部返回 {plans: [{id, file, seq, tasks:[{id, model, title}]}]}（on-disk 仍为 models map）
 ```
 
 **frontmatter 写回是幂等的**：已有 frontmatter 的 plan 不重写。resume 时 bootstrap 直接读已有 frontmatter（不重新生成）。
