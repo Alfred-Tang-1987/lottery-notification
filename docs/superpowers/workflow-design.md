@@ -616,6 +616,8 @@ for (const plan of state.plans) {
     if (r.halted) return halt(plan, task, r)               // 写 .workflow/blocked.md + surface（§8.2）
   }
   // plan 级独立 gate（§3）：committed SHA 上重跑 full_test_command
+  // 第 12 轮 spec drift #1: 伪代码用 agent(...) 简化，实际用 dispatchImpl(..., 'sonnet')
+  //   包装（含 null guard + agent_error 封装，§2.4），context 含 lastSha/gateCommands/schemaCheck 等
   const lastSha = /* §5.2 lastSha 按 plan.tasks 反向查找（P0-7 padStart 归一化） */
   const gate = await agent(buildPrompt('gate', {plan, lastSha, ...}),
                            {schema: SCHEMAS.gate, label: `gate:${plan.id}`})

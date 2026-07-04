@@ -802,6 +802,29 @@ test('P2-11b（第 11 轮）: .gitattributes 须为源码文件启用 diff（防
     '*.js 规则须含 diff（P2-11b，防 * binary 兜底致 git diff 显示 Bin 不可读）')
 })
 
+// ===== 第 12 轮 TDD red 断言 =====
+
+test('P2-12a（第 12 轮）: finalReport prompt 须用 <taskKey> 而非 <taskId>（对齐实际 key）', () => {
+  // :770 prompt 写 per_task:{<taskId>:{...}}，实际 key 是 plan-scoped taskKey（plan-XX/TY）
+  // 修：prompt 改为 {<taskKey>:{...}}（agent 从 schema 推断正确，但 prompt 用词应精确）
+  for (const src of [libSrc, runSrc]) {
+    const p = promptBody(src, 'finalReport')
+    assert.match(p, /per_task:\{<taskKey>/,
+      'finalReport prompt 须用 <taskKey> 而非 <taskId>（P2-12a，对齐实际 plan-scoped key）')
+    assert.doesNotMatch(p, /per_task:\{<taskId>/,
+      'finalReport prompt 不得用 <taskId>（P2-12a，实际 key 是 plan-scoped taskKey）')
+  }
+})
+
+test('P2-12b（第 12 轮）: .gitattributes 须为自身启用 text diff（防 * binary 兜底）', () => {
+  // .gitattributes 自身被 * binary 兜底 → git diff 显示 Bin 不可读
+  // 修：加 .gitattributes text eol=crlf diff 规则
+  const attrs = fs.readFileSync(path.resolve(__dirname, '../../../../.gitattributes'), 'utf8')
+  assert.match(attrs, /\.gitattributes\s+text eol=crlf diff/,
+    '.gitattributes 须有自身规则 text eol=crlf diff（P2-12b，防 * binary 兜底致自身 diff 不可读）')
+})
+
+
 
 
 
