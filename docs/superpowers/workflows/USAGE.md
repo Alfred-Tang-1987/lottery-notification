@@ -83,10 +83,11 @@ Workflow({
 
 | 参数 | 必填 | 说明 |
 |---|---|---|
-| `configPath` | 否 | workflow.config.json 路径。不传 → bootstrap 自动在项目根发现 |
-| `plansDir` | 否 | plan 目录。不传 → bootstrap 自动发现 `docs/superpowers/plans/` |
+| `configPath` | **是** | workflow.config.json 路径（第 7 轮 P2-7 起必填，缺失/空串 → fail-fast throw） |
+| `plansDir` | **是** | plan 目录路径（第 7 轮 P2-7 起必填，缺失/空串 → fail-fast throw） |
 | `plan` | 否 | 限定单 plan。传 **seq**（如 `'01'`）或 **id**（如 `'plan-01'`）。不传 → 跑所有 plan |
 | `tasks` | 否 | 限定 task 子集（如 `['T1']`）。不传 → 跑该 plan 所有叶子 task |
+| `completed` | 否 | 手动覆盖已完成 task id 列表（如 `['plan-01/T1']`）。不传 → bootstrap 从 git log 提取。**双保险**：resume 时显式传已 commit 的 plan-scoped id 列表，防 bootstrap git log 漏识别（第 8 轮 #2 文档化） |
 
 ## 5. 运行流程（自动）
 
@@ -149,8 +150,8 @@ task（`feat(plan-X/T-Y)` convention），已 commit 的 task 一律跳过。所
 限额恢复后、review halt 后手动修完继续**——全部用「全新跑」：
 
 ```
-Workflow({ scriptPath: '.claude/workflows/run-plans.js', args: { plan: '03' } })   # 从未完成 task 继续
-Workflow({ scriptPath: '.claude/workflows/run-plans.js', args: {} })               # 所有 plan，跳过已 commit
+Workflow({ scriptPath: '.claude/workflows/run-plans.js', args: { configPath: 'workflow.config.json', plansDir: 'docs/superpowers/plans', plan: '03' } })   # 从未完成 task 继续
+Workflow({ scriptPath: '.claude/workflows/run-plans.js', args: { configPath: 'workflow.config.json', plansDir: 'docs/superpowers/plans' } })               # 所有 plan，跳过已 commit
 ```
 
 全新跑每次重新 bootstrap：重新读 config、重新解析 git log、重新生成 frontmatter。已 commit 的
@@ -206,7 +207,7 @@ review 链 max-rounds halt 后，task 留在「未 commit」状态（implementor
 2. 手动修代码（主循环 Claude 或你）→ 跑 test + lint 确认绿 → `git commit -m "feat(plan-X/T-Y): ..."`
    （遵守 convention）。
 3. （可选）派 spec-review / quality-review subagent 复核该 commit。
-4. **全新跑**续跑：`Workflow({ scriptPath, args: { plan: '<seq>' } })`——bootstrap 读 git log
+4. **全新跑**续跑：`Workflow({ scriptPath, args: { configPath: 'workflow.config.json', plansDir: 'docs/superpowers/plans', plan: '<seq>' } })`——bootstrap 读 git log
    见该 task 已 commit，跳过，从下一个未完成 task 继续。
 
 > 该流程正是本项目 Plan-03/T3 实际走过的路径：review halt → 手动修 split-commit 静默失败 +
@@ -247,10 +248,10 @@ review 链 max-rounds halt 后，task 留在「未 commit」状态（implementor
 
 | 场景 | 触发 |
 |---|---|
-| 跑单 plan 全 task | `Workflow({ scriptPath, args: { plan: '01' } })` |
-| 跑单 task 验证闭环 | `Workflow({ scriptPath, args: { plan: '01', tasks: ['T1'] } })` |
-| 跑所有 plan | `Workflow({ scriptPath, args: {} })` |
-| **续跑（halt/限额/断 session/手动修完）** | **全新跑**——`Workflow({ scriptPath, args: { plan: '<seq>' } })`（详见 §7.1，不要用 resumeFromRunId） |
+| 跑单 plan 全 task | `Workflow({ scriptPath, args: { configPath, plansDir, plan: '01' } })` |
+| 跑单 task 验证闭环 | `Workflow({ scriptPath, args: { configPath, plansDir, plan: '01', tasks: ['T1'] } })` |
+| 跑所有 plan | `Workflow({ scriptPath, args: { configPath, plansDir } })` |
+| **续跑（halt/限额/断 session/手动修完）** | **全新跑**——`Workflow({ scriptPath, args: { configPath, plansDir, plan: '<seq>' } })`（详见 §7.1，不要用 resumeFromRunId） |
 | 限额恢复后续跑 | 同上，全新跑（先看 manifest 的 `quota_exhausted` 确认是限额而非别的 halt 原因） |
 
 ## 10. task modelHint（用哪个 model）

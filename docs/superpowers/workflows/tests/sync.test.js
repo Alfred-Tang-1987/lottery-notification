@@ -736,3 +736,27 @@ test('P1-7b（第 7 轮）: state 字面量须含 plans 字段（与 spec §4.4 
   assert.match(ctx, /plans:\s*\[\]/, 'state 字面量须含 plans: []（P1-7b，与 spec §4.4 一致）')
 })
 
+// ===== 第 8 轮 TDD red 断言 =====
+
+test('P1-8a（第 8 轮）: args 入口须防御 args===undefined（防 TypeError）', () => {
+  // 运行时风险：:1199 先访问 args.configPath，若 args===undefined 会在校验前抛 TypeError
+  // 修：校验前加 `if (!args)` 独立防御（非 !args.configPath 子串）
+  // 用全局正则搜索（CRLF 行尾导致窗口大小不可预测）
+  assert.match(runSrc, /if \(!args\) throw/,
+    'args 校验前须有独立 if(!args) throw 防御（P1-8a，防 TypeError，非 !args.configPath 子串）')
+  // 确保该防御在 args.configPath 校验之前
+  const guardIdx = runSrc.indexOf('if (!args) throw')
+  const cfgIdx = runSrc.indexOf('typeof args.configPath')
+  assert.ok(guardIdx > -1 && guardIdx < cfgIdx, 'if(!args) 防御须在 args.configPath 校验之前')
+})
+
+test('P2-8b（第 8 轮）: state 字面量须含 currentPlan（与 spec §4.4 一致）', () => {
+  // :835 state 字面量已声明 currentPlan: null，但 spec §4.4 未列
+  // 修：spec §4.4 补 currentPlan 字段（仅内存字段，不写入 manifest）
+  const stateIdx = runSrc.indexOf('const state = {')
+  assert.notEqual(stateIdx, -1, '须有 state 声明')
+  const ctx = runSrc.slice(stateIdx, stateIdx + 400)
+  assert.match(ctx, /currentPlan/, 'state 字面量须含 currentPlan（P2-8b，与 spec §4.4 一致）')
+})
+
+

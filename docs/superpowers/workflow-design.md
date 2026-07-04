@@ -191,6 +191,7 @@ orchestrator 维护 in-memory 状态（JS 变量），从 agent 返回值更新�
 // orchestrator in-memory state（perTask 嵌套结构，task 开始时初始化）
 let state = {
   currentTask: null,
+  currentPlan: null,          // 当前执行的 plan id（仅内存，不写入 manifest；§13a `state.currentPlan = plan.id`）
   completed: [],              // 已完成 task key（plan-XX/TY）from bootstrap or commit
   plans: [],                  // bootstrap 解析的 plan 列表（P0-2，§13a main 流程 `state.plans = boot.evidence.plans`，finalReport stateJson 须含 plans 保 manifest 完整性）
   perTask: {},                // {taskKey: {planId, status, model, review_rounds, files_touched_per_round,
