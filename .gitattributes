@@ -6,31 +6,35 @@
 # 通配兜底（*）必须在最前，具体后缀（*.js 等）在后才能覆盖；
 # 写反了 `* binary`(=-text) 会盖掉前面的 `*.js text`，CRLF 强制全失效
 # （commit 1737a72 曾踩此坑 → sync.test 11 fail 报警，run-plans/lib 行尾分裂）。
+#
+# P2-11b（第 11 轮）: `* binary` 兜底设 binary 宏（= -text -diff），`*.js text eol=crlf`
+#   覆盖 text/eol 但**未覆盖 diff** → `diff: unset` 残留 → git diff 显示 "Bin files differ"。
+#   修：所有 text 规则加 `diff` 显式启用 text diff（撤销 binary 宏的 -diff）。
 
 # 兜底：未明确指定的文件视为 binary（必须在最前，让后面具体规则覆盖）
 * binary
 
-# 源码 / 配置 / 文档：强制 CRLF（checkout 与 commit 均保留 CRLF）
+# 源码 / 配置 / 文档：强制 CRLF + 启用 text diff（checkout 与 commit 均保留 CRLF）
 # 后端 Python
-*.py   text eol=crlf
-*.toml text eol=crlf
-*.ini  text eol=crlf
-*.mako text eol=crlf
+*.py   text eol=crlf diff
+*.toml text eol=crlf diff
+*.ini  text eol=crlf diff
+*.mako text eol=crlf diff
 # 前端 Vue3 + TypeScript
-*.js   text eol=crlf
-*.jsx  text eol=crlf
-*.mjs  text eol=crlf
-*.cjs  text eol=crlf
-*.ts   text eol=crlf
-*.tsx  text eol=crlf
-*.vue  text eol=crlf
-*.css  text eol=crlf
-*.scss text eol=crlf
-*.less text eol=crlf
-*.html text eol=crlf
-*.htm  text eol=crlf
+*.js   text eol=crlf diff
+*.jsx  text eol=crlf diff
+*.mjs  text eol=crlf diff
+*.cjs  text eol=crlf diff
+*.ts   text eol=crlf diff
+*.tsx  text eol=crlf diff
+*.vue  text eol=crlf diff
+*.css  text eol=crlf diff
+*.scss text eol=crlf diff
+*.less text eol=crlf diff
+*.html text eol=crlf diff
+*.htm  text eol=crlf diff
 # 数据 / 文档
-*.json text eol=crlf
-*.yaml text eol=crlf
-*.yml  text eol=crlf
-*.md   text eol=crlf
+*.json text eol=crlf diff
+*.yaml text eol=crlf diff
+*.yml  text eol=crlf diff
+*.md   text eol=crlf diff

@@ -833,10 +833,10 @@ Return {decisions: [{action, id, title, detail, source?, category?, update_targe
 // ===== state（§4.4）=====
 const state = {
   runTs: null, config: null, completed: [], plans: [], currentPlan: null, currentTask: null,  // P1-7b（第 7 轮）: plans 字面量列出（与 spec §4.4 一致，运行时 bootstrap 阶段补入）
-  perTask: {},  // {taskId: {planId, status, model, review_rounds, files_touched_per_round, commit_sha, blocked_info}}
-  failedApproaches: {},  // {taskId: [{task_id, reason, error}]}
-  taskWriteFiles: {},  // {taskId: [files]} — write_files 边界控制
-  taskLessons: {},  // {taskId: [{id, title, detail}]} — LESSONS.md 跨任务失败知识库
+  perTask: {},  // P2-11a（第 11 轮）: {taskKey: {planId, status, model, review_rounds, files_touched_per_round, commit_sha, blocked_info}}（taskKey = plan-XX/TY，plan-scoped）
+  failedApproaches: {},  // {taskKey: [{task_id, reason, error}]}（taskKey plan-scoped）
+  taskWriteFiles: {},  // {taskKey: [files]} — write_files 边界控制（taskKey plan-scoped）
+  taskLessons: {},  // {taskKey: [{id, title, detail}]} — LESSONS.md 跨任务失败知识库（taskKey plan-scoped）
 }
 
 // ===== halt（§13a：累积 blocked_info → finalReport halted 模式写盘 + surface）=====

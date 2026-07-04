@@ -773,11 +773,35 @@ test('P2-9a（第 9 轮）: args.tasks 须用 Array.isArray 防御（防字符�
 test('P2-10a（第 10 轮）: state 字面量注释不得用行号引用（防行号漂移）', () => {
   // :835 旧注释 "运行时 :1227 补入" 行号已漂移（实际 :1238）
   // 修：注释改用语义引用（"运行时 bootstrap 阶段补入"），不依赖具体行号
+  // 第 11 轮扩展：正则覆盖 :NNNN / :line NNNN / line NNNN 等变体
   const stateIdx = runSrc.indexOf('const state = {')
   const ctx = runSrc.slice(stateIdx, stateIdx + 400)
-  assert.doesNotMatch(ctx, /:1[0-9]{3}/,
-    'state 字面量注释不得用 :行号 引用（P2-10a，防行号漂移，改用语义引用）')
+  assert.doesNotMatch(ctx, /:\s*(line\s*)?\d{3,}|line\s+\d{3,}/i,
+    'state 字面量注释不得用 :行号 或 line 行号 引用（P2-10a，防行号漂移，改用语义引用）')
 })
+
+// ===== 第 11 轮 TDD red 断言 =====
+
+test('P2-11a（第 11 轮）: perTask 注释须用 taskKey 而非 taskId（对齐实际 key）', () => {
+  // :836 旧注释 {taskId: ...} 误导，实际 key 是 plan-scoped taskKey（plan-XX/TY）
+  // 修：注释改为 {taskKey: ...}
+  const stateIdx = runSrc.indexOf('const state = {')
+  const ctx = runSrc.slice(stateIdx, stateIdx + 600)
+  assert.match(ctx, /\{taskKey:/,
+    'perTask 注释须用 {taskKey: ...} 而非 {taskId: ...}（P2-11a，对齐实际 plan-scoped key）')
+  assert.doesNotMatch(ctx, /\{taskId:/,
+    'perTask 注释不得用 {taskId: ...}（P2-11a，实际 key 是 plan-scoped taskKey）')
+})
+
+test('P2-11b（第 11 轮）: .gitattributes 须为源码文件启用 diff（防 binary 致 git diff 不可读）', () => {
+  // 第 10 轮发现：* binary 兜底 + *.js text eol=crlf 未覆盖 diff 属性 → git diff 显示 Bin
+  // 修：*.js 等规则加 diff 显式启用（或 !binary 撤销 binary 宏）
+  const attrs = fs.readFileSync(path.resolve(__dirname, '../../../../.gitattributes'), 'utf8')
+  // *.js 行须含 diff 关键字（启用 text diff）
+  assert.match(attrs, /\*\.js\s+text eol=crlf diff/,
+    '*.js 规则须含 diff（P2-11b，防 * binary 兜底致 git diff 显示 Bin 不可读）')
+})
+
 
 
 

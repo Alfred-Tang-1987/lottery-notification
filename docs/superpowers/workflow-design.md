@@ -372,7 +372,7 @@ commit agent 在 step 2.6 用 `git diff HEAD --numstat` 检测 `deleted_code` / 
 **distiller agent 设计**：
 - **模型**：opus（提炼需推理，非模式匹配）
 - **触发**：仅 halt 且 `lessons_auto_distill=true` 且 `lessons_path` 非空（done 不触发）
-- **输入**（`distillLessonInput` 构造）：`mode`（`'halt'` | `'done'`，第 10 轮 spec drift #4 文档化——halt 模式 distiller 提炼根因，done 模式 skip 无 halt_info）+ `halt_info` + `review_history` + `failed_approaches` + 现有 lessons（distiller 自己读 `lessonsPath` 解析）
+- **输入**（`distillLessonInput` 构造）：`mode`（`'halted'` | `'done'`，第 11 轮 spec drift #1 对齐代码——halted 模式 distiller 提炼根因，done 模式 skip 无 halt_info）+ `halt_info` + `review_history` + `failed_approaches` + 现有 lessons（distiller 自己读 `lessonsPath` 解析）
 - **任务**：
   1. 识别可复用根因（silent-failure / dependency / convention / test-strategy / other）
   2. 过滤瞬态事件（review_empty / model_unavailable / 单次 hiccup → skip）
@@ -594,6 +594,8 @@ main()                                    // leafTasks(plan) 由 bootstrap agent
 phase('Bootstrap')
 // P2-7（第 7 轮）: args 入口校验 fail-fast（configPath/plansDir 必填非空字符串）
 // P1-8a（第 8 轮）: if(!args) 防御 undefined
+// 第 11 轮 spec drift #2: 伪代码用 agent(...) 简化，实际用 dispatchImpl(..., 'sonnet', 'opus')
+//   包装（含 retryModel 升级 + null guard + agent_error 封装，§2.4）
 const boot = await agent(buildPrompt('bootstrap', {configPath: args.configPath, plansDir: args.plansDir}),
                          {schema: SCHEMAS.bootstrap, label: 'bootstrap'})
 state.config = boot.evidence.config
@@ -621,6 +623,8 @@ for (const plan of state.plans) {
 }
 
 phase('Finalize')
+// 第 11 轮 spec drift #2: 伪代码用 agent(...) 简化，实际用 agentWithFallback(...)
+//   包装（fallback 链 [opus, sonnet, haiku] + 环境默认，§2.4限额容错）
 await agent(buildPrompt('finalReport', {state, runTs: state.runTs, mode: 'done', ...}),
             {schema: SCHEMAS.finalReport, label: 'final-report'})  // 写 runs/<run-ts>/manifest.json
 // 第 10 轮 spec drift #1: 代码实际返回 {result: 'done', perTask: state.perTask}（非整个 state）。
