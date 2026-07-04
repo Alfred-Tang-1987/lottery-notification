@@ -140,6 +140,8 @@ get-ts（取时间戳）
 ### 手动中断 / 崩溃
 同样见 §7.1——用全新跑续跑。崩在 implementor 后/commit 前的半成品，全新跑会重跑该 task 覆盖。
 
+> **⚠️ dirty_tree 自愈警告（第 7 轮）**：若上次 run 崩在 implementor 完成但 commit 未执行，工作树会残留半成品。bootstrap agent 检测到 `dirty_tree=true` 时会**自动执行 `git reset --hard HEAD`** 清理（§6.2 半提交自愈），**会静默丢弃工作树中所有未提交改动**——包括**非工作流的用户改动**（如手动编辑未 commit 的文件）。续跑前请确认工作树无重要未提交内容，或用 `git stash` 暂存。
+
 ## 7.1 续跑：用「全新跑」，不要用 resumeFromRunId（重要）
 
 **进度以 git 为单一事实源**——**全新跑**时 bootstrap 从 git log 解析已完成的

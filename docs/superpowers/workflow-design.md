@@ -38,8 +38,7 @@ model = task.model || 'sonnet'   // 未标注默认 sonnet
 ```
 
 - modelHint 是**唯一确定性来源**（workflow JS 无法执行 LLM 打分）
-- loader subagent 校验 enum，unknown → fail loud（不静默降级）
-  > **wontfix（第 6 轮，低风险）**：当前 bootstrap agent 直接读 `task.model` 不做 enum 校验，invalid 值（如 `claude-3.5`）会透传到 `dispatchImpl` → `agent()` 调用失败 → halt `agent_error`。fail loud 语义已达成（不静默降级），只是错误路径稍晚（agent dispatch 时 vs bootstrap 校验时）。补 enum 校验为低优先级，详见 §14 wontfix 决策记录。
+- model enum 校验：当前 bootstrap agent 直接读 `task.model` 不做 enum 校验（**wontfix，第 6 轮，低风险**）。invalid 值（如 `claude-3.5`）会透传到 `dispatchImpl` → `agent()` 调用失败 → halt `agent_error`。fail loud 语义已达成（不静默降级），只是错误路径稍晚（agent dispatch 时 vs bootstrap 校验时）。详见 §14.2 #6 wontfix 决策记录。
 
 **来源链**（依赖 writing-plans 增强，§13e）：
 ```
@@ -477,7 +476,7 @@ orchestrator JS 只有 `log()`。run manifest 角色 = **正常结束后的人�
 
 ```
 runs/<run-id>/
-  manifest.json    # workflow 结束时由 final-report subagent 一次性写：{run_id, plans, per_task:{id:{status,model,review_rounds,files_touched_per_round,commit_sha,blocked_info}}, result}
+  manifest.json    # workflow 结束时由 final-report subagent 一次性写：{run_ts, mode, plans, per_task:{id:{status,model,review_rounds,files_touched_per_round,review_history,commit_sha,simplify_reverted,simplify_review_findings,destructive_review_failed,destructive_review_findings,concerns,blocked_info}}, result}
   log.ndjson       # 关键 agent() 返回后 append 一行 {ts, agent_type, task_id, status, summary}（ts 由 subagent 调 Bash date 获得）
 ```
 
@@ -571,7 +570,7 @@ frontmatter 是机器读，正文是人读，单文件不分离。
 
 ### 13a. workflow script JS 骨架
 
-**产物**：`.claude/workflows/run-plans.js`（单文件，~300 行）。通过 `Workflow({scriptPath, args})` 触发，`resumeFromRunId` 续跑（§13h）。
+**产物**：`.claude/workflows/run-plans.js`（单文件，~1300 行，第 7 轮实际行数）。通过 `Workflow({scriptPath, args})` 触发，`resumeFromRunId` 续跑（§13h）。
 
 **顶层结构**：
 
@@ -682,7 +681,7 @@ return {result: 'done', state}
 | **silent-failure-hunter** | `status`（ok/failed） | `silent_failures[]`（静默失败列表） |
 | **simplify** | `changed`（bool）, `files_changed[]` | — |
 | **commit** | `commit_sha`, `committed_files[]`, `tests_at_commit` | `out_of_scope[]`, `destructive_changes[]`（§5.2.1） |
-| **gate**（plan 级） | `tests_exit_code`, `pytest_summary` | — |
+| **gate**（plan 级） | `tests_exit_code`, `pytest_summary`, `lint_results[]`（每条 `{command, exit_code}`，§13b gate prompt） | — |
 | **bootstrap** | `config`, `plans[]`, `completed[]`, `in_progress`, `dirty_tree`, `failed_approaches[]`, `task_lessons[]`, `task_write_files[]` | — |
 | **context-fetcher** | — | `context`（补充的上下文文本） |
 | **state-updater** | — | —（manifest 写入确认由 orchestrator 校验） |
@@ -697,7 +696,7 @@ return {result: 'done', state}
 
 ```
 runs/<run-id>/
-  manifest.json     # 仅 workflow 结束时写：{run_id, plans, per_task:{id:{status,model,review_rounds,files_touched_per_round,review_history,commit_sha,simplify_reverted,simplify_review_findings,destructive_review_failed,destructive_review_findings,concerns,blocked_info}}, result}
+  manifest.json     # 仅 workflow 结束时写：{run_ts, mode, plans, per_task:{id:{status,model,review_rounds,files_touched_per_round,review_history,commit_sha,simplify_reverted,simplify_review_findings,destructive_review_failed,destructive_review_findings,concerns,blocked_info}}, result}
   log.ndjson        # TODO（未实现，第 6 轮 wontfix）：关键 agent() 返回后 append 一行（ts 由 subagent 调 Bash date）。当前 orchestrator 仅 `log()`（in-memory console 输出），无 ndjson 文件写盘。实现需额外 subagent dispatch 写盘（成本 vs 观测价值不划算），且 `/workflows` 面板已提供实时观测。详见 §14 wontfix 决策记录。
 ```
 
@@ -710,6 +709,12 @@ runs/<run-id>/
 | workflow 结束（done/halted） | final-report subagent（唯一写盘者） | 读 orchestrator 传入的 in-memory 累积值，写 manifest.json + 输出 digest |
 
 **砍掉的 dispatch**（原设计的 state-updater 逐事件写盘）：task 开始/round 结束/simplify 完成等不再单独 dispatch 写盘 agent。这些状态都在 orchestrator in-memory，结束时一次写。
+
+**manifest 字段说明**（第 7 轮 spec 对齐代码）：
+- `run_ts`：运行时间戳（get-ts agent 生成，作 `runs/<run-id>/` 目录名基础；非 string 降级 `'unknown-ts'`，S2）
+- `mode`：`done` | `halted`（区分正常结束与中断，finalReport prompt 据此决定是否写 blocked.md）
+- `result`：digest 摘要（counts: done/blocked, total tasks, per-plan gate result）
+- `plans` / `per_task`：state.plans / state.perTask 序列化（§4.4）
 
 **为什么能砍**：resume 走 Workflow native `resumeFromRunId`（journal 缓存），不依赖盘上 manifest 的 in_progress 字段。盘上 manifest 唯一消费者是"人读"和"final report"。
 
@@ -830,6 +835,7 @@ function detectOscillation(filesTouchedPerRound) {
 | 4 | `hunter` agentType 用 default subagent + prompt（非 ECC `silent-failure-hunter`） | §13b | runtime 限制——Workflow 工具的 subagent dispatch 不支持自定义 `agentType: 'silent-failure-hunter'`，ECC skill-based agent 无法在 workflow runtime 直接调用。default subagent + hunter prompt 模拟 silent-failure-hunter 语义已足够（hunter schema 强制 `silent_failures[]` items 结构）。 | Workflow 工具支持自定义 agentType / ECC 提供 workflow-native agent type |
 | 5 | `runTask` 不拆分（保留单函数 ~180 行） | §13a | 控制流涉及 5 阶段 + 多异常分支（halt/agent_error/model_unavailable/review_empty/OSCILLATING），拆分易引入状态转移 bug。已通过抽出 10+ helper（`runReviewRound`/`ensurePerTaskDefaults`/`dispatchImpl`/`safeAgent`/`classifyThrown`/`reviewHaltReason`/`reviewHaltForEmptyFailed`/`haltLikelySource`/`formatFindings`/`formatConcernsHint`）降低单函数复杂度。主控制流保留单函数保证状态转移可读性。 | runTask 行数继续膨胀（新增阶段/异常分支）/ 状态转移 bug 频发 |
 | 6 | `task.model` enum 校验不做（bootstrap 直接读） | §2.2 | invalid 值（如 `claude-3.5`）会透传到 `dispatchImpl` → `agent()` 调用失败 → halt `agent_error`。fail loud 语义已达成（不静默降级），只是错误路径稍晚（agent dispatch 时 vs bootstrap 校验时）。低风险。 | invalid model 值导致难以定位的 halt 频发 / bootstrap 阶段需提前 fail |
+| 7 | `contextFetcher` 硬编码 sonnet 无 BLOCKED 升级链 | §13b | contextFetcher 是 NEEDS_CONTEXT 兑现（grep/glob/LSP/读 spec/Context7/WebSearch），查询通常简单，sonnet 足够。复杂查询失败直接 halt 是设计选择——NEEDS_CONTEXT 兑现不应过度工程，且 halt 后用户可手动补上下文再续跑。implementor 有升级链因任务难度递增（最后 1 轮 fix 强制 opus），contextFetcher 是辅助查询不需要同路径。 | contextFetcher 复杂查询频繁 halt / 实际需要 opus 级推理的 NEEDS_CONTEXT 场景增多 |
 
 ### 14.3 误报（review 判断有误，不修）
 

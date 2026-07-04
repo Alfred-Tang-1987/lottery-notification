@@ -701,3 +701,38 @@ test('P1-11（第 6 轮）: implementor prompt 须接入 build_command', () => {
   // orchestrator 须传 buildCommand 到 implCtx
   assert.match(runSrc, /buildCommand:/, 'implCtx 须传 buildCommand（P1-11）')
 })
+
+// ===== 第 7 轮 TDD red 断言 =====
+
+test('P0-7（第 7 轮）: lastSha key 须用 padStart 归一化（与其他 4 处一致）', () => {
+  // :1284 旧代码 `plan-${plan.seq}` 无 padStart，若 plan.seq=1（数字）→ "plan-1"
+  // 其他 4 处用 `plan-${String(plan.seq).padStart(2, '0')}` → "plan-01"
+  // 不一致 → perTask 查不到 → gate 在 null SHA 上跑漏检
+  // 修：lastSha 循环内须用 padStart 归一化
+  const lastShaIdx = runSrc.indexOf('let lastSha = null')
+  assert.notEqual(lastShaIdx, -1, '须有 lastSha 声明')
+  const ctx = runSrc.slice(lastShaIdx, lastShaIdx + 400)
+  assert.match(ctx, /plan-\$\{String\(plan\.seq\)\.padStart\(2,\s*'0'\)\}/,
+    'lastSha key 须用 String(plan.seq).padStart(2,\'0\') 归一化（P0-7，与其他 4 处一致）')
+})
+
+test('P2-7（第 7 轮）: args 入口须校验 configPath/plansDir 类型（fail-fast）', () => {
+  // 旧代码直接 args.configPath 注入 prompt，未传时 undefined 被 P1-7 渲染为空串
+  // bootstrap agent 因 config 路径空而失败，错误信息不直观
+  // 修：入口校验 typeof === 'string' && non-empty，否则 throw fail-fast
+  assert.match(runSrc, /typeof args\.configPath !== 'string'|!args\.configPath|args\.configPath.*string/,
+    '须校验 args.configPath 类型（P2-7 fail-fast）')
+  assert.match(runSrc, /typeof args\.plansDir !== 'string'|!args\.plansDir|args\.plansDir.*string/,
+    '须校验 args.plansDir 类型（P2-7 fail-fast）')
+})
+
+test('P1-7b（第 7 轮）: state 字面量须含 plans 字段（与 spec §4.4 一致）', () => {
+  // :834 state 字面量未列 plans，运行时 :1227 补入
+  // spec §4.4 已列 plans（P0-2 修过 spec），代码 state 字面量未同步
+  // 修：state 字面量加 plans: []
+  const stateIdx = runSrc.indexOf('const state = {')
+  assert.notEqual(stateIdx, -1, '须有 state 声明')
+  const ctx = runSrc.slice(stateIdx, stateIdx + 400)
+  assert.match(ctx, /plans:\s*\[\]/, 'state 字面量须含 plans: []（P1-7b，与 spec §4.4 一致）')
+})
+

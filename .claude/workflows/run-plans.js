@@ -832,7 +832,7 @@ Return {decisions: [{action, id, title, detail, source?, category?, update_targe
 
 // ===== state（§4.4）=====
 const state = {
-  runTs: null, config: null, completed: [], currentPlan: null, currentTask: null,
+  runTs: null, config: null, completed: [], plans: [], currentPlan: null, currentTask: null,  // P1-7b（第 7 轮）: plans 字面量列出（与 spec §4.4 一致，运行时 :1227 补入）
   perTask: {},  // {taskId: {planId, status, model, review_rounds, files_touched_per_round, commit_sha, blocked_info}}
   failedApproaches: {},  // {taskId: [{task_id, reason, error}]}
   taskWriteFiles: {},  // {taskId: [files]} — write_files 边界控制
@@ -1193,6 +1193,15 @@ async function runTask(plan, task) {
 
 // ===== 顶层编排（Workflow 入口）=====
 phase('Bootstrap')
+// P2-7（第 7 轮）: args 入口校验 fail-fast。旧代码直接注入 args.configPath/plansDir，未传时 undefined
+//   被 P1-7 渲染为空串 → bootstrap agent 因 config 路径空而失败，错误信息不直观。改：入口校验类型，
+//   非字符串或空串 → throw fail-fast（Workflow runtime 会 surface 错误，用户立即知晓）。
+if (typeof args.configPath !== 'string' || !args.configPath.trim()) {
+  throw new Error('args.configPath must be a non-empty string (workflow.config.json path)')
+}
+if (typeof args.plansDir !== 'string' || !args.plansDir.trim()) {
+  throw new Error('args.plansDir must be a non-empty string (plans directory path)')
+}
 // QC1: tsAgent 调用包 try/catch——非 quota 异常（网络/runtime 内部错误）不应 crash 整个 workflow
 // 而无 manifest/blocked.md 丢失进度。
 // S1（第 4 轮）: 旧 fallback 用 Date API 违反 §4.3 硬约束——orchestrator 是 JS sandbox，
@@ -1279,9 +1288,10 @@ for (const plan of boot.evidence.plans) {
   // plan 级独立 gate（§3）：本 plan 最后 commit SHA 上重跑 test + lint_command + extra_lint_commands
   // P2-9（第 6 轮）: lastSha 须按 plan.tasks 反向查找（非 Object.values 插入顺序，后者依赖 perTask 写入顺序）。
   //   plan.tasks 是 plan frontmatter 定义的 task 顺序，反向遍历找最后一个有 commit_sha 的 task。
+  // P0-7（第 7 轮）: tk 须用 padStart 归一化（与其他 4 处一致），否则 plan.seq=1（数字）→ "plan-1" 查不到 "plan-01" 的 perTask。
   let lastSha = null
   for (let i = plan.tasks.length - 1; i >= 0; i--) {
-    const tk = `plan-${plan.seq}/${plan.tasks[i].id}`
+    const tk = `plan-${String(plan.seq).padStart(2, '0')}/${plan.tasks[i].id}`
     if (state.perTask[tk]?.commit_sha) { lastSha = state.perTask[tk].commit_sha; break }
   }
   if (lastSha) {
