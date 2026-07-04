@@ -768,5 +768,17 @@ test('P2-9a（第 9 轮）: args.tasks 须用 Array.isArray 防御（防字符�
     'args.tasks 须用 Array.isArray 防御（P2-9a，防字符串误传 .map TypeError）')
 })
 
+// ===== 第 10 轮 TDD red 断言 =====
+
+test('P2-10a（第 10 轮）: state 字面量注释不得用行号引用（防行号漂移）', () => {
+  // :835 旧注释 "运行时 :1227 补入" 行号已漂移（实际 :1238）
+  // 修：注释改用语义引用（"运行时 bootstrap 阶段补入"），不依赖具体行号
+  const stateIdx = runSrc.indexOf('const state = {')
+  const ctx = runSrc.slice(stateIdx, stateIdx + 400)
+  assert.doesNotMatch(ctx, /:1[0-9]{3}/,
+    'state 字面量注释不得用 :行号 引用（P2-10a，防行号漂移，改用语义引用）')
+})
+
+
 
 

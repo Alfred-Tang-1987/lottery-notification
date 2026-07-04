@@ -372,7 +372,7 @@ commit agent 在 step 2.6 用 `git diff HEAD --numstat` 检测 `deleted_code` / 
 **distiller agent 设计**：
 - **模型**：opus（提炼需推理，非模式匹配）
 - **触发**：仅 halt 且 `lessons_auto_distill=true` 且 `lessons_path` 非空（done 不触发）
-- **输入**（`distillLessonInput` 构造）：`halt_info` + `review_history` + `failed_approaches` + 现有 lessons（distiller 自己读 `lessonsPath` 解析）
+- **输入**（`distillLessonInput` 构造）：`mode`（`'halt'` | `'done'`，第 10 轮 spec drift #4 文档化——halt 模式 distiller 提炼根因，done 模式 skip 无 halt_info）+ `halt_info` + `review_history` + `failed_approaches` + 现有 lessons（distiller 自己读 `lessonsPath` 解析）
 - **任务**：
   1. 识别可复用根因（silent-failure / dependency / convention / test-strategy / other）
   2. 过滤瞬态事件（review_empty / model_unavailable / 单次 hiccup → skip）
@@ -623,8 +623,14 @@ for (const plan of state.plans) {
 phase('Finalize')
 await agent(buildPrompt('finalReport', {state, runTs: state.runTs, mode: 'done', ...}),
             {schema: SCHEMAS.finalReport, label: 'final-report'})  // 写 runs/<run-ts>/manifest.json
-return {result: 'done', state}
+// 第 10 轮 spec drift #1: 代码实际返回 {result: 'done', perTask: state.perTask}（非整个 state）。
+//   有意为之——manifest 已在 finalReport 阶段写入，return 值仅给 Workflow runtime 作 result，
+//   perTask 是 manifest 外最关键的观测字段（含每个 task 的 status/commit_sha/review_history）。
+//   state.currentPlan/currentTask 是瞬时字段（执行完后无意义），不纳入返回值。
+return {result: 'done', perTask: state.perTask}
 ```
+
+**args.completed 手动覆盖**（第 10 轮 spec drift #3 文档化）：代码 `state.completed = normalizeCompleted(args.completed?.length ? args.completed : boot.evidence.completed)`。`args.completed` 可手动覆盖 bootstrap git log 提取的已完成 task 列表（双保险：resume 时显式传已 commit 的 plan-scoped id 列表 `['plan-01/T1']`，防 bootstrap git log 漏识别）。未传时 fallback 到 bootstrap 提取。`Array.isArray` 类型校验已在代码中。
 
 **runTask(plan, task) 控制流（要点）**：
 
@@ -849,6 +855,8 @@ function detectOscillation(filesTouchedPerRound) {
 | 5 | `runTask` 不拆分（保留单函数 ~180 行） | §13a | 控制流涉及 5 阶段 + 多异常分支（halt/agent_error/model_unavailable/review_empty/OSCILLATING），拆分易引入状态转移 bug。已通过抽出 10+ helper（`runReviewRound`/`ensurePerTaskDefaults`/`dispatchImpl`/`safeAgent`/`classifyThrown`/`reviewHaltReason`/`reviewHaltForEmptyFailed`/`haltLikelySource`/`formatFindings`/`formatConcernsHint`）降低单函数复杂度。主控制流保留单函数保证状态转移可读性。 | runTask 行数继续膨胀（新增阶段/异常分支）/ 状态转移 bug 频发 |
 | 6 | `task.model` enum 校验不做（bootstrap 直接读） | §2.2 | invalid 值（如 `claude-3.5`）会透传到 `dispatchImpl` → `agent()` 调用失败 → halt `agent_error`。fail loud 语义已达成（不静默降级），只是错误路径稍晚（agent dispatch 时 vs bootstrap 校验时）。低风险。 | invalid model 值导致难以定位的 halt 频发 / bootstrap 阶段需提前 fail |
 | 7 | `contextFetcher` 硬编码 sonnet 无 BLOCKED 升级链 | §13b | contextFetcher 是 NEEDS_CONTEXT 兑现（grep/glob/LSP/读 spec/Context7/WebSearch），查询通常简单，sonnet 足够。复杂查询失败直接 halt 是设计选择——NEEDS_CONTEXT 兑现不应过度工程，且 halt 后用户可手动补上下文再续跑。implementor 有升级链因任务难度递增（最后 1 轮 fix 强制 opus），contextFetcher 是辅助查询不需要同路径。 | contextFetcher 复杂查询频繁 halt / 实际需要 opus 级推理的 NEEDS_CONTEXT 场景增多 |
+| 8 | `args.plan` / `args.completed` 无显式入口类型校验 | §13a | 下游容错已足够：`matchesPlanFilter` 处理任意类型（undefined/string/非字符串 → 跑所有 plan），`args.completed` 已有 `Array.isArray` 校验。加显式入口校验为低优先级（不像 `args.configPath`/`plansDir` 缺失会导致 bootstrap agent 因空路径失败，`args.plan`/`completed` 缺失是合法的"不限定"语义）。 | 误传非预期类型导致下游行为异常 / 需统一入口校验一致性 |
+| 9 | `agentWithFallback` 全链失败无法写入 manifest | §2.4 | 已知设计 trade-off：fallback 链 [opus, sonnet, haiku] 全失败 + 环境默认 model 也失败 → manifest 无法写入。此时 `log('✗✗ 致命：finalReport 全链失败，manifest 未写入！请手动检查 runs/ 目录')` 打印致命日志（非静默失败）。用户须手动检查 git log 确认进度。彻底解决需持久化日志（§13d log.ndjson 未实现），但 log.ndjson 本身是 wontfix（§14.1 #1）。 | 用户因无 manifest 无法 resume / 需要离线观测 fallback 失败 |
 
 ### 14.3 误报（review 判断有误，不修）
 

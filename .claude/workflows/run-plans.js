@@ -832,7 +832,7 @@ Return {decisions: [{action, id, title, detail, source?, category?, update_targe
 
 // ===== state（§4.4）=====
 const state = {
-  runTs: null, config: null, completed: [], plans: [], currentPlan: null, currentTask: null,  // P1-7b（第 7 轮）: plans 字面量列出（与 spec §4.4 一致，运行时 :1227 补入）
+  runTs: null, config: null, completed: [], plans: [], currentPlan: null, currentTask: null,  // P1-7b（第 7 轮）: plans 字面量列出（与 spec §4.4 一致，运行时 bootstrap 阶段补入）
   perTask: {},  // {taskId: {planId, status, model, review_rounds, files_touched_per_round, commit_sha, blocked_info}}
   failedApproaches: {},  // {taskId: [{task_id, reason, error}]}
   taskWriteFiles: {},  // {taskId: [files]} — write_files 边界控制
