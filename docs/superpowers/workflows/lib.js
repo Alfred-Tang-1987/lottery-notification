@@ -88,6 +88,14 @@ export function collectReviewFindings(spec, qual, hunt) {
   return [...findingsOf(spec, 'spec', 'issues'), ...findingsOf(qual, 'quality', 'issues'), ...findingsOf(hunt, 'hunter', 'silent_failures')]
 }
 
+// 格式化 implementor concerns 为 review prompt 的 focusHint 段落（Q11 抽出，消除两处重复模板）。
+// 空数组 → 空串（该段消失，review 不收 focusHint）；非空 → 多行 bullet 列表。
+// 初始 dispatch 路径与 fix-round done_with_concerns 路径共用此 helper，防模板字符串漂移。
+export function formatConcernsHint(concerns) {
+  if (!Array.isArray(concerns) || concerns.length === 0) return ''
+  return `\n## Implementor Concerns (verify these)\n${concerns.map(c => '- ' + c).join('\n')}`
+}
+
 // 第二道静默失败守卫（reviewHaltReason 之后）：任一 review status==='failed' 但产出 0 项 findings
 // → 返回 'review_failed_no_findings'。防「合法 failed + 空 diagnostics」漏过 reviewHaltReason
 // （status 合法 → 不 halt）→ collectReviewFindings 空 → implementor 收「0 项发现」跑空修复 →
@@ -484,8 +492,8 @@ export const SCHEMAS = {
     type: 'object', required: ['status', 'evidence'], additionalProperties: true,
     properties: {
       status: { type: 'string', enum: ['ok', 'failed', 'blocked'] },
-      evidence: { type: 'object', required: ['config', 'plans', 'completed', 'dirty_tree'],
-        properties: { config: { type: 'object' }, plans: { type: 'array' }, completed: { type: 'array' }, dirty_tree: { type: 'boolean' }, failed_approaches: { type: 'array' }, task_write_files: { type: 'array' }, task_lessons: { type: 'array' } } },
+      evidence: { type: 'object', required: ['config', 'plans', 'completed', 'dirty_tree', 'in_progress', 'failed_approaches', 'task_lessons', 'task_write_files'],
+        properties: { config: { type: 'object' }, plans: { type: 'array' }, completed: { type: 'array' }, dirty_tree: { type: 'boolean' }, in_progress: { type: 'boolean' }, failed_approaches: { type: 'array' }, task_write_files: { type: 'array' }, task_lessons: { type: 'array' } } },
       diagnostics: { type: 'object' }, summary: { type: 'string' },
     },
   },
@@ -514,7 +522,7 @@ export const SCHEMAS = {
       properties: { changed: { type: 'boolean' }, files_changed: { type: 'array' } } }, summary: { type: 'string' } } },
   commit: { type: 'object', required: ['status', 'evidence'], additionalProperties: true,
     properties: { status: { type: 'string', enum: ['ok', 'failed', 'model_unavailable'] },
-      evidence: { type: 'object', required: ['commit_sha', 'committed_files'],
+      evidence: { type: 'object', required: ['commit_sha', 'committed_files', 'tests_at_commit'],
         properties: { commit_sha: { type: 'string' }, committed_files: { type: 'array' }, tests_at_commit: { type: 'integer' } } },
       diagnostics: { type: 'object', properties: { out_of_scope: { type: 'array' }, destructive_changes: { type: 'array' } } }, summary: { type: 'string' } } },
   contextFetcher: { type: 'object', required: ['diagnostics'], additionalProperties: true,
@@ -577,20 +585,20 @@ export const PROMPTS = {
 Inputs: configPath={{configPath}} plansDir={{plansDir}} runTs={{runTs}}
 
 Steps:
-1. Read {{configPath}} → {test_command, full_test_command, build_command, lint_command, extra_lint_commands, spec_path, reference_paths, language, silent_failure_context, lessons_path}. extra_lint_commands / reference_paths / silent_failure_context / lessons_path are OPTIONAL (may be absent → treat as [] / [] / [] / ''). If config contains lessons_path, read that file. Extract entries (each has id, title, detail). For each task in the current plan, match lessons whose title/detail keywords overlap with the task's title. Return matched lessons per task in evidence as task_lessons: [{task_id, lessons:[{id, title, detail}]}]. Absent lessons_path → empty array.
+1. Read {{configPath}} → {test_command, full_test_command, build_command, lint_command, extra_lint_commands, spec_path, reference_paths, language, silent_failure_context, lessons_path}. extra_lint_commands / reference_paths / silent_failure_context / lessons_path are OPTIONAL (may be absent → treat as [] / [] / [] / ''). If config contains lessons_path, read that file. Extract entries (each has id, title, detail). For each task in the current plan, match lessons whose title/detail keywords overlap with the task's title. Return matched lessons per task in evidence as task_lessons: [{task_id, plan_seq, lessons:[{id, title, detail}]}] (plan_seq = the plan's seq from step 3). Absent lessons_path → empty array.
 2. Config smoke: run test_command with --collect-only. 判断：命令本身不存在（command not found / No such file: pytest）→ status=failed（环境/typo）；命令存在但 collect 失败（no module named pytest / pyproject.toml 不存在 / no tests collected / 业务代码未初始化）→ 记录 'project not yet initialized' 到 summary，status 仍 ok（业务代码由后续 task 创建，预期）。
-3. For each {{plansDir}}/*.md: if frontmatter (starts with ---) read task models; else generate — extract LEAF ids (## Task N with ### Task NX children → only NX; else N), modelHint (title contains 安全|加密|认证|JWT|CSRF|Fernet|算法|比对|策略|边界|集成|接口 → opus, else omit), write frontmatter at file top. Idempotent. Record each plan's file (full path) and seq (last two digits of filename, e.g. 01). Also read write_files from frontmatter if present (format: "write_files:\n  T1:\n    - src/a.py\n    - src/b.py"). Return as task_write_files in evidence: [{task_id, files:[...]}]. Absent → empty array.
+3. For each {{plansDir}}/*.md: if frontmatter (starts with ---) read task models; else generate — extract LEAF ids (## Task N with ### Task NX children → only NX; else N), modelHint (title contains 安全|加密|认证|JWT|CSRF|Fernet|算法|比对|策略|边界|集成|接口 → opus, else omit), write frontmatter at file top. Idempotent. Record each plan's file (full path) and seq (last two digits of filename, e.g. 01). Also read write_files from frontmatter if present (format: "write_files:\n  T1:\n    - src/a.py\n    - src/b.py"). Return as task_write_files in evidence: [{task_id, plan_seq, files:[...]}] (plan_seq = this plan's seq). Absent → empty array.
 4. git log → completed task ids via convention feat(plan-X/T-Y).
 5. git status --porcelain → dirty_tree.
 6. For each leaf task return its model (sonnet|opus|undefined→sonnet) and title (the description text from the Task header).
 7. If runs/ directory exists: scan runs/*/manifest.json files. For each, read per_task object. For each task_id in per_task that has blocked_info, extract {task_id, reason (from blocked_info.reason), error (from blocked_info.last_error)}. Filter to task_ids that match leaf tasks in the current plans. Return as failed_approaches in evidence. If runs/ does not exist → failed_approaches=[].
 
-Return {status, evidence:{config (include ALL fields read in step 1, even optional ones if present), plans:[{id, file, seq, tasks:[{id, model, title}]}], completed:[...], dirty_tree, failed_approaches:[{task_id, reason, error}], task_write_files:[{task_id, files:[...]}], task_lessons:[{task_id, lessons:[{id, title, detail}]}]}, summary}.
+Return {status, evidence:{config (include ALL fields read in step 1, even optional ones if present), plans:[{id, file, seq, tasks:[{id, model, title}]}], completed:[...], dirty_tree, failed_approaches:[{task_id, reason, error}], task_write_files:[{task_id, plan_seq, files:[...]}], task_lessons:[{task_id, plan_seq, lessons:[{id, title, detail}]}]}, summary}.
 RED FLAG: evidence 必须是真实读取结果，绝不编造。`,
 
   implementor: `You are the IMPLEMENTOR for {{taskId}} (plan {{planId}}). TDD strict (RED→GREEN→REFACTOR). {{retryNote}}
 
-Inputs: specPath={{specPath}} testCommand={{testCommand}} planFile={{planFilePath}} taskId={{taskId}} fixIssues={{fixIssues}} fetchedContext={{fetchedContext}}
+Inputs: specPath={{specPath}} testCommand={{testCommand}} planFile={{planFilePath}} taskId={{taskId}} fixIssues={{fixIssues}}
 {{referencePaths}}
 {{failedApproaches}}
 {{lessons}}

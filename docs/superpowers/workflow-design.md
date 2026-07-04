@@ -189,16 +189,17 @@ orchestrator 维护 in-memory 状态（JS 变量），从 agent 返回值更新�
 let state = {
   currentTask: null,
   completed: [],              // 已完成 task key（plan-XX/TY）from bootstrap or commit
-  perTask: {},                // {taskId: {planId, status, model, review_rounds, files_touched_per_round,
+  perTask: {},                // {taskKey: {planId, status, model, review_rounds, files_touched_per_round,
                               //   review_history, commit_sha, simplify_reverted, simplify_review_findings,
                               //   destructive_review_failed, destructive_review_findings, concerns, blocked_info}}
-  failedApproaches: {},       // {taskId: [{reason, error}]} 跨 session 失败方案（bootstrap 扫 runs/ 提取）
-  taskLessons: {},            // {taskId: [lesson]} bootstrap 按 task 标题关键词匹配的 lessons
-  taskWriteFiles: {},         // {taskId: [file]} bootstrap 提取的 plan declared write_files
+                              //   taskKey = `plan-{seq}/{task.id}`（plan-scoped，防跨 plan 同名 task 覆盖）
+  failedApproaches: {},       // {taskKey: [{reason, error}]} 跨 session 失败方案（bootstrap 扫 runs/ 提取，key 已 plan-scoped）
+  taskLessons: {},            // {taskKey: [lesson]} bootstrap 按 task 标题关键词匹配（S3：存储用 plan-scoped key）
+  taskWriteFiles: {},         // {taskKey: [file]} bootstrap 提取的 plan declared write_files（S3：存储用 plan-scoped key）
   config: null,               // workflow.config.json（test_command/spec_path/...）
-  runTs: null,                // 运行时间戳（get-ts agent 生成）
+  runTs: null,                // 运行时间戳（get-ts agent 生成，非 string 降级 'unknown-ts'，S2）
 }
-// perTask[taskId] 初始化（runTask 顶部）：status='in_progress'，所有持久化字段初始化为默认值
+// perTask[taskKey] 初始化（runTask 顶部，ensurePerTaskDefaults helper，Q5 DRY）：status='in_progress'，所有持久化字段初始化为默认值
 // （false/[]/null），确保 manifest JSON 序列化时字段完整、schema 稳定。
 
 // 路由逻辑（伪代码，实现见 run-plans.js runTask）
@@ -354,7 +355,7 @@ commit agent 在 step 2.6 用 `git diff HEAD --numstat` 检测 `deleted_code` / 
 
 **问题**：旧版"halt 时自动写 lesson"产生废条目（title/detail 均为 halt reason 如 `OSCILLATING`），污染知识库；2026-07-01 改为"完全不自动写、靠人工复盘"，但人工复盘成本高、可复用知识流失。
 
-**新机制**：halt 时调 `lessonDistiller` agent（opus）自动提炼可复用根因，finalReport 据其 decisions 更新 lessons.md。
+**新机制**：halt 时调 `lessonDistiller` agent（opus，单次 `agent()` 调用，非 fallback 链——§2.4 fallback 链仅用于 finalReport 保存进度）自动提炼可复用根因，distiller 自读写 `lessonsPath`（best-effort，失败/限额跳过不阻塞 finalReport）。
 
 **配置**：`workflow.config.json` 的 `lessons_auto_distill` 字段，由 `resolveLessonsAutoDistill(config)` 解析：
 
@@ -610,8 +611,9 @@ return {result: 'done', state}
 
 1. **implementor**（`model = task.model || 'sonnet'`）；`status='blocked'` → §2.3 升级链（sonnet→opus→halt，带上限）
 2. **review rounds（max N，默认 4，可配 0=无限；§5.3）**：每轮 `spec ‖ quality ‖ hunter` 并行（同 tree snapshot）；收集各 `diagnostics.files_touched` → 振荡检测（§13g）；全绿 break，任一 ❌ → implementor 修复（`collectReviewFindings` 归一化三类 review 的不同 diagnostics key + `formatFindings` 序列化为可读反馈；`fetchedContext` 独立占位符传参考上下文，不混入 fixIssues）→ 下一轮；最后 1 轮 fix 强制 opus（有限模式 `round===maxRounds-1` / 无限模式 `round>=4`，§5.3）；max N 耗尽 → halt（maxRounds=0 无此 halt，仅靠 detectOscillation）。**review 异常/空响应 → halt**：`reviewHaltReason` 扫 status，sentinel 优先级 `agent_error > model_unavailable > review_empty`——`review_empty` 守 status 缺失/为空/非法（含 thinking-only 空响应：agent() 静默返回 null/空对象，无异常），防 hunter/quality/spec 哑火（旧逻辑漏过 → 不 halt → implementor 跑空修复 → max rounds 误 halt）。**第二道守卫 `reviewHaltForEmptyFailed`**（在 `reviewHaltReason` 之后、fix-round 之前）：任一 review `status==='failed'` 但该 review 的 findings 产出 0 项（`issues`/`silent_failures` 空）→ halt `review_failed_no_findings`。堵「合法 failed + 空诊断」漏过 `reviewHaltReason`（status 合法不 halt）→ `collectReviewFindings` 空 → implementor 收「0 项发现」跑空修复 → max rounds 误 halt 的同类洞；与 `review_empty` 区分（后者 status 缺失，本守卫 status 合法但无发现）。**schema items 约束**：quality/hunter 的 `issues`/`silent_failures` 元素强制对象 `{title, fix}`（specReview 保持字符串模板走 `reviewSchema`，qualityReviewer 拆出 `qualityReviewSchema`）——防 LLM 返回纯字符串/缺 fix/用错字段名 → `collectReviewFindings` 的 `it.title||String(it)` 兜底为 `[object Object]`。
-3. **commit（§5.2 方案 C：commit 提前到 simplify 前）**：status check → test → `git commit -m "feat(plan-X/T-Y): ..."`；返回 `commit_sha` → `state.task_status[task.id]='committed'`
+3. **commit（§5.2 方案 C：commit 提前到 simplify 前）**：status check → test → `git commit -m "feat(plan-X/T-Y): ..."`；返回 `commit_sha` → `state.perTask[taskKey].status='committed'`（中间态）
 4. **simplify（max 1，§5.2 方案 C）**：commit 后工作树 clean → simplify agent → `git status --porcelain` subagent 独立验证是否动代码（不信任 `simp.evidence.changed` 自报）；有改动 → 触发 review round（`runReviewRound` helper，spec‖qual‖hunt 并行 + 双守卫）；全绿 → `git commit --amend`（合并 simplify 改动到 HEAD，`git rev-parse HEAD` 独立获取新 SHA + 正则校验 40 位 hex）；失败 → `git reset --hard HEAD && git clean -fd` 回退 simplify 改动（HEAD 不变）；无改动 → 跳过 review（省成本）。三个 subagent（diff/amend/checkout）均用 `safeAgent` 包装 + 返回值验证 + 失败 halt（Q1-Q6 健壮化，Q11 用 git reset --hard HEAD 同时清理 staged changes）。
+5. **destructive review（§5.2.1）+ 终态**：commit 返回 `destructive_changes` 非空 → 触发额外 review round（`runReviewRound` helper）；失败/异常**不 halt**，记录 `destructive_review_failed` + `destructive_review_findings`（统一 shape `{source, severity, title, fix}`，Q14）到 perTask 继续。runTask 全流程完成（commit + simplify + destructive review）→ `state.perTask[taskKey].status='done'`（Q8 终态，区分"已提交但 simplify/destructive 未完成"与"全流程完成"）。
 
 **halt(plan, task, r)**（终止 helper）：累积 `blocked_info`（task/category/last_error/suggested_fix，来自 `r.diag`）到 state → 若 `lessons_auto_distill=true` 且 `lessons_path` 非空，调 `lessonDistiller` agent（distiller 自读写 `lessonsPath`，best-effort，§5.4）→ dispatch `finalReport`（halted 模式）写 manifest + `.workflow/blocked.md`（§8.2）+ `log()` surface → return。收敛后无 state-updater，**中途终止也走 finalReport 写盘**。
 

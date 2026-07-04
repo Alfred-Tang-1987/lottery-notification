@@ -71,6 +71,15 @@ function collectReviewFindings(spec, qual, hunt) {
   return [...findingsOf(spec, 'spec', 'issues'), ...findingsOf(qual, 'quality', 'issues'), ...findingsOf(hunt, 'hunter', 'silent_failures')]
 }
 
+// 格式化 implementor concerns 为 review prompt 的 focusHint 段落（Q11 抽出，消除两处重复模板）。
+// 空数组 → 空串（该段消失，review 不收 focusHint）；非空 → 多行 bullet 列表。
+// 初始 dispatch 路径与 fix-round done_with_concerns 路径共用此 helper，防模板字符串漂移。
+// inline 自 lib.js（sync.test QC-4 字节比较守护）。
+function formatConcernsHint(concerns) {
+  if (!Array.isArray(concerns) || concerns.length === 0) return ''
+  return `\n## Implementor Concerns (verify these)\n${concerns.map(c => '- ' + c).join('\n')}`
+}
+
 // 第二道静默失败守卫（reviewHaltReason 之后）：任一 review status==='failed' 但产出 0 项 findings
 // → 返回 'review_failed_no_findings'—— inline 自 lib.js
 // 防「合法 failed + 空 diagnostics」漏过 reviewHaltReason（status 合法 → 不 halt）→
@@ -269,7 +278,10 @@ async function dispatchImpl(prompt, opts, model, retryModel = null) {
         throw e
       }
     }
-    return { halted: true, reason: 'model_unavailable', diag: { model, error: 'agent returned null (quota exhausted or capability failure — retry with stronger model exhausted)' } }
+    // Q6（第 5 轮）: 消息须根据是否有 retryModel 分支——无 retry 时说 "retry exhausted" 误导（从未 retry）。
+    //   有 retry：说明 retry with ${retryModel} 也耗尽；无 retry：仅说明首次 agent 返回 null。
+    const nullErr = retryModel ? `agent returned null (quota exhausted or capability failure — retry with ${retryModel} also exhausted)` : 'agent returned null (quota exhausted or capability failure)'
+    return { halted: true, reason: 'model_unavailable', diag: { model, error: nullErr } }
   }
   return impl
 }
@@ -451,8 +463,8 @@ const SCHEMAS = {
     type: 'object', required: ['status', 'evidence'], additionalProperties: true,
     properties: {
       status: { type: 'string', enum: ['ok', 'failed', 'blocked'] },
-      evidence: { type: 'object', required: ['config', 'plans', 'completed', 'dirty_tree'],
-        properties: { config: { type: 'object' }, plans: { type: 'array' }, completed: { type: 'array' }, dirty_tree: { type: 'boolean' }, failed_approaches: { type: 'array' }, task_write_files: { type: 'array' }, task_lessons: { type: 'array' } } },
+      evidence: { type: 'object', required: ['config', 'plans', 'completed', 'dirty_tree', 'in_progress', 'failed_approaches', 'task_lessons', 'task_write_files'],
+        properties: { config: { type: 'object' }, plans: { type: 'array' }, completed: { type: 'array' }, dirty_tree: { type: 'boolean' }, in_progress: { type: 'boolean' }, failed_approaches: { type: 'array' }, task_write_files: { type: 'array' }, task_lessons: { type: 'array' } } },
       diagnostics: { type: 'object' }, summary: { type: 'string' },
     },
   },
@@ -481,7 +493,7 @@ const SCHEMAS = {
       properties: { changed: { type: 'boolean' }, files_changed: { type: 'array' } } }, summary: { type: 'string' } } },
   commit: { type: 'object', required: ['status', 'evidence'], additionalProperties: true,
     properties: { status: { type: 'string', enum: ['ok', 'failed', 'model_unavailable'] },
-      evidence: { type: 'object', required: ['commit_sha', 'committed_files'],
+      evidence: { type: 'object', required: ['commit_sha', 'committed_files', 'tests_at_commit'],
         properties: { commit_sha: { type: 'string' }, committed_files: { type: 'array' }, tests_at_commit: { type: 'integer' } } },
       diagnostics: { type: 'object', properties: { out_of_scope: { type: 'array' }, destructive_changes: { type: 'array' } } }, summary: { type: 'string' } } },
   contextFetcher: { type: 'object', required: ['diagnostics'], additionalProperties: true,
@@ -517,20 +529,20 @@ const PROMPTS = {
 Inputs: configPath={{configPath}} plansDir={{plansDir}} runTs={{runTs}}
 
 Steps:
-1. Read {{configPath}} → {test_command, full_test_command, build_command, lint_command, extra_lint_commands, spec_path, reference_paths, language, silent_failure_context, lessons_path}. extra_lint_commands / reference_paths / silent_failure_context / lessons_path are OPTIONAL (may be absent → treat as [] / [] / [] / ''). If config contains lessons_path, read that file. Extract entries (each has id, title, detail). For each task in the current plan, match lessons whose title/detail keywords overlap with the task's title. Return matched lessons per task in evidence as task_lessons: [{task_id, lessons:[{id, title, detail}]}]. Absent lessons_path → empty array.
+1. Read {{configPath}} → {test_command, full_test_command, build_command, lint_command, extra_lint_commands, spec_path, reference_paths, language, silent_failure_context, lessons_path}. extra_lint_commands / reference_paths / silent_failure_context / lessons_path are OPTIONAL (may be absent → treat as [] / [] / [] / ''). If config contains lessons_path, read that file. Extract entries (each has id, title, detail). For each task in the current plan, match lessons whose title/detail keywords overlap with the task's title. Return matched lessons per task in evidence as task_lessons: [{task_id, plan_seq, lessons:[{id, title, detail}]}] (plan_seq = the plan's seq from step 3). Absent lessons_path → empty array.
 2. Config smoke: run test_command with --collect-only. 判断：命令本身不存在（command not found / No such file: pytest）→ status=failed（环境/typo）；命令存在但 collect 失败（no module named pytest / pyproject.toml 不存在 / no tests collected / 业务代码未初始化）→ 记录 'project not yet initialized' 到 summary，status 仍 ok（业务代码由后续 task 创建，预期）。
-3. For each {{plansDir}}/*.md: if frontmatter (starts with ---) read task models; else generate — extract LEAF ids (## Task N with ### Task NX children → only NX; else N), modelHint (title contains 安全|加密|认证|JWT|CSRF|Fernet|算法|比对|策略|边界|集成|接口 → opus, else omit), write frontmatter at file top. Idempotent. Record each plan's file (full path) and seq (last two digits of filename, e.g. 01). Also read write_files from frontmatter if present (format: "write_files:\n  T1:\n    - src/a.py\n    - src/b.py"). Return as task_write_files in evidence: [{task_id, files:[...]}]. Absent → empty array.
+3. For each {{plansDir}}/*.md: if frontmatter (starts with ---) read task models; else generate — extract LEAF ids (## Task N with ### Task NX children → only NX; else N), modelHint (title contains 安全|加密|认证|JWT|CSRF|Fernet|算法|比对|策略|边界|集成|接口 → opus, else omit), write frontmatter at file top. Idempotent. Record each plan's file (full path) and seq (last two digits of filename, e.g. 01). Also read write_files from frontmatter if present (format: "write_files:\n  T1:\n    - src/a.py\n    - src/b.py"). Return as task_write_files in evidence: [{task_id, plan_seq, files:[...]}] (plan_seq = this plan's seq). Absent → empty array.
 4. git log → completed task ids via convention feat(plan-X/T-Y).
 5. git status --porcelain → dirty_tree.
 6. For each leaf task return its model (sonnet|opus|undefined→sonnet) and title (the description text from the Task header).
 7. If runs/ directory exists: scan runs/*/manifest.json files. For each, read per_task object. For each task_id in per_task that has blocked_info, extract {task_id, reason (from blocked_info.reason), error (from blocked_info.last_error)}. Filter to task_ids that match leaf tasks in the current plans. Return as failed_approaches in evidence. If runs/ does not exist → failed_approaches=[].
 
-Return {status, evidence:{config (include ALL fields read in step 1, even optional ones if present), plans:[{id, file, seq, tasks:[{id, model, title}]}], completed:[...], dirty_tree, failed_approaches:[{task_id, reason, error}], task_write_files:[{task_id, files:[...]}], task_lessons:[{task_id, lessons:[{id, title, detail}]}]}, summary}.
+Return {status, evidence:{config (include ALL fields read in step 1, even optional ones if present), plans:[{id, file, seq, tasks:[{id, model, title}]}], completed:[...], dirty_tree, failed_approaches:[{task_id, reason, error}], task_write_files:[{task_id, plan_seq, files:[...]}], task_lessons:[{task_id, plan_seq, lessons:[{id, title, detail}]}]}, summary}.
 RED FLAG: evidence 必须是真实读取结果，绝不编造。`,
 
   implementor: `You are the IMPLEMENTOR for {{taskId}} (plan {{planId}}). TDD strict (RED→GREEN→REFACTOR). {{retryNote}}
 
-Inputs: specPath={{specPath}} testCommand={{testCommand}} planFile={{planFilePath}} taskId={{taskId}} fixIssues={{fixIssues}} fetchedContext={{fetchedContext}}
+Inputs: specPath={{specPath}} testCommand={{testCommand}} planFile={{planFilePath}} taskId={{taskId}} fixIssues={{fixIssues}}
 {{referencePaths}}
 {{failedApproaches}}
 {{lessons}}
@@ -868,7 +880,10 @@ async function halt(plan, task, r) {
     const failedApproaches = state.failedApproaches[tid] || []
     const distillInput = JSON.stringify(distillLessonInput('halted', haltInfo, reviewHistory, failedApproaches))
     try {
-      const distillResult = await agentWithFallback('lessonDistiller', { distillInput, lessonsPath }, 'lesson-distiller')
+      // S5（第 5 轮）: spec §2.4 fallback 链 [opus,sonnet,haiku] 仅用于 finalReport 保存进度；
+      //   distiller 是 lesson 提炼通道（非进度保存），改用单次 agent() 调用（model: 'opus'），
+      //   失败即 catch 跳过（符合 §5.4 best-effort 语义，非逐一尝试 3 个 model）。
+      const distillResult = await agent(buildPrompt('lessonDistiller', { distillInput, lessonsPath }), { schema: SCHEMAS.lessonDistiller, model: 'opus', label: 'lesson-distiller' })
       if (distillResult?.decisions) {
         const applied = distillResult.decisions.filter(d => d.action !== 'skip').length
         log(`📋 lesson distiller: ${applied} 条 lesson 已更新（append/update）`)
@@ -882,6 +897,8 @@ async function halt(plan, task, r) {
   const fr = await agentWithFallback('finalReport', { mode: 'halted', stateJson: JSON.stringify(state), blockedInfo, runsDir: `runs/${state.runTs}`, runTs: state.runTs, lessonsPath, lessonsAutoDistill: String(lessonsAutoDistill) }, 'final-report')
   if (!fr) log('✗✗ 致命：finalReport 全链失败，manifest 未写入！请手动检查 runs/ 目录')
   log(`✗ HALT: ${r.reason} (plan ${plan?.id}, task ${tid})`)
+  // Q13（第 5 轮）: halt() 返回 {result:'halted', reason} 供调用方 return（DRY：7 处 `await halt(...); return {result, reason}` 模式重复，reason 易写错）
+  return { result: 'halted', reason: r.reason }
 }
 
 // ===== runTask（§13a：implementor + 升级链 + review rounds + simplify + commit）=====
@@ -913,12 +930,16 @@ async function runTask(plan, task) {
   //   （Plan 01/02 都有 T1-T10 → 裸 task.id 作 key → Plan 02 的 T2 覆盖 Plan 01 的 T2 perTask）。
   //   halt() 已用 plan-scoped tid；runTask 内所有 perTask 访问也须用 taskKey 保持一致。
   const taskKey = `plan-${String(plan.seq).padStart(2, '0')}/${task.id}`
-  state.perTask[taskKey] = { planId: plan.id, status: 'in_progress', model: task.model || 'sonnet', review_rounds: 0, files_touched_per_round: [], review_history: [], commit_sha: null, simplify_reverted: false, simplify_review_findings: [], destructive_review_failed: false, destructive_review_findings: [], concerns: [], blocked_info: null }
+  // Q5（第 5 轮）: 复用 ensurePerTaskDefaults helper（DRY：字段列表与 halt() 的 ensurePerTaskDefaults 重复，字段增删需两处同步易漂移）
+  state.perTask[taskKey] = ensurePerTaskDefaults({ planId: plan.id, status: 'in_progress', model: task.model || 'sonnet' })
   log(`▶ ${task.id} (${task.model || 'sonnet'}): 派发 implementor — TDD 可能含长命令(uv sync/build/全量测试)，正常耗时请等待；/workflows 可看实时工具调用`)
 
   // —— implementor + BLOCKED 升级链（§2.3）——
   let model = task.model || 'sonnet'
-  const implCtx = (fix, note, ctx = '') => ({ planId: plan.id, taskId: task.id, planFilePath: plan.file, specPath: cfg.spec_path, testCommand: cfg.test_command, fixIssues: fix, retryNote: note, fetchedContext: ctx, referencePaths: formatReferencePaths(cfg.reference_paths), failedApproaches: formatFailedApproaches(state.failedApproaches?.[task.id] || []), lessons: formatLessons(state.taskLessons?.[task.id] || []) })
+  // S1（第 5 轮）: failedApproaches 查找须用 taskKey（存储键来自 manifest per_task，已 plan-scoped）。
+  //   S3（第 5 轮）: taskLessons 查找同须用 taskKey（存储键已 plan-scoped，防跨 plan 同名 task 覆盖）。
+  //   旧代码用裸 task.id → 查找永远 undefined → failedApproaches/lessons 占位符不注入 implementor prompt。
+  const implCtx = (fix, note, ctx = '') => ({ planId: plan.id, taskId: task.id, planFilePath: plan.file, specPath: cfg.spec_path, testCommand: cfg.test_command, fixIssues: fix, retryNote: note, fetchedContext: ctx, referencePaths: formatReferencePaths(cfg.reference_paths), failedApproaches: formatFailedApproaches(state.failedApproaches?.[taskKey] || []), lessons: formatLessons(state.taskLessons?.[taskKey] || []) })
   let impl
   impl = await dispatchImpl(buildPrompt('implementor', implCtx('', '')), { schema: SCHEMAS.implementor, model, label: `impl:${task.id}` }, model)
   if (impl.halted) return impl
@@ -971,7 +992,7 @@ async function runTask(plan, task) {
     state.perTask[taskKey].concerns = concerns
     log(`⚠ ${task.id} done_with_concerns: ${concerns.join('; ') || '(no detail)'}`)
   }
-  let concernsHint = concerns.length ? `\n## Implementor Concerns (verify these)\n${concerns.map(c => '- ' + c).join('\n')}` : ''
+  let concernsHint = formatConcernsHint(concerns)
   let filesChanged = impl.evidence.files_changed || []
 
   // —— review rounds（max 可配，默认 4；0=无限靠 detectOscillation 防线，§5）——
@@ -980,6 +1001,10 @@ async function runTask(plan, task) {
     state.perTask[taskKey].review_rounds = round
     const fc = filesChanged.join('\n')
     const { spec, qual, hunt, haltReason: reviewReason, emptyFailed: emptyFailedReason } = await runReviewRound(task.id, cfg, plan, fc, concernsHint, `:r${round}`, `Plan ${plan.id}`)
+    // Q15（第 5 轮）: push 须在 halt 检查之前——halt 轮的 files_touched/review_history 也须持久化，
+    //   否则 distiller 看不到 halt 轮 review 状态（如 review_failed_no_findings 的 failed-but-empty 信号）。
+    state.perTask[taskKey].files_touched_per_round.push(unionFiles(spec, qual, hunt))
+    state.perTask[taskKey].review_history.push(summarizeReviewRound(round, spec, qual, hunt))
     if (reviewReason) {
       return { halted: true, reason: reviewReason, diag: { spec: spec?.diagnostics, qual: qual?.diagnostics, hunt: hunt?.diagnostics } }
     }
@@ -987,8 +1012,6 @@ async function runTask(plan, task) {
     if (emptyFailedReason) {
       return { halted: true, reason: emptyFailedReason, diag: { spec: spec?.diagnostics, qual: qual?.diagnostics, hunt: hunt?.diagnostics } }
     }
-    state.perTask[taskKey].files_touched_per_round.push(unionFiles(spec, qual, hunt))
-    state.perTask[taskKey].review_history.push(summarizeReviewRound(round, spec, qual, hunt))
     // allGreen 必须在 detectOscillation 之前：否则 r3 三 reviewer 全 ok 时，先被
     // OSCILLATING（核心文件被审 ≥3 轮）截胡 halt，allGreen break 永远轮不到 → 收敛误报
     // （T2 invite / T5 channels）。真矛盾（reviewer 持续分歧，如 T7 claims 时区）不会全绿，
@@ -1017,7 +1040,7 @@ async function runTask(plan, task) {
     if (impl.status === 'done_with_concerns') {
       concerns = impl.diagnostics?.concerns || concerns
       state.perTask[taskKey].concerns = concerns
-      concernsHint = concerns.length ? `\n## Implementor Concerns (verify these)\n${concerns.map(c => '- ' + c).join('\n')}` : ''
+      concernsHint = formatConcernsHint(concerns)
       log(`⚠ ${task.id} fix-round ${round} done_with_concerns: ${concerns.join('; ') || '(no detail)'}`)
     }
     filesChanged = impl.evidence.files_changed || filesChanged
@@ -1032,7 +1055,7 @@ async function runTask(plan, task) {
 
   // —— commit（提前到 simplify 前；§5 状态原子转换）——
   let commit
-  commit = await dispatchImpl(buildPrompt('commit', { taskId: task.id, planId: plan.id, planIdShort, commitMsg: commitSubject(plan.seq, task.id, task.title || task.id), testCommand: cfg.test_command, writeFilesScope: formatWriteFilesScope(state.taskWriteFiles?.[task.id] || []) }), { schema: SCHEMAS.commit, label: `commit:${task.id}` }, model)
+  commit = await dispatchImpl(buildPrompt('commit', { taskId: task.id, planId: plan.id, planIdShort, commitMsg: commitSubject(plan.seq, task.id, task.title || task.id), testCommand: cfg.test_command, writeFilesScope: formatWriteFilesScope(state.taskWriteFiles?.[taskKey] || []) }), { schema: SCHEMAS.commit, label: `commit:${task.id}` }, model)
   if (commit.halted) return commit
   if (commit.status === 'failed' && Array.isArray(commit.diagnostics?.out_of_scope) && commit.diagnostics.out_of_scope.length) return { halted: true, reason: 'commit out_of_scope', diag: commit.diagnostics }
   if (commit.status !== 'ok') return { halted: true, reason: 'commit failed', diag: commit.diagnostics }
@@ -1121,7 +1144,9 @@ async function runTask(plan, task) {
     if (dReason || dEmptyFailed) {
       // model 不可用/空响应：不 halt，记录失败继续（destructive review 是增强保护，非阻断）
       state.perTask[taskKey].destructive_review_failed = true
-      state.perTask[taskKey].destructive_review_findings = [{ source: 'destructive-review', title: dReason || dEmptyFailed }]
+      // Q14（第 5 轮）: 异常路径 shape 须与正常路径一致（[{source, severity, title, fix}]），
+      //   旧 [{source, title}] 简化 shape 混在同字段 → manifest 消费者需处理两种结构
+      state.perTask[taskKey].destructive_review_findings = [{ source: 'destructive-review', severity: 'Critical', title: dReason || dEmptyFailed, fix: 'investigate review agent failure' }]
       log(`⚠ ${task.id} destructive review 异常 (${dReason || dEmptyFailed}) — 记录并继续`)
     } else if (!allGreen(dSpec, dQual, dHunt)) {
       // 不全绿：不 halt，记录 destructive_review_failed + findings 到 perTask，继续下一 task
@@ -1133,6 +1158,9 @@ async function runTask(plan, task) {
     }
   }
 
+  // Q8（第 5 轮）: runTask 全流程完成（commit + simplify + destructive review）须设终态 status='done'。
+  //   旧代码停在 'committed' → 无法区分"已提交但 simplify/destructive 未完成"与"全流程完成"。
+  state.perTask[taskKey].status = 'done'
   return { halted: false }
 }
 
@@ -1150,16 +1178,22 @@ try {
   log(`⚠ get-ts agent 抛错（非 quota），降级用 'unknown-ts' 占位符: ${errStr(e)}`)
   tsAgent = 'unknown-ts'
 }
-state.runTs = typeof tsAgent === 'string' ? tsAgent.trim() : String(tsAgent)
+// S2（第 5 轮）: 非 string（null/对象/数字）均须降级 'unknown-ts'——
+//   Q3: null → String(null)="null" → runsDir="runs/null" → manifest 互相覆盖
+//   Q9: 对象 → String({})="[object Object]" → runsDir="runs/[object Object]" 同源问题
+//   旧代码 `typeof tsAgent === 'string' ? tsAgent.trim() : <强转>` 把非 string 强转 → 上述脏值。
+//   修：非 string 或空串均降级 'unknown-ts' 占位符（manifest 仍可写，run_ts 缺失不阻塞）。
+if (typeof tsAgent !== 'string' || !tsAgent.trim()) tsAgent = 'unknown-ts'
+state.runTs = tsAgent.trim()
 let boot
 try {
   boot = await dispatchImpl(buildPrompt('bootstrap', { configPath: args.configPath, plansDir: args.plansDir, runTs: state.runTs }), { schema: SCHEMAS.bootstrap, label: 'bootstrap' }, 'sonnet', 'opus')
 } catch (e) {
   // dispatchImpl 仅吞 quota 错（→halted）；其余非 quota 错抛出，此处兜底 halt
-  await halt(null, null, { reason: 'model_unavailable', diag: { model: 'sonnet', error: errStr(e) } }); return { result: 'halted', reason: 'model_unavailable' }
+  return await halt(null, null, { reason: 'model_unavailable', diag: { model: 'sonnet', error: errStr(e) } })
 }
-if (boot.halted) { await halt(null, null, { reason: 'model_unavailable', diag: boot.diag }); return { result: 'halted', reason: 'model_unavailable' } }
-if (boot.status !== 'ok') { await halt(null, null, { reason: `bootstrap ${boot.status}`, diag: boot.diagnostics }); return { result: 'halted', reason: `bootstrap ${boot.status}` } }
+if (boot.halted) { return await halt(null, null, { reason: 'model_unavailable', diag: boot.diag }) }
+if (boot.status !== 'ok') { return await halt(null, null, { reason: `bootstrap ${boot.status}`, diag: boot.diagnostics }) }
 state.config = boot.evidence.config
 // 归一化为 "plan-{seq}/T-{id}"。run-2 旧逻辑【去】plan 前缀→单 plan 内能匹配，但跨 plan 同名
 // task（Plan 01/02 都有 T1-T10）会让 Plan 02 的 T2 被 Plan 01 的 T2 误 skip → domain layer 残缺。
@@ -1174,16 +1208,20 @@ if (Array.isArray(boot.evidence.failed_approaches)) {
     state.failedApproaches[fa.task_id].push(fa)
   }
 }
-// write_files 边界控制：按 task_id 索引存入 state，供 commit agent 边界检查
+// write_files 边界控制：按 plan-scoped key 索引存入 state，供 commit agent 边界检查
+// S3（第 5 轮）: 存储须用 plan-{seq}/{task_id}（与 perTask/failedApproaches 同 key 空间），
+//   bootstrap 遍历所有 plan 收集 task_write_files，每个 plan 都有 T1-T10 → 裸 task_id 跨 plan 覆盖。
+//   bootstrap prompt 已改为返回 plan_seq 字段，此处归一化为 plan-scoped key。
 if (Array.isArray(boot.evidence.task_write_files)) {
   for (const twf of boot.evidence.task_write_files) {
-    state.taskWriteFiles[twf.task_id] = twf.files || []
+    state.taskWriteFiles[`plan-${String(twf.plan_seq).padStart(2, '0')}/${twf.task_id}`] = twf.files || []
   }
 }
-// LESSONS.md 跨任务失败知识库：按 task_id 索引存入 state，供 implCtx 注入 implementor prompt
+// LESSONS.md 跨任务失败知识库：按 plan-scoped key 索引存入 state，供 implCtx 注入 implementor prompt
+// S3（第 5 轮）: 同 taskWriteFiles，存储须用 plan-scoped key（防跨 plan 同名 task 覆盖）
 if (Array.isArray(boot.evidence.task_lessons)) {
   for (const tl of boot.evidence.task_lessons) {
-    state.taskLessons[tl.task_id] = tl.lessons || []
+    state.taskLessons[`plan-${String(tl.plan_seq).padStart(2, '0')}/${tl.task_id}`] = tl.lessons || []
   }
 }
 
@@ -1204,7 +1242,7 @@ for (const plan of boot.evidence.plans) {
       // halt + 保存进度（finalReportWithFallback 依次试 opus/sonnet/haiku），等用户指令 resume，不降级继续开发。
       r = { halted: true, reason: 'model_unavailable', diag: { model: task.model || 'sonnet', error: errStr(e) } }
     }
-    if (r.halted) { await halt(plan, { id: task.id }, r); return { result: 'halted', reason: r.reason } }
+    if (r.halted) { return await halt(plan, { id: task.id }, r) }
   }
   // plan 级独立 gate（§3）：本 plan 最后 commit SHA 上重跑 test + lint_command + extra_lint_commands
   const lastSha = Object.values(state.perTask).filter(p => p.planId === plan.id && p.commit_sha).at(-1)?.commit_sha
@@ -1215,12 +1253,11 @@ for (const plan of boot.evidence.plans) {
       gate = await dispatchImpl(buildPrompt('gate', { sha: lastSha, gateCommands: JSON.stringify(cmds), schemaCheck: formatSchemaCheck(state.config?.schema_tool || '', state.config?.model_paths || [], state.config?.migration_paths || []) }), { schema: SCHEMAS.gate, label: `gate:${plan.id}`, phase: `Plan ${plan.id}` }, 'sonnet')
     } catch (e) {
       // dispatchImpl 仅吞 quota 错（→halted）；其余非 quota 错抛出，此处兜底 halt
-      await halt(plan, null, { reason: 'model_unavailable', diag: { model: 'sonnet', error: errStr(e) } }); return { result: 'halted', reason: 'model_unavailable' }
+      return await halt(plan, null, { reason: 'model_unavailable', diag: { model: 'sonnet', error: errStr(e) } })
     }
-    if (gate.halted) { await halt(plan, null, { reason: 'model_unavailable', diag: gate.diag }); return { result: 'halted', reason: 'model_unavailable' } }
+    if (gate.halted) { return await halt(plan, null, { reason: 'model_unavailable', diag: gate.diag }) }
     if (gate.status !== 'ok' || gate.evidence?.migration_missing) {
-      await halt(plan, null, { reason: 'plan gate failed', diag: { sha: lastSha, tests_exit_code: gate.evidence?.tests_exit_code, summary: gate.evidence?.pytest_summary, lint_results: gate.evidence?.lint_results, migration_missing: gate.evidence?.migration_missing } })
-      return { result: 'halted', reason: 'plan gate failed' }
+      return await halt(plan, null, { reason: 'plan gate failed', diag: { sha: lastSha, tests_exit_code: gate.evidence?.tests_exit_code, summary: gate.evidence?.pytest_summary, lint_results: gate.evidence?.lint_results, migration_missing: gate.evidence?.migration_missing } })
     }
     log(`✓ plan ${plan.id} gate green @ ${lastSha} (${cmds.length} cmd${cmds.length === 1 ? '' : 's'})`)
   } else {

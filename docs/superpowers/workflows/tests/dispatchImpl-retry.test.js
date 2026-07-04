@@ -73,9 +73,12 @@ test('QC2: agentWithFallback 末尾 try/catch + 返回 null（Q7 第 4 轮抽象
   assert.match(defaultPart, /catch/, '环境默认 model 调用须包 try/catch')
 })
 
-test('SH2: distiller 是 halt() 中独立 agent 调用（Q7 第 4 轮：经 agentWithFallback）', () => {
-  // Q7: halt() 须调 agentWithFallback('lessonDistiller', ...)（独立 agent，自己读 lessonsPath）
-  assert.match(runSrc, /agentWithFallback\('lessonDistiller'/, "halt() 须调 agentWithFallback('lessonDistiller', ...) 传 distillInput")
+test('SH2: distiller 是 halt() 中独立 agent 调用（S5 第 5 轮：单次 agent 调用，非 agentWithFallback）', () => {
+  // S5（第 5 轮）: spec §2.4 fallback 链 [opus,sonnet,haiku] 仅用于 finalReport 保存进度；
+  //   distiller 是 lesson 提炼通道（非进度保存），改用单次 agent() 调用（model: 'opus'），
+  //   失败即 catch 跳过（符合 §5.4 best-effort 语义）。
+  assert.doesNotMatch(runSrc, /agentWithFallback\('lessonDistiller'/, "distiller 不得用 agentWithFallback（S5：偏离 §2.4「仅用于 finalReport」约束）")
+  assert.match(runSrc, /agent\(buildPrompt\('lessonDistiller'/, "halt() 须调 agent(buildPrompt('lessonDistiller', ...)) 传 distillInput（S5：单次 agent 调用）")
   assert.match(runSrc, /distillInput/, 'halt() 须构造 distillInput 传给 distiller')
   assert.match(runSrc, /lessonsPath/, 'distiller 须收到 lessonsPath 路径（自己读文件）')
   // finalReport step5 须说明 distiller 已执行（不再自己调 distiller）

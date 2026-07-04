@@ -434,3 +434,149 @@ test('Q10（第 4 轮）: fix-round implementor done_with_concerns 须更新 con
   //   修：加 done_with_concerns 分支，更新 concerns + concernsHint
   assert.match(runSrc, /if \(impl\.status === 'done_with_concerns'\)[\s\S]*?concerns = impl\.diagnostics/, 'fix-round 须有 done_with_concerns 分支更新 concerns（Q10）')
 })
+
+// ===== 第 5 轮 review 修复断言（S1-S7 spec + Q1-Q15 quality，去重 15 项）=====
+// wontfix: S4（hunter agentType——runtime 限制）/ Q10（runTask 拆分——风险高）/
+//   Q12（blocked 升级链抽象——参数过多）/ Q16（dead code——spec §393 明确保留）
+
+test('S1（第 5 轮）: failedApproaches 查找须用 plan-scoped taskKey（非裸 task.id）', () => {
+  // S1: state.failedApproaches 存储键来自 manifest per_task（plan-scoped，如 plan-01/T2），
+  //   implCtx 查找用裸 task.id（T2）→ 永远 undefined → failedApproaches 占位符不注入 implementor prompt
+  //   修：implCtx 查找改用 taskKey（与 halt() line 868 的 state.failedApproaches[tid] 一致）
+  assert.doesNotMatch(runSrc, /state\.failedApproaches\?\.\[task\.id\]/, 'failedApproaches 不得用裸 task.id 查找（S1：存储键 plan-scoped）')
+  assert.match(runSrc, /state\.failedApproaches\?\.\[taskKey\]/, 'failedApproaches 须用 taskKey 查找（S1）')
+})
+
+test('S3（第 5 轮）: taskWriteFiles / taskLessons 须用 plan-scoped key（非裸 task.id）', () => {
+  // S3: bootstrap 遍历所有 plan 收集 task_write_files/task_lessons，每个 plan 都有 T1-T10
+  //   → 后一个 plan 覆盖前一个 plan 同名 task 条目。修：存储和查找都用 plan-scoped key
+  assert.doesNotMatch(runSrc, /state\.taskWriteFiles\?\.\[task\.id\]/, 'taskWriteFiles 查找不得用裸 task.id（S3：跨 plan 覆盖）')
+  assert.doesNotMatch(runSrc, /state\.taskLessons\?\.\[task\.id\]/, 'taskLessons 查找不得用裸 task.id（S3：跨 plan 覆盖）')
+  assert.match(runSrc, /state\.taskWriteFiles\?\.\[taskKey\]/, 'taskWriteFiles 须用 taskKey 查找（S3）')
+  assert.match(runSrc, /state\.taskLessons\?\.\[taskKey\]/, 'taskLessons 须用 taskKey 查找（S3）')
+  // 存储时也须用 plan-scoped key（bootstrap 返回的 task_id 须归一化为 plan-{seq}/T{id}）
+  assert.match(runSrc, /taskWriteFiles\[`plan-\$\{[^}]+\}\/\$\{twf\.task_id\}`\]/, 'taskWriteFiles 存储须用 plan-scoped key（S3）')
+  assert.match(runSrc, /taskLessons\[`plan-\$\{[^}]+\}\/\$\{tl\.task_id\}`\]/, 'taskLessons 存储须用 plan-scoped key（S3）')
+})
+
+test('S2（第 5 轮）: get-ts agent 返回非 string 须降级 unknown-ts（防 runsDir="runs/null"）', () => {
+  // S2: agent() 返回 null → String(null)="null" → runsDir="runs/null" → manifest 互相覆盖
+  //   Q9 扩展：非 string 非 null（对象/数字）→ String({})="[object Object]" 同源问题
+  //   修：非 string 或空串均降级为 'unknown-ts' 占位符
+  assert.doesNotMatch(runSrc, /String\(tsAgent\)/, '不得用 String(tsAgent) 转换（S2：null→"null"，对象→"[object Object]"）')
+  assert.match(runSrc, /typeof tsAgent !== 'string' \|\| !tsAgent\.trim\(\)/, 'get-ts 须校验非 string 或空串（S2）')
+  assert.match(runSrc, /tsAgent = 'unknown-ts'/, '非 string 须降级为 unknown-ts 占位符（S2）')
+})
+
+test('S5（第 5 轮）: distiller 须用单次 agent 调用（非 agentWithFallback）', () => {
+  // S5: spec §2.4 fallback 链 [opus,sonnet,haiku] 仅用于 halt/finalReport 保存进度
+  //   distiller 是 lesson 提炼通道，非进度保存；spec §5.4 说 distiller 失败 best-effort 跳过
+  //   修：distiller 改用单次 agent() 调用（model: 'opus'），失败即 catch 跳过（符合 §5.4 best-effort）
+  assert.doesNotMatch(runSrc, /agentWithFallback\('lessonDistiller'/, 'distiller 不得用 agentWithFallback（S5：偏离 §2.4「仅用于」约束）')
+  assert.match(runSrc, /agent\(buildPrompt\('lessonDistiller'/, 'distiller 须用单次 agent 调用（S5）')
+})
+
+test('S6（第 5 轮）: SCHEMAS.bootstrap evidence required 须含 8 字段（§13c）', () => {
+  // S6: spec §13c 标注 8 个 evidence 必填字段，但 schema required 仅 4 个
+  //   修：required 补齐 in_progress/failed_approaches/task_lessons/task_write_files
+  for (const src of [libSrc, runSrc]) {
+    assert.match(src, /required:\s*\['config',\s*'plans',\s*'completed',\s*'dirty_tree',\s*'in_progress',\s*'failed_approaches',\s*'task_lessons',\s*'task_write_files'\]/, 'SCHEMAS.bootstrap.evidence.required 须含 8 字段（S6，§13c）')
+    assert.match(src, /in_progress:\s*\{\s*type:\s*'boolean'\s*\}/, 'SCHEMAS.bootstrap 须含 in_progress 字段定义（S6）')
+  }
+})
+
+test('S7（第 5 轮）: SCHEMAS.commit evidence required 须含 tests_at_commit（§13c）', () => {
+  // S7: spec §13c 标注 commit evidence 3 必填字段，但 schema required 缺 tests_at_commit
+  //   修：required 补 tests_at_commit（防 agent 漏返，orchestrator 无法校验 commit 时测试真绿）
+  for (const src of [libSrc, runSrc]) {
+    assert.match(src, /required:\s*\['commit_sha',\s*'committed_files',\s*'tests_at_commit'\]/, 'SCHEMAS.commit.evidence.required 须含 tests_at_commit（S7，§13c）')
+  }
+})
+
+test('Q4（第 5 轮）: SCHEMAS 整块须 lib.js ↔ run-plans.js 字节一致', () => {
+  // Q4: sync.test.js 对 PROMPTS 做字节比较，对 helper 函数体做字节比较，
+  //   但 SCHEMAS 只用 regex 检查个别字段 → lib.js 改 schema 不会被守护
+  //   修：提取 SCHEMAS 整块字符串做字节比较
+  function extractSchemas(src) {
+    const m = src.match(/const SCHEMAS = \{[\s\S]*?\n\}/)
+    assert.ok(m, '须含 SCHEMAS 定义')
+    return m[0]
+  }
+  assert.equal(extractSchemas(runSrc), extractSchemas(libSrc), 'SCHEMAS 整块须字节一致（Q4）')
+})
+
+test('Q5（第 5 轮）: runTask perTask 初始化须用 ensurePerTaskDefaults（DRY）', () => {
+  // Q5: runTask line 916 perTask 初始化字段列表与 ensurePerTaskDefaults 重复（12 字段）
+  //   字段增删需两处同步，易漂移。修：复用 ensurePerTaskDefaults helper
+  assert.match(runSrc, /state\.perTask\[taskKey\] = ensurePerTaskDefaults\(/, 'perTask 初始化须用 ensurePerTaskDefaults（Q5：DRY）')
+})
+
+test('Q6（第 5 轮）: dispatchImpl null halt 消息须根据 retryModel 分支', () => {
+  // Q6: 无 retryModel 时消息说 "retry with stronger model exhausted" 误导（从未 retry）
+  //   修：消息根据是否有 retryModel 分支
+  assert.doesNotMatch(runSrc, /retry with stronger model exhausted'\s*\}/, '不得用固定消息 "retry with stronger model exhausted"（Q6：无 retry 时误导）')
+  // 须根据 retryModel 分支（有 retry 说 "retry with X also exhausted"，无 retry 说 "quota exhausted or capability failure"）
+  assert.match(runSrc, /retryModel \? `[^`]*retry with \$\{retryModel\}[^`]*exhausted[^`]*` : '[^']*quota exhausted[^']*'/, 'dispatchImpl null halt 消息须根据 retryModel 分支（Q6）')
+})
+
+test('Q7（第 5 轮）: implementor prompt 中 fetchedContext 占位符只出现一次', () => {
+  // Q7: fetchedContext 在 implementor prompt 出现两次（Inputs 行 + 独立段落）→ token 浪费
+  //   修：删除 Inputs 行的 fetchedContext={{fetchedContext}}，仅保留独立段落
+  for (const src of [libSrc, runSrc]) {
+    const p = promptBody(src, 'implementor')
+    const count = (p.match(/\{\{fetchedContext\}\}/g) || []).length
+    assert.equal(count, 1, `implementor prompt fetchedContext 占位符只出现一次（Q7），实际 ${count} 次`)
+    // Inputs 行不得含 fetchedContext（已移到独立段落）
+    assert.doesNotMatch(p, /Inputs:.*fetchedContext=\{\{fetchedContext\}\}/, 'Inputs 行不得含 fetchedContext（Q7：移到独立段落）')
+  }
+})
+
+test('Q8（第 5 轮）: runTask 完成时 perTask.status 须设为 done（终态）', () => {
+  // Q8: perTask.status 停在 'committed'，从未设为 'done' → 无法区分"已提交但 simplify/destructive 未完成"与"全流程完成"
+  //   修：runTask 末尾 return 前设 status = 'done'
+  assert.match(runSrc, /state\.perTask\[taskKey\]\.status = 'done'/, 'runTask 完成时须设 status=done（Q8：终态语义）')
+})
+
+test('Q11（第 5 轮）: concernsHint 须抽 formatConcernsHint helper（DRY）', () => {
+  // Q11: concernsHint 构造逻辑在初始 dispatch（line 974）和 fix-round done_with_concerns（line 1020）两处重复
+  //   修：抽 formatConcernsHint(concerns) helper，两处调用
+  assert.match(runSrc, /function formatConcernsHint/, '须抽 formatConcernsHint helper（Q11：DRY）')
+  // 两副本字节一致（lib.js 真源 + run-plans.js inline）
+  const libBody = extractFunctionBody(libSrc, 'formatConcernsHint')
+  const runBody = extractFunctionBody(runSrc, 'formatConcernsHint')
+  assert.ok(libBody, 'lib.js 须有 formatConcernsHint 真源')
+  assert.ok(runBody, 'run-plans.js 须 inline formatConcernsHint')
+  assert.equal(runBody, libBody, 'formatConcernsHint 函数体字节一致（Q11）')
+  // 两处调用须用 helper（不得 inline 重复模板字符串）
+  const concernsHintCount = (runSrc.match(/\\n## Implementor Concerns \(verify these\)/g) || []).length
+  assert.equal(concernsHintCount, 1, `concernsHint 模板字符串只出现 1 次（在 helper 内），实际 ${concernsHintCount} 次（Q11）`)
+})
+
+test('Q13（第 5 轮）: halt() 须返回 {result:"halted", reason} 供调用方 return（DRY）', () => {
+  // Q13: 7 处 `await halt(...); return {result:'halted', reason:...}` 模式重复
+  //   reason 需与传给 halt 的 reason 一致，易写错。修：halt() 返回 {result:'halted', reason: r.reason}
+  //   调用方 `return await halt(...)`，DRY 且防 reason 不一致
+  assert.match(runSrc, /return await halt\(/, '调用方须 return await halt(...)（Q13：DRY）')
+  // halt() 函数体末尾须返回 {result:'halted', reason} 对象
+  const haltMatch = runSrc.match(/async function halt\([\s\S]*?\n\}/)
+  assert.ok(haltMatch, 'run-plans.js 须有 halt 函数')
+  assert.match(haltMatch[0], /return\s*\{\s*result:\s*'halted'[^}]*reason/, 'halt() 须返回 {result:"halted", reason}（Q13）')
+})
+
+test('Q14（第 5 轮）: destructive_review_findings 须统一 shape（异常路径与正常路径一致）', () => {
+  // Q14: 异常路径存 [{source, title}]，正常路径存 [{source, severity, title, file, fix}]
+  //   两种 shape 混在同一字段，manifest 消费者需处理两种结构。修：异常路径统一为完整 shape
+  assert.doesNotMatch(runSrc, /\{ source: 'destructive-review', title: dReason \|\| dEmptyFailed \}/, '不得用简化 shape {source, title}（Q14：shape 不一致）')
+  assert.match(runSrc, /\{ source: 'destructive-review', severity: 'Critical', title: dReason \|\| dEmptyFailed, fix:/, '异常路径须统一为 {source, severity, title, fix} shape（Q14）')
+})
+
+test('Q15（第 5 轮）: review_history.push 须在 halt 检查之前（halt 轮状态须持久化）', () => {
+  // Q15: review 循环中 push 在 halt 检查之后 → halt 轮的 files_touched/review_history 不持久化
+  //   distiller 看不到 halt 轮的 review 状态（如 review_failed_no_findings 的 failed-but-empty 信号）
+  //   修：push 移到 halt 检查之前（先记录再判断 halt）
+  const pushIdx = runSrc.indexOf('state.perTask[taskKey].files_touched_per_round.push(unionFiles(spec, qual, hunt))')
+  const reviewReasonIdx = runSrc.indexOf('if (reviewReason)')
+  assert.notEqual(pushIdx, -1, '须有 files_touched_per_round.push')
+  assert.notEqual(reviewReasonIdx, -1, '须有 reviewReason halt 检查')
+  assert.ok(pushIdx < reviewReasonIdx, 'push 须在 halt 检查之前（Q15：halt 轮状态须持久化）')
+})
