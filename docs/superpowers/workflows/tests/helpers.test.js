@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, isQuotaError, errStr, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound, resolveMaxRounds, detectOscillation, distillLessonInput, applyLessonDecisions, formatLessonsForDistill, validateAmendResult, validateCheckoutResult } from '../lib.js'
+import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, isQuotaError, errStr, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound, resolveMaxRounds, detectOscillation, distillLessonInput, applyLessonDecisions, formatLessonsForDistill, validateAmendResult, validateCheckoutResult, groupFindingsByFile, formatCrossReviewerNote } from '../lib.js'
 
 const ok = { status: 'ok', diagnostics: { files_touched: ['a.py'] } }
 const ok2 = { status: 'ok', diagnostics: { files_touched: ['b.py'] } }
@@ -546,4 +546,97 @@ test('formatLessonsForDistill: 仅 header 无条目 → 空数组', () => {
 
 （暂无）`
   assert.deepEqual(formatLessonsForDistill(md), [])
+})
+
+// —— groupFindingsByFile ——
+
+test('groupFindingsByFile groups findings by file', () => {
+  const findings = [
+    { source: 'spec', title: 'missing X', file: 'a.py' },
+    { source: 'quality', title: 'wrong way', file: 'a.py' },
+    { source: 'hunter', title: 'swallowed error', file: 'b.py' },
+  ]
+  const groups = groupFindingsByFile(findings)
+  assert.equal(groups.length, 2)
+  const a = groups.find(g => g.file === 'a.py')
+  const b = groups.find(g => g.file === 'b.py')
+  assert.equal(a.findings.length, 2)
+  assert.equal(b.findings.length, 1)
+  assert.deepEqual([...a.sources].sort(), ['quality', 'spec'])
+})
+
+test('groupFindingsByFile skips findings without file', () => {
+  const findings = [
+    { source: 'spec', title: 'no file finding' },
+    { source: 'quality', title: 'has file', file: 'a.py' },
+  ]
+  const groups = groupFindingsByFile(findings)
+  assert.equal(groups.length, 1)
+  assert.equal(groups[0].file, 'a.py')
+})
+
+test('groupFindingsByFile empty array → empty array', () => {
+  assert.deepEqual(groupFindingsByFile([]), [])
+})
+
+// —— formatCrossReviewerNote ——
+
+test('formatCrossReviewerNote produces output when ≥2 sources flag same file', () => {
+  const findings = [
+    { source: 'spec', severity: 'critical', title: 'missing feature X', file: 'a.py', fix: 'add it' },
+    { source: 'quality', severity: 'important', title: 'wrong approach', file: 'a.py', fix: 'use pattern Y' },
+  ]
+  const out = formatCrossReviewerNote(findings)
+  assert.match(out, /Cross-Reviewer Overlap/)
+  assert.match(out, /a\.py.*flagged by:.*quality.*spec/)
+  assert.match(out, /spec\|critical/)
+  assert.match(out, /quality\|important/)
+})
+
+test('formatCrossReviewerNote empty when only one source per file', () => {
+  const findings = [
+    { source: 'quality', title: 'issue 1', file: 'a.py' },
+    { source: 'quality', title: 'issue 2', file: 'a.py' },
+    { source: 'hunter', title: 'issue 3', file: 'b.py' },
+  ]
+  assert.equal(formatCrossReviewerNote(findings), '')
+})
+
+test('formatCrossReviewerNote empty for empty findings', () => {
+  assert.equal(formatCrossReviewerNote([]), '')
+})
+
+test('formatCrossReviewerNote handles findings without severity gracefully', () => {
+  const findings = [
+    { source: 'spec', title: 'missing X', file: 'a.py' },
+    { source: 'hunter', title: 'bad fallback', file: 'a.py' },
+  ]
+  const out = formatCrossReviewerNote(findings)
+  assert.match(out, /spec\] missing X/)
+  assert.match(out, /hunter\] bad fallback/)
+})
+
+test('formatCrossReviewerNote handles findings without fix gracefully', () => {
+  const findings = [
+    { source: 'spec', title: 'missing X', file: 'a.py' },
+    { source: 'quality', title: 'wrong way', file: 'a.py', fix: 'use Y' },
+  ]
+  const out = formatCrossReviewerNote(findings)
+  assert.match(out, /spec\] missing X\n/)
+  assert.match(out, /quality\].*— fix: use Y/)
+})
+
+test('formatCrossReviewerNote multiple overlap groups', () => {
+  const findings = [
+    { source: 'spec', title: 'missing X', file: 'a.py' },
+    { source: 'quality', title: 'wrong way', file: 'a.py' },
+    { source: 'quality', title: 'bare except', file: 'b.py' },
+    { source: 'hunter', title: 'swallowed error', file: 'b.py' },
+  ]
+  const out = formatCrossReviewerNote(findings)
+  assert.match(out, /a\.py.*flagged by:/)
+  assert.match(out, /b\.py.*flagged by:/)
+  const aIdx = out.indexOf('a.py')
+  const bIdx = out.indexOf('b.py')
+  assert.ok(aIdx > -1 && bIdx > -1)
 })

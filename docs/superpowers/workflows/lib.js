@@ -507,6 +507,36 @@ export function gateCommands(config) {
   return cmds
 }
 
+// 跨 reviewer 文件重叠检测：按 file 分组 findings → 返回分组数组。
+// 纯函数，不依赖任何映射表或 agent 调用。spec §3.1。
+export function groupFindingsByFile(findings) {
+  const groups = {}
+  for (const f of findings) {
+    if (!f.file) continue
+    if (!groups[f.file]) groups[f.file] = { file: f.file, sources: new Set(), findings: [] }
+    groups[f.file].sources.add(f.source)
+    groups[f.file].findings.push(f)
+  }
+  return Object.values(groups)
+}
+
+// 格式化跨 reviewer 文件重叠为 implementor 可读的注入文本。
+// 仅当某文件有 ≥2 个不同 reviewer 标记时才输出该段。spec §3.1。
+export function formatCrossReviewerNote(findings) {
+  const groups = groupFindingsByFile(findings).filter(g => g.sources.size >= 2)
+  if (groups.length === 0) return ''
+
+  let out = '\n## ⚠ Cross-Reviewer Overlap (≥2 reviewers flagged same file — check for conflicts)\n'
+  for (const g of groups) {
+    const srcs = [...g.sources].sort().join('/')
+    out += `\n### ${g.file} (flagged by: ${srcs})\n`
+    for (const f of g.findings) {
+      out += `- [${f.source}${f.severity ? '|' + f.severity : ''}] ${f.title}${f.fix ? ' — fix: ' + f.fix : ''}\n`
+    }
+  }
+  return out
+}
+
 export const SCHEMAS = {
   bootstrap: {
     type: 'object', required: ['status', 'evidence'], additionalProperties: true,
