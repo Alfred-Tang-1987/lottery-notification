@@ -350,6 +350,12 @@ function normalizeCompleted(ids) {
   })
 }
 
+// Strip plan-XX/ 前缀，返回裸 task id —— inline 自 lib.js（与 normalizeCompleted 同源，sync QC-4 守护）。
+// bootstrap 偶返 plan-scoped task_id → taskKey/commitSubject 双重前缀 + completed 误判 → 重跑（2026-07-05）。
+function bareTaskId(id) {
+  return String(id).replace(/^plan-\d+\/+/i, '')
+}
+
 // args.plan 与 plan.id/plan.seq 的宽松匹配（Bug 10）—— inline 自 lib.js
 // 容忍 string/number/padded-seq/"plan-" 前缀差异。
 function matchesPlanFilter(plan, planArg) {
@@ -1287,6 +1293,16 @@ try {
 }
 if (boot.halted) { return await halt(null, null, { reason: boot.reason, diag: boot.diag }) }
 if (boot.status !== 'ok') { return await halt(null, null, { reason: `bootstrap ${boot.status}`, diag: boot.diagnostics }) }
+// P1-bootstrap-sanitize (2026-07-05): bootstrap agent 偶返 plan-scoped task_id（"plan-06/T1"）而非裸 "T1"。
+// taskKey/commitSubject 会再拼一层 plan 前缀 → feat(plan-06/plan-06/T1) + completed 比对 key
+// (plan-06/plan-06/T1) 不匹配 state.completed (plan-06/T1) → 已完成 task 误判 pending → 重跑（实战 aae0ce2 bug）。
+// 源头归一化：strip 所有 task_id 的 plan-XX/ 前缀，下游统一用裸 id 拼出正确 plan-scoped key。
+for (const p of (boot.evidence.plans || [])) {
+  if (Array.isArray(p.tasks)) for (const t of p.tasks) t.id = bareTaskId(t.id)
+}
+for (const fa of (boot.evidence.failed_approaches || [])) fa.task_id = bareTaskId(fa.task_id)
+for (const twf of (boot.evidence.task_write_files || [])) twf.task_id = bareTaskId(twf.task_id)
+for (const tl of (boot.evidence.task_lessons || [])) tl.task_id = bareTaskId(tl.task_id)
 state.config = boot.evidence.config
 // P0-2（第 6 轮）: state.plans 须写入（finalReport stateJson 须含 plans，manifest 完整性）
 state.plans = boot.evidence.plans

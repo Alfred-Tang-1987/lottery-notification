@@ -391,6 +391,14 @@ export function normalizeCompleted(ids) {
   })
 }
 
+// Strip plan-XX/ 前缀，返回裸 task id（"plan-06/T1" → "T1"，"T1" → "T1"）。
+// bootstrap agent 偶返回 plan-scoped task_id（与 frontmatter 裸 id 不一致）→ taskKey/commitSubject
+// 的 plan 前缀二次拼接 → feat(plan-06/plan-06/T1) + completed 误判未完成 → 重跑（2026-07-05 实战 bug）。
+// 统一 strip 后下游用裸 id，taskKey/commitSubject 拼出正确 plan-scoped key。纯函数，可测。
+export function bareTaskId(id) {
+  return String(id).replace(/^plan-\d+\/+/i, '')
+}
+
 // args.plan 与 plan.id/plan.seq 的宽松匹配（Bug 10）。
 // 容忍 string/number/padded-seq/"plan-" 前缀差异。
 // `3`/`"3"`/`"03"`/`"plan-03"` 均匹配 seq="03", id="plan-03"。

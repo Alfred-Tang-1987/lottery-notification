@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, isQuotaError, errStr, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound, resolveMaxRounds, detectOscillation, distillLessonInput, applyLessonDecisions, formatLessonsForDistill, validateAmendResult, validateCheckoutResult, groupFindingsByFile, formatCrossReviewerNote } from '../lib.js'
+import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, isQuotaError, errStr, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound, resolveMaxRounds, detectOscillation, distillLessonInput, applyLessonDecisions, formatLessonsForDistill, validateAmendResult, validateCheckoutResult, groupFindingsByFile, formatCrossReviewerNote, bareTaskId } from '../lib.js'
 
 const ok = { status: 'ok', diagnostics: { files_touched: ['a.py'] } }
 const ok2 = { status: 'ok', diagnostics: { files_touched: ['b.py'] } }
@@ -96,6 +96,28 @@ test('matchesPlanFilter: number 3 matches padded seq "03" and id "plan-03" (Bug 
 test('matchesPlanFilter: non-matching arg → false', () => {
   assert.equal(matchesPlanFilter({ id: 'plan-01', seq: '01' }, '02'), false)
   assert.equal(matchesPlanFilter({ id: 'plan-01', seq: '01' }, 5), false)
+})
+
+// —— bareTaskId（bootstrap task_id 源头归一化，防双重 plan 前缀）——
+test('bareTaskId: strip plan-XX/ 前缀（plan-06/T1 → T1）', () => {
+  assert.equal(bareTaskId('plan-06/T1'), 'T1')
+  assert.equal(bareTaskId('plan-01/T6b'), 'T6b')
+  assert.equal(bareTaskId('plan-12/T10'), 'T10')
+})
+test('bareTaskId: 裸 id 原样返回（T1 → T1）', () => {
+  assert.equal(bareTaskId('T1'), 'T1')
+  assert.equal(bareTaskId('T6b'), 'T6b')
+})
+test('bareTaskId: 非 string 输入先 String 化再 strip（防 toString 报错）', () => {
+  assert.equal(bareTaskId(123), '123')
+  assert.equal(bareTaskId(null), 'null')
+})
+test('REGRESSION (2026-07-05): plan-scoped task_id 须 strip，否则 taskKey 拼成 plan-06/plan-06/T1', () => {
+  // bootstrap 实战返回 "plan-06/T1"；runTask taskKey = `plan-${seq}/${task.id}`
+  // 若不 strip → taskKey = "plan-06/plan-06/T1" ≠ state.completed["plan-06/T1"] → 误判 pending → 重跑
+  const sanitized = bareTaskId('plan-06/T1')
+  const taskKey = `plan-${String(6).padStart(2, '0')}/${sanitized}`
+  assert.equal(taskKey, 'plan-06/T1', 'taskKey 须为单层 plan 前缀，与 completed 同形')
 })
 
 // —— classifyThrown（review catch 归类）——
