@@ -1,13 +1,26 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue';
-import { apiGet, apiPost } from '../api/client';
+import { apiGet, apiPost, apiPut } from '../api/client';
 import State from '../components/State.vue';
+import { LOTTERIES } from '../lib/lotteries';
 
 interface Channel {
   id: number;
   type: 'bark' | 'feishu' | 'email';
   config: Record<string, string>;
   enabled: boolean;
+}
+
+interface NotificationRule {
+  id: number;
+  lottery_code: string;
+  strategy: 'every' | 'win_only';
+  timing: string | null;
+}
+
+interface TemplatePreview {
+  path_a: { title: string; body: string };
+  path_b: { title: string; body: string };
 }
 
 const CHANNELS = [
@@ -51,6 +64,8 @@ function applyTheme(t: 'light' | 'dark' | 'auto') {
 }
 
 const channels = ref<Channel[] | null>(null);
+const rules = ref<NotificationRule[] | null>(null);
+const templates = ref<TemplatePreview | null>(null);
 const loading = ref(false);
 const error = ref('');
 const saving = ref(false);
@@ -60,12 +75,37 @@ const forms = ref<Record<string, string>>({});
 const dndStart = ref('22:00');
 const dndEnd = ref('07:00');
 const dndEnabled = ref(false);
+const dndLoading = ref(false);
+const dndError = ref('');
+
+const strategyMap = computed(() => {
+  const m = new Map<string, NotificationRule>();
+  if (rules.value) {
+    for (const r of rules.value) {
+      m.set(r.lottery_code, r);
+    }
+  }
+  return m;
+});
 
 async function load() {
   loading.value = true;
   error.value = '';
   try {
-    channels.value = await apiGet<Channel[]>('/channels');
+    const [ch, rl, tpl, dnd] = await Promise.all([
+      apiGet<Channel[]>('/channels'),
+      apiGet<NotificationRule[]>('/channels/rules'),
+      apiGet<TemplatePreview>('/channels/templates'),
+      apiGet<{ enabled: boolean; start: string; end: string }>('/channels/dnd').catch(() => null),
+    ]);
+    channels.value = ch;
+    rules.value = rl;
+    templates.value = tpl;
+    if (dnd) {
+      dndEnabled.value = dnd.enabled;
+      dndStart.value = dnd.start;
+      dndEnd.value = dnd.end;
+    }
   } catch (err) {
     error.value = err instanceof Error ? err.message : '加载失败';
   } finally {
@@ -91,6 +131,48 @@ async function addChannel(type: 'bark' | 'feishu' | 'email') {
     error.value = err instanceof Error ? err.message : '保存失败';
   } finally {
     saving.value = false;
+  }
+}
+
+function strategyFor(code: string): 'every' | 'win_only' {
+  return strategyMap.value.get(code)?.strategy ?? 'every';
+}
+
+function timingFor(code: string): string {
+  return strategyMap.value.get(code)?.timing ?? '07:00';
+}
+
+async function onStrategyChange(code: string, strategy: 'every' | 'win_only') {
+  try {
+    await apiPut('/channels/rules', { lottery_code: code, strategy });
+    await load();
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : '保存策略失败';
+  }
+}
+
+async function onTimingChange(code: string, timing: string) {
+  try {
+    await apiPut('/channels/rules', { lottery_code: code, strategy: strategyFor(code), timing });
+    await load();
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : '保存时机失败';
+  }
+}
+
+async function saveDnd() {
+  dndLoading.value = true;
+  dndError.value = '';
+  try {
+    await apiPost('/channels/dnd', {
+      enabled: dndEnabled.value,
+      start: dndStart.value,
+      end: dndEnd.value,
+    });
+  } catch (err) {
+    dndError.value = err instanceof Error ? err.message : '保存失败';
+  } finally {
+    dndLoading.value = false;
   }
 }
 
@@ -155,7 +237,56 @@ onMounted(() => {
           <p class="card-subtitle">按彩种设置推送规则（every / win_only）</p>
         </div>
         <div class="card-body">
-          <p class="placeholder-note">推送策略配置即将上线。目前默认对所有启用彩种进行每期推送。</p>
+          <div class="rule-list">
+            <div
+              v-for="lottery in LOTTERIES"
+              :key="lottery.code"
+              class="rule-row"
+              :data-lottery="lottery.code"
+            >
+              <div class="rule-name">{{ lottery.name }}</div>
+              <label class="rule-field">
+                <span class="field-label">策略</span>
+                <select
+                  :value="strategyFor(lottery.code)"
+                  @change="onStrategyChange(lottery.code, ($event.target as HTMLSelectElement).value as 'every' | 'win_only')"
+                >
+                  <option value="every">每期推送</option>
+                  <option value="win_only">仅中奖</option>
+                </select>
+              </label>
+              <label class="rule-field">
+                <span class="field-label">汇总时间</span>
+                <input
+                  type="time"
+                  :value="timingFor(lottery.code)"
+                  @change="onTimingChange(lottery.code, ($event.target as HTMLInputElement).value)"
+                />
+              </label>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 模板预览 -->
+      <section class="card">
+        <div class="card-header">
+          <h2 class="card-title">推送模板预览</h2>
+          <p class="card-subtitle">大奖即时简讯 / 次日汇总</p>
+        </div>
+        <div class="card-body">
+          <div v-if="templates" class="template-list">
+            <div class="template-card">
+              <h4>路径 A：大奖即时简讯</h4>
+              <p class="template-title">{{ templates.path_a.title }}</p>
+              <pre class="template-body">{{ templates.path_a.body }}</pre>
+            </div>
+            <div class="template-card">
+              <h4>路径 B：次日汇总</h4>
+              <p class="template-title">{{ templates.path_b.title }}</p>
+              <pre class="template-body">{{ templates.path_b.body }}</pre>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -167,21 +298,27 @@ onMounted(() => {
         <div class="card-body">
           <label class="toggle-row">
             <span>开启免打扰</span>
-            <input v-model="dndEnabled" type="checkbox" />
+            <input
+              v-model="dndEnabled"
+              class="dnd-toggle"
+              type="checkbox"
+              @change="saveDnd"
+            />
           </label>
           <div v-if="dndEnabled" class="dnd-row">
             <label class="field-inline">
               <span class="field-label">开始</span>
-              <input v-model="dndStart" type="time" />
+              <input v-model="dndStart" type="time" @change="saveDnd" />
             </label>
             <span class="dnd-sep">—</span>
             <label class="field-inline">
               <span class="field-label">结束</span>
-              <input v-model="dndEnd" type="time" />
+              <input v-model="dndEnd" type="time" @change="saveDnd" />
             </label>
           </div>
-          <p class="hint-text">免打扰时段内暂停所有推送，次日汇总照常发送。</p>
-          <p class="placeholder-note">DND 服务端持久化即将上线。</p>
+          <p class="hint-text">免打扰时段内暂停次日汇总/周月报；大奖即时简讯可破例。</p>
+          <p v-if="dndError" class="error" role="alert">{{ dndError }}</p>
+          <p v-if="dndLoading" class="hint-text">保存中…</p>
         </div>
       </section>
 
@@ -305,7 +442,8 @@ onMounted(() => {
   margin-bottom: 6px;
 }
 
-input {
+input,
+select {
   width: 100%;
   padding: 10px 12px;
   border: 1px solid var(--border);
@@ -331,6 +469,61 @@ input {
 .primary:disabled {
   opacity: 0.7;
   cursor: not-allowed;
+}
+
+.rule-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.rule-row {
+  display: grid;
+  grid-template-columns: 1fr 120px 120px;
+  gap: 12px;
+  align-items: end;
+  padding: 12px;
+  background: var(--surface-2);
+  border-radius: 12px;
+}
+
+.rule-name {
+  font-weight: 600;
+  padding-bottom: 8px;
+}
+
+.rule-field .field-label {
+  font-size: 11px;
+  margin-bottom: 4px;
+}
+
+.template-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.template-card {
+  padding: 12px;
+  background: var(--surface-2);
+  border-radius: 12px;
+}
+
+.template-card h4 {
+  margin: 0 0 8px;
+  font-size: var(--text-md);
+}
+
+.template-title {
+  font-weight: 600;
+  margin: 0 0 8px;
+}
+
+.template-body {
+  white-space: pre-wrap;
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--muted);
 }
 
 .theme-row {
@@ -406,9 +599,20 @@ input {
   color: var(--muted);
 }
 
-.placeholder-note {
-  color: var(--warning);
+.error {
+  color: var(--danger);
   font-size: var(--text-sm);
-  padding: 8px 0;
+  margin-top: 8px;
+}
+
+@media (max-width: 640px) {
+  .rule-row {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .rule-name {
+    padding-bottom: 0;
+  }
 }
 </style>
