@@ -130,3 +130,44 @@ button,
   font-size: var(--text-sm);
   color: var(--muted);
 }
+
+/* 共享表单控件（时段/彩种筛选、按钮组） */
+.filters {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+
+.filter-group {
+  display: flex;
+  gap: 8px;
+}
+
+.filter-btn {
+  padding: 8px 16px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: var(--text-md);
+  cursor: pointer;
+  min-height: 44px;
+}
+
+.filter-btn.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.lottery-select {
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: var(--surface);
+  color: var(--fg);
+  font-size: var(--text-md);
+  min-height: 44px;
+}
