@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue';
 import { apiGet, apiPost } from '../api/client';
-import { fmtMoney, fmtDate } from '../lib/format';
+import { fmtMoney } from '../lib/format';
 import { LOTTERIES } from '../lib/lotteries';
 import State from '../components/State.vue';
 
@@ -29,15 +29,45 @@ const filterStatus = ref<'all' | 'pending' | 'claimed'>('all');
 const filterLottery = ref('');
 const loadingRecords = ref(false);
 
+// Period filter: month/year/all/custom (spec §12.2 row 5)
+type PeriodType = 'month' | 'year' | 'all' | 'custom';
+const filterPeriod = ref<PeriodType>('month');
+const filterDateFrom = ref('');
+const filterDateTo = ref('');
+
+function buildQuery(): string {
+  const params = new URLSearchParams();
+  params.set('win_only', 'true');
+  params.set('period', filterPeriod.value);
+  if (filterPeriod.value === 'custom') {
+    if (filterDateFrom.value) params.set('date_from', filterDateFrom.value);
+    if (filterDateTo.value) params.set('date_to', filterDateTo.value);
+  }
+  return `/api/comparisons?${params.toString()}`;
+}
+
 async function load() {
   loadingRecords.value = true;
   error.value = '';
   try {
-    records.value = await apiGet<WinRecord[]>('/api/comparisons?win_only=true');
+    records.value = await apiGet<WinRecord[]>(buildQuery());
   } catch (err) {
     error.value = err instanceof Error ? err.message : '加载失败';
   } finally {
     loadingRecords.value = false;
+  }
+}
+
+async function applyPeriod() {
+  await load();
+}
+
+function resetCustomDateOnPeriodChange() {
+  if (filterPeriod.value !== 'custom') {
+    filterDateFrom.value = '';
+    filterDateTo.value = '';
+    // Auto-refresh for non-custom periods to keep stats in sync with selection
+    void load();
   }
 }
 
@@ -144,11 +174,44 @@ onMounted(() => {
 
       <!-- 筛选条 -->
       <div class="filters">
-        <div class="filter-group" role="group" aria-label="兑奖状态筛选">
-          <button type="button" class="filter-btn" :class="{ active: filterStatus === 'all' }" @click="filterStatus = 'all'">全部</button>
-          <button type="button" class="filter-btn" :class="{ active: filterStatus === 'pending' }" @click="filterStatus = 'pending'">待兑奖</button>
-          <button type="button" class="filter-btn" :class="{ active: filterStatus === 'claimed' }" @click="filterStatus = 'claimed'">已领取</button>
+        <div class="filter-group" role="group" aria-label="时段筛选">
+          <select
+            v-model="filterPeriod"
+            class="lottery-select"
+            data-testid="filter-period"
+            aria-label="时段筛选"
+            @change="resetCustomDateOnPeriodChange"
+          >
+            <option value="month">本月</option>
+            <option value="year">本年</option>
+            <option value="all">全部</option>
+            <option value="custom">自定义</option>
+          </select>
+          <template v-if="filterPeriod === 'custom'">
+            <input
+              v-model="filterDateFrom"
+              type="date"
+              class="lottery-select"
+              data-testid="filter-date-from"
+              aria-label="开始日期"
+            />
+            <input
+              v-model="filterDateTo"
+              type="date"
+              class="lottery-select"
+              data-testid="filter-date-to"
+              aria-label="结束日期"
+            />
+          </template>
+          <button v-if="filterPeriod === 'custom'" type="button" class="filter-btn" data-testid="apply-period" @click="applyPeriod">应用</button>
         </div>
+
+        <div class="filter-group" role="group" aria-label="兑奖状态筛选">
+          <button type="button" class="filter-btn" :class="{ active: filterStatus === 'all' }" data-testid="filter-status-all" @click="filterStatus = 'all'">全部</button>
+          <button type="button" class="filter-btn" :class="{ active: filterStatus === 'pending' }" data-testid="filter-status-pending" @click="filterStatus = 'pending'">待兑奖</button>
+          <button type="button" class="filter-btn" :class="{ active: filterStatus === 'claimed' }" data-testid="filter-status-claimed" @click="filterStatus = 'claimed'">已领取</button>
+        </div>
+
         <select v-model="filterLottery" class="lottery-select" aria-label="彩种筛选">
           <option value="">全部彩种</option>
           <option v-for="l in LOTTERIES" :key="l.code" :value="l.code">{{ l.name }}</option>
