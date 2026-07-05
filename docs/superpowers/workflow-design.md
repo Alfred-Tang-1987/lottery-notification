@@ -842,6 +842,26 @@ function detectOscillation(filesTouchedPerRound) {
 
 **Resume 能力边界（与 Claude Code 官方规范对齐）**：native `resumeFromRunId` **仅在同一个 Claude Code session 内有效**——退出 CC 后再启动会 fresh start（规范原文："Resume works within the same Claude Code session. If you exit Claude Code while a workflow is running, the next session starts the workflow fresh."）。故跨 session 重启时 journal 缓存失效，但 **bootstrap 以 git log 为 ground truth 识别已完成 task**（§6.1），fresh start 也能正确跳过已 commit 的 task，韧性不依赖 resume。manifest 仅供人读观测，不参与 resume 决策——这与规范的"runtime tracks each agent's result"不冲突，因为我们不读 manifest 做 resume。
 
+### 13j. Cross-Reviewer Pattern Surfacing (2026-07-05)
+
+**动机**：当两个 reviewer 对同一文件都报了 finding 时，`formatFindings` 输出是平铺列表，implementor 看不出 "quality 和 hunter 同时盯上了 `fetch_service.py`"——可能修了 A 不懂 B 的关联。halt 后 `blocked.md` 同理。
+
+**方案**：v2.0 简化版（纯 surface，零自动化）。v1.0 完整共识矩阵（映射表+haiku判定+opus仲裁+自动改spec）经 CEO+Eng 双审查后否决——问题频率 ~2%（47 task 仅 1 次真正的 reviewer 冲突），投入产出比不对。
+
+**实现**：
+- `groupFindingsByFile(findings)` — 按 file 分组 findings 的纯函数
+- `formatCrossReviewerNote(findings)` — 格式化跨 reviewer 重叠为 `⚠ CROSS-REVIEWER` 标记文本
+- 注入 fixIssues 末尾（review 循环中 `formatFindings(findings) + formatCrossReviewerNote(findings)`）
+- finalReport prompt 增强：halt 时 blocked.md 追加按文件分组的 findings + `⚠ CROSS-REVIEWER` 标记
+
+**设计原则**：
+- 零新 agent（不改 control flow，不新增 agent dispatch）
+- 零映射表（不硬编码 reviewer 类别映射——review prompt 会演进，硬编码映射是维护负担）
+- 不改 review prompt（纯函数追加文本到现有 fixIssues 管道）
+- 不改 halt 逻辑（不新增 halt reason）
+
+**后续演进**：积累 3 个 plan 的真实冲突数据后，若频率证明仲裁有价值，重评估自动化方案。
+
 ## 14. Wontfix / TODO 决策记录（第 6 轮 review 收敛）
 
 本节记录第 6 轮 Spec/Quality Review 后的 wontfix 与未实现决策，含决策理由 + 复盘触发条件。每个条目标注 inline 引用位置（§章节号）便于追溯。

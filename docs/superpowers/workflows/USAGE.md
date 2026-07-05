@@ -7,7 +7,7 @@
 
 `run-plans` 是一个**自动执行 implementation plan 的编排器**。给它一份或多份 plan，它会：
 
-- **每 task**：派 implementor subagent（TDD RED→GREEN→REFACTOR）→ review chain 并行（spec 逐行比对 ‖ quality 架构 ‖ silent-failure-hunter）→ git commit → 精简 simplify（git status 触发 re-review，全绿 amend / 失败 checkout 回退）
+- **每 task**：派 implementor subagent（TDD RED→GREEN→REFACTOR）→ review chain 并行（spec 逐行比对 ‖ quality 架构 ‖ silent-failure-hunter）+ **cross-reviewer 文件重叠标记（`⚠ CROSS-REVIEWER`，≥2 reviewer 标记同文件时注入 fixIssues）** → git commit → 精简 simplify（git status 触发 re-review，全绿 amend / 失败 checkout 回退）
 - **plan 级**：独立 gate（在 committed SHA 上重跑 test + lint_command + extra_lint_commands，任一非 0 halt，不信 implementor 自报）
 - **全流程**：多 plan 串行、振荡检测、BLOCKED 升级链、限额容错（halt，恢复后用全新跑续跑，见 §7.1）
 
@@ -109,6 +109,7 @@ get-ts（取时间戳）
               → done_with_concerns → 记疑虑，继续进 review（不 halt）
             review rounds (max N，默认 4，可配 0=无限): spec ‖ quality ‖ hunter 并行
               → 全绿 break / 任一❌→ implementor 修复 → 下轮 / maxN → halt（0=无限仅靠振荡检测）
+              → **cross-reviewer 标记**：≥2 reviewer 标记同文件时，fixIssues 末尾追加文件分组 + `⚠ CROSS-REVIEWER` 标记
               → 最后 1 轮 fix 强制 opus（有限 round===maxRounds-1 / 无限 round>=4）
               → 任一 review 空响应/异常（agent_error|model_unavailable|review_empty）→ halt
               → 任一 review failed 但 0 findings（review_failed_no_findings）→ halt
@@ -246,7 +247,7 @@ review 链 max-rounds halt 后，task 留在「未 commit」状态（implementor
 ```
 崩溃/halt 后看它定位问题（非翻 transcript）。
 
-`runs/<run-ts>/blocked.md`（仅 mode=halted 时 finalReport 写）：人读摘要。finalReport 收到独立 `blockedInfo` 占位符（halted task 的 `blocked_info` JSON，无需从整个 state 里捞字段），渲染 each field：plan / task / reason / category / last_error / suggested_fix / quota_exhausted / **likely_source**（工作树脏状态来源语义：`implementor changes` / `gate restored` / `bootstrap frontmatter` / `unknown`）。再加 **Working Tree** 段——finalReport halt 时跑 `git status --porcelain` + `git diff --stat` 的 ground truth 输出（dirty 时附文件列表 + diff stat + 接手指引；clean 时标注，如 gate halt 已 restore HEAD）。`likely_source` 是基于 reason 的确定性映射（非 dirty 推断），与 git status ground truth 并存。git 探查 best-effort，失败不阻塞 manifest 写入。
+`runs/<run-ts>/blocked.md`（仅 mode=halted 时 finalReport 写）：人读摘要。finalReport 收到独立 `blockedInfo` 占位符（halted task 的 `blocked_info` JSON，无需从整个 state 里捞字段），渲染 each field：plan / task / reason / category / last_error / suggested_fix / quota_exhausted / **likely_source**（工作树脏状态来源语义：`implementor changes` / `gate restored` / `bootstrap frontmatter` / `unknown`）。再加 **Working Tree** 段——finalReport halt 时跑 `git status --porcelain` + `git diff --stat` 的 ground truth 输出（dirty 时附文件列表 + diff stat + 接手指引；clean 时标注，如 gate halt 已 restore HEAD）。若 halt 源自 review round 失败，还追加 **Cross-Reviewer Findings** 段——按文件分组 findings + `⚠ CROSS-REVIEWER` 标记突出 ≥2 reviewer 同时标记的文件，一眼看出 reviewer 分歧点。`likely_source` 是基于 reason 的确定性映射（非 dirty 推断），与 git status ground truth 并存。git 探查 best-effort，失败不阻塞 manifest 写入。
 
 ## 9. 常见场景
 
@@ -292,8 +293,9 @@ plan frontmatter 的 `model` 字段决定 implementor 用 sonnet 还是 opus：
 | 文件 | 作用 |
 |---|---|
 | `.claude/workflows/run-plans.js` | orchestrator 主体（顶层 await + runTask/halt/编排；inline 复制 lib.js 的 PROMPTS/SCHEMAS/helpers） |
-| `docs/superpowers/workflows/lib.js` | 纯函数真源（leafTasks/detectOscillation/buildPrompt/SCHEMAS/PROMPTS + 条件渲染 helpers，45 测试） |
+| `docs/superpowers/workflows/lib.js` | 纯函数真源（leafTasks/detectOscillation/buildPrompt/SCHEMAS/PROMPTS + 条件渲染 helpers + **cross-reviewer 重叠检测**（`groupFindingsByFile` / `formatCrossReviewerNote`），55+ 测试） |
 | `docs/superpowers/workflows/tests/` | node:test 单元测试；含 `sync.test.js` 同步护栏（断言 run-plans.js 的 PROMPTS/SCHEMAS 与 lib.js 一致——改 lib 必须 sync 副本，否则测试红） |
 | `workflow.config.json` | 项目配置（命令 + spec_path） |
-| `docs/superpowers/workflow-design.md` | 设计 spec（§1-13 + §2.4） |
-| `docs/superpowers/plans/` | implementation plan（6 份业务 plan + 1 份本工具 plan） |
+| `docs/superpowers/workflow-design.md` | 设计 spec（§1-14 + cross-reviewer surfacing §13j） |
+| `docs/superpowers/workflow-plans/` | workflow 自身的 implementation plan 和 spec（共识矩阵 v1.0→v2.0 简化历程） |
+| `docs/superpowers/workflows/research/` | loop engineering 研究报告 + run-plans.js 评估 |
