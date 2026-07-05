@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 
 from app.api.deps import current_user, get_session_dep, require_admin, verify_csrf
-from app.models import ApiSourceHealth, DrawResult, NotificationLog, PendingComparison, User
+from app.models import ApiSourceHealth, DrawResult, PendingComparison, User
 from app.services.audit_service import write_audit
 
 router = APIRouter(prefix='/admin', tags=['admin'], dependencies=[Depends(require_admin)])
@@ -73,20 +73,6 @@ def system_health(session: Session = Depends(get_session_dep)):
     return {'sources': [{'source': s.source, 'status': s.status} for s in sources]}
 
 
-_MAX_PUSH_LOGS = 500
+# /push-logs 已迁移至 app/api/admin_ext.py（6 维筛选 + 分页 envelope PushLogPageOut，
+# spec §12.2 row 9）。此处旧版（裸 list）已删除，避免同 prefix 路由遮蔽新版。
 
-
-@router.get('/push-logs')
-def push_logs(session: Session = Depends(get_session_dep), limit: int = 100):
-    limit = min(max(limit, 1), _MAX_PUSH_LOGS)
-    logs = session.exec(select(NotificationLog).order_by(NotificationLog.id.desc()).limit(limit)).all()
-    return [
-        {
-            'id': log.id,
-            'user_id': log.user_id,
-            'type': log.type,
-            'status': log.status,
-            'error': log.error,
-        }
-        for log in logs
-    ]
