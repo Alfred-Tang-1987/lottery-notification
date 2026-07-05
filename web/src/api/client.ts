@@ -135,4 +135,10 @@ export const apiPut = <T = unknown>(p: string, body?: unknown) =>
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
 
+export const apiPatch = <T = unknown>(p: string, body?: unknown) =>
+  api<T>(p, {
+    method: "PATCH",
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+
 export const apiDelete = <T = unknown>(p: string) => api<T>(p, { method: "DELETE" });

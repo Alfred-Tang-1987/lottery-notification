@@ -101,6 +101,7 @@ def _build_scheduler_and_deps(engine: Engine, settings: Settings):
             smtp_user=settings.smtp_user,
             smtp_pass=settings.smtp_pass,
             smtp_from=settings.smtp_from,
+            smtp_encryption=settings.smtp_encryption,
         )
     # admin Bark fallback：启用 email 时 Settings.validate_email_bark_fallback 已强制
     # ADMIN_BARK_KEY 存在；未配 email 时 admin_bark_key 可选。

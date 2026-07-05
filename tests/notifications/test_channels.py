@@ -205,6 +205,125 @@ def test_email_channel_send(monkeypatch):
     assert 'To: user@example.com' in sent['msg']
 
 
+def test_email_channel_starttls_uses_smtp_not_ssl(monkeypatch):
+    """encryption=STARTTLS 走 smtplib.SMTP + starttls()，而非 SMTP_SSL（lesson L-20260706T010500Z）。
+
+    早期实现硬编码 SMTP_SSL 忽略 encryption，导致 Gmail/STARTTLS preset 是 no-op
+    （选 Gmail 与选 QQ 行为一样）。本测试断言 STARTTLS preset 真实生效：
+    SMTP_SSL 不被调用，SMTP 被调用且 starttls() 被调用。
+    """
+    from app.notifications.email_channel import EmailChannel
+
+    calls = {'ssl': 0, 'smtp': 0, 'starttls': 0, 'quit': 0}
+
+    class FakeSMTP:
+        def __init__(self, *a, **k):
+            calls['smtp'] += 1
+
+        def starttls(self):
+            calls['starttls'] += 1
+
+        def login(self, *a):
+            pass
+
+        def sendmail(self, *a):
+            pass
+
+        def quit(self):
+            calls['quit'] += 1
+
+    import smtplib
+
+    monkeypatch.setattr(smtplib, 'SMTP_SSL', lambda *a, **k: (_ for _ in ()).throw(AssertionError('STARTTLS 不应走 SMTP_SSL')))
+    monkeypatch.setattr(smtplib, 'SMTP', lambda *a, **k: FakeSMTP())
+
+    ch = EmailChannel(
+        smtp_host='smtp.gmail.com', smtp_port=587, smtp_user='u', smtp_pass='p',
+        smtp_from='lottery@example.com', smtp_encryption='STARTTLS',
+    )
+    r = ch.send(_payload(), config={'address': 'user@example.com'})
+    assert r.status == ChannelStatus.SENT
+    assert calls['ssl'] == 0, 'STARTTLS 不应调用 SMTP_SSL'
+    assert calls['smtp'] == 1, 'STARTTLS 应调用 smtplib.SMTP'
+    assert calls['starttls'] == 1, 'STARTTLS 应调用 starttls()'
+    assert calls['quit'] == 1, 'STARTTLS 路径应调用 quit() 关闭连接（防 fd 泄漏）'
+
+
+def test_email_channel_starttls_failure_closes_socket(monkeypatch):
+    """starttls() 抛异常时 SMTP 套接字仍被关闭（hunter finding：防 fd 泄漏）。
+
+    早期实现 `ctx = smtplib.SMTP(...); ctx.starttls()` 在 with 块外，starttls 抛异常时
+    ctx.__exit__ 不运行 → 套接字泄漏。改用 _StarttlsSmtp 把构造+starttls 包进 __enter__
+    后，starttls 异常也应触发 __exit__ → quit() 被调用。
+    """
+    from app.notifications.email_channel import EmailChannel
+
+    calls = {'quit': 0}
+
+    class FakeSMTP:
+        def starttls(self):
+            raise smtplib.SMTPException('STARTTLS not supported by server')
+
+        def login(self, *a):
+            pass
+
+        def sendmail(self, *a):
+            pass
+
+        def quit(self):
+            calls['quit'] += 1
+
+    import smtplib
+
+    monkeypatch.setattr(smtplib, 'SMTP', lambda *a, **k: FakeSMTP())
+
+    ch = EmailChannel(
+        smtp_host='smtp.gmail.com', smtp_port=587, smtp_user='u', smtp_pass='p',
+        smtp_from='lottery@example.com', smtp_encryption='STARTTLS',
+    )
+    r = ch.send(_payload(), config={'address': 'user@example.com'})
+    assert r.status == ChannelStatus.FAILED, 'STARTTLS 失败应返回 FAILED'
+    assert 'STARTTLS not supported' in (r.error or '')
+    assert calls['quit'] == 1, 'starttls 异常时 quit() 仍应被调用（防 fd 泄漏）'
+
+
+def test_email_channel_ssl_uses_smtp_ssl(monkeypatch):
+    """encryption=SSL/TLS 走 SMTP_SSL（回归保护：别把 SSL 也改走 SMTP）。"""
+    from app.notifications.email_channel import EmailChannel
+
+    calls = {'ssl': 0, 'smtp': 0}
+
+    class FakeSSL:
+        def __init__(self, *a, **k):
+            calls['ssl'] += 1
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            pass
+
+        def login(self, *a):
+            pass
+
+        def sendmail(self, *a):
+            pass
+
+    import smtplib
+
+    monkeypatch.setattr(smtplib, 'SMTP_SSL', lambda *a, **k: FakeSSL())
+    monkeypatch.setattr(smtplib, 'SMTP', lambda *a, **k: (_ for _ in ()).throw(AssertionError('SSL/TLS 不应走 smtplib.SMTP')))
+
+    ch = EmailChannel(
+        smtp_host='smtp.qq.com', smtp_port=465, smtp_user='u', smtp_pass='p',
+        smtp_from='lottery@example.com', smtp_encryption='SSL/TLS',
+    )
+    r = ch.send(_payload(), config={'address': 'user@example.com'})
+    assert r.status == ChannelStatus.SENT
+    assert calls['ssl'] == 1
+    assert calls['smtp'] == 0
+
+
 def test_email_channel_send_fail(monkeypatch):
     """SMTP sendmail 抛错 → FAILED 不冒泡。"""
     from app.notifications.email_channel import EmailChannel
