@@ -80,41 +80,142 @@ const agencies = ref<AgencyItem[] | null>(null);
 const loading = ref(false);
 const error = ref('');
 
-const hasClaims = computed(() => (data.value?.pending_claims.length ?? 0) > 0);
-const hasDraws = computed(() => (data.value?.latest_draws.length ?? 0) > 0);
+const hasClaims = computed(() => (data.value?.pending_claims?.length ?? 0) > 0);
+const hasDraws = computed(() => (data.value?.latest_draws?.length ?? 0) > 0);
 const hasCalendar = computed(() => (calendar.value?.length ?? 0) > 0);
 const hasAgencies = computed(() => (agencies.value?.length ?? 0) > 0);
+
+// Period filter for summary/card section (spec §12.2 row 2)
+type PeriodType = 'month' | 'year' | 'all' | 'custom';
+const filterPeriod = ref<PeriodType>('month');
+const filterDateFrom = ref('');
+const filterDateTo = ref('');
+
+function buildDashboardQuery(): string {
+  const params = new URLSearchParams();
+  params.set('period', filterPeriod.value);
+  if (filterPeriod.value === 'custom') {
+    if (filterDateFrom.value) params.set('date_from', filterDateFrom.value);
+    if (filterDateTo.value) params.set('date_to', filterDateTo.value);
+  }
+  return `/api/dashboard?${params.toString()}`;
+}
 
 async function load() {
   loading.value = true;
   error.value = '';
   try {
-    const [dash, cal, ag] = await Promise.all([
-      apiGet<DashboardData>('/api/dashboard'),
+    const [dashResult, calResult, agResult] = await Promise.allSettled([
+      apiGet<DashboardData>(buildDashboardQuery()),
       apiGet<CalendarItem[]>('/api/dashboard/calendar'),
       apiGet<AgencyItem[]>('/api/dashboard/agencies'),
     ]);
-    data.value = dash;
-    calendar.value = cal;
-    agencies.value = ag;
+
+    // Always assign independent calendar/agency results before deciding dashboard fate
+    // so a dashboard-only failure does not silently drop calendar and agencies.
+    if (calResult.status === 'fulfilled') {
+      calendar.value = calResult.value;
+    } else if (calendar.value === null) {
+      calendar.value = [];
+    }
+
+    if (agResult.status === 'fulfilled') {
+      agencies.value = agResult.value;
+    } else if (agencies.value === null) {
+      agencies.value = [];
+    }
+
+    if (dashResult.status === 'fulfilled') {
+      data.value = dashResult.value;
+    } else {
+      // Surface dashboard failures (including period-change failures when stale
+      // data already exists) so the user knows the new period failed instead of
+      // silently seeing stale data. Calendar/agencies render independently below
+      // (outside the v-else error block) for partial degradation.
+      if (data.value === null) {
+        // Fresh load: provide a stable empty fallback so the template can still
+        // render calendar/agencies; the error is surfaced via error.value.
+        data.value = {
+          latest_draws: [],
+          pending_claims: [],
+          recent_hits: [],
+          summary: {
+            total_cost: 0,
+            total_prize: 0,
+            pending_amount: 0,
+            net: 0,
+            win_count: 0,
+            ticket_count: 0,
+            win_rate: 0,
+            welfare_contribution: 0,
+          },
+        };
+      }
+      throw dashResult.reason;
+    }
   } catch (err) {
-    error.value = err instanceof Error ? err.message : '加载失败';
+    error.value = err instanceof Error ? err.message : String(err || '加载失败');
   } finally {
     loading.value = false;
   }
 }
 
-async function gotoClaim(claimId: number) {
-  await router.push(`/wins?claim=${claimId}`);
+async function applyPeriod() {
+  await load();
 }
 
-function openMapUrl(lat: number, lng: number): string {
-  // High-level map intent compatible with iOS Safari and desktop; user can choose preferred app
-  return `https://maps.apple.com/?ll=${lat},${lng}&q=${encodeURIComponent(lat + ',' + lng)}`;
+function resetCustomDateOnPeriodChange() {
+  if (filterPeriod.value !== 'custom') {
+    filterDateFrom.value = '';
+    filterDateTo.value = '';
+    // Auto-refresh for non-custom periods; custom mode intentionally waits for the
+    // 应用 button because the date range is empty until the user fills it.
+    void load();
+  }
+}
+
+async function gotoClaim(claimId: number) {
+  try {
+    await router.push(`/wins?claim=${claimId}`);
+  } catch (err) {
+    // Skip cancelled navigations (e.g. a navigation guard aborted the push) —
+    // these are normal control flow, not genuine failures. Surfacing "跳转失败"
+    // for a guard-aborted navigation would mislead the user.
+    if (isNavigationCancelled(err)) return;
+    // Router failure is a transient navigation issue, not a data-loading error;
+    // surface it briefly so the user understands why nothing happened.
+    const message = err instanceof Error ? err.message : String(err || '跳转失败');
+    error.value = `跳转失败：${message}`;
+    setTimeout(() => {
+      if (error.value && error.value.startsWith('跳转失败')) error.value = '';
+    }, 3000);
+  }
+}
+
+// vue-router throws a NavigationFailure on aborted/redirected/duplicated
+// navigations; these are normal control flow, not errors. Returns true for
+// failures that should be silently ignored.
+function isNavigationCancelled(err: unknown): boolean {
+  if (err == null || typeof err !== 'object') return false;
+  // NavigationFailure exposes a `type` property (aborted|cancelled|duplicated|noRoute).
+  const type = (err as { type?: unknown }).type;
+  // noRoute is a genuine failure and stays surfaced; the others are control flow.
+  return type === 'aborted' || type === 'cancelled' || type === 'duplicated';
+}
+
+function openMapUrl(lat: number, lng: number, name: string): string {
+  // High-level map intent compatible with iOS Safari and desktop; user can choose preferred app.
+  // The q parameter is the human-readable agency name (URL-encoded) so the map
+  // pin label is meaningful, not raw "lat,lng" coordinates.
+  return `https://maps.apple.com/?ll=${lat},${lng}&q=${encodeURIComponent(name)}`;
 }
 
 function openMap(agency: AgencyItem) {
-  window.open(openMapUrl(agency.lat, agency.lng), '_blank');
+  const url = openMapUrl(agency.lat, agency.lng, agency.name);
+  const opened = window.open(url, '_blank');
+  if (!opened) {
+    window.location.href = url;
+  }
 }
 
 onMounted(() => {
@@ -215,34 +316,65 @@ onMounted(() => {
       <section class="card" aria-labelledby="summary-title">
         <div class="card-header">
           <h2 id="summary-title" class="card-title">盈亏速览</h2>
+          <div class="filter-group" role="group" aria-label="时段筛选">
+            <select
+              v-model="filterPeriod"
+              class="lottery-select"
+              data-testid="dashboard-period"
+              aria-label="时段筛选"
+              @change="resetCustomDateOnPeriodChange"
+            >
+              <option value="month">本月</option>
+              <option value="year">本年</option>
+              <option value="all">全部</option>
+              <option value="custom">自定义</option>
+            </select>
+            <template v-if="filterPeriod === 'custom'">
+              <input
+                v-model="filterDateFrom"
+                type="date"
+                class="lottery-select"
+                data-testid="dashboard-date-from"
+                aria-label="开始日期"
+              />
+              <input
+                v-model="filterDateTo"
+                type="date"
+                class="lottery-select"
+                data-testid="dashboard-date-to"
+                aria-label="结束日期"
+              />
+              <button type="button" class="filter-btn" data-testid="dashboard-apply-period" @click="applyPeriod">应用</button>
+            </template>
+          </div>
         </div>
         <div class="card-body">
           <div class="stats-row">
             <div class="stat-card">
               <div class="stat-label">累计投入</div>
-              <div class="stat-value">{{ fmtMoney(data.summary.total_cost) }}</div>
+              <div class="stat-value">{{ fmtMoney(data.summary?.total_cost) }}</div>
             </div>
             <div class="stat-card">
               <div class="stat-label">累计中奖</div>
-              <div class="stat-value profit">{{ fmtMoney(data.summary.total_prize) }}</div>
+              <div class="stat-value profit">{{ fmtMoney(data.summary?.total_prize) }}</div>
             </div>
             <div class="stat-card">
               <div class="stat-label">净盈亏</div>
-              <div class="stat-value" :class="data.summary.net >= 0 ? 'profit' : 'loss'">
-                {{ fmtMoney(data.summary.net) }}
+              <div class="stat-value" :class="(data.summary?.net ?? 0) >= 0 ? 'profit' : 'loss'">
+                {{ fmtMoney(data.summary?.net) }}
               </div>
             </div>
             <div class="stat-card">
               <div class="stat-label">追注数量</div>
-              <div class="stat-value">{{ data.summary.ticket_count }}</div>
+              <div class="stat-value">{{ data.summary?.ticket_count }}</div>
             </div>
           </div>
-          <div class="welfare-card" v-if="data.summary.welfare_contribution != null">
+          <div v-if="data.summary?.welfare_contribution != null" class="welfare-card">
             <div>
               <div class="welfare-label">公益贡献</div>
               <div class="welfare-hint">按各彩种公益金比例累计</div>
             </div>
-            <div class="welfare-value">{{ fmtMoney(data.summary.welfare_contribution) }}</div>
+            <div class="welfare-value">{{ fmtMoney(data.summary?.welfare_contribution) }}</div>
           </div>
         </div>
       </section>
@@ -280,63 +412,66 @@ onMounted(() => {
           </div>
         </div>
       </section>
+    </template>
 
-      <!-- 开奖日历（D5 次屏） -->
-      <section v-if="hasCalendar" class="card" aria-labelledby="calendar-title">
-        <div class="card-header">
-          <div>
-            <h2 id="calendar-title" class="card-title">开奖日历</h2>
-            <p class="card-subtitle">按已启用彩种过滤 · 下一期预告</p>
-          </div>
+    <!-- 开奖日历（D5 次屏）— rendered outside the dashboard v-else chain so a
+         dashboard-only failure still surfaces calendar data (partial
+         degradation, spec §12.4 PARTIAL state). -->
+    <section v-if="hasCalendar" class="card" aria-labelledby="calendar-title">
+      <div class="card-header">
+        <div>
+          <h2 id="calendar-title" class="card-title">开奖日历</h2>
+          <p class="card-subtitle">按已启用彩种过滤 · 下一期预告</p>
         </div>
-        <div class="card-body">
-          <ul class="calendar-list" role="list">
-            <li v-for="item in calendar" :key="item.lottery_code" class="calendar-item">
-              <div class="calendar-main">
-                <span class="calendar-name">{{ item.lottery_name }}</span>
-                <span class="calendar-category" :class="item.category">
-                  {{ item.category === 'welfare' ? '福彩' : '体彩' }}
+      </div>
+      <div class="card-body">
+        <ul class="calendar-list" role="list">
+          <li v-for="item in calendar" :key="item.lottery_code" class="calendar-item">
+            <div class="calendar-main">
+              <span class="calendar-name">{{ item.lottery_name }}</span>
+              <span class="calendar-category" :class="item.category">
+                {{ item.category === 'welfare' ? '福彩' : '体彩' }}
+              </span>
+            </div>
+            <div class="calendar-next">
+              <span v-if="item.next_draw_date">{{ fmtShortDate(item.next_draw_date) }}</span>
+              <span v-else class="calendar-none">—</span>
+            </div>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- 附近代销点（D5 次屏，MVP mock）— rendered outside the dashboard v-else
+         chain for the same partial-degradation reason as the calendar above. -->
+    <section v-if="hasAgencies" class="card" aria-labelledby="agencies-title">
+      <div class="card-header">
+        <div>
+          <h2 id="agencies-title" class="card-title">附近代销点</h2>
+          <p class="card-subtitle">便民查询 · 点击打开地图导航</p>
+        </div>
+      </div>
+      <div class="card-body">
+        <ul class="agency-list" role="list">
+          <li
+            v-for="agency in agencies"
+            :key="agency.name"
+            class="agency-item"
+          >
+            <button type="button" class="agency-card" @click="openMap(agency)">
+              <div class="agency-main">
+                <span class="agency-name">{{ agency.name }}</span>
+                <span class="agency-category" :class="agency.category">
+                  {{ agency.category === 'welfare' ? '福彩' : '体彩' }}
                 </span>
               </div>
-              <div class="calendar-next">
-                <span v-if="item.next_draw_date">{{ fmtShortDate(item.next_draw_date) }}</span>
-                <span v-else class="calendar-none">—</span>
-              </div>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <!-- 附近代销点（D5 次屏，MVP mock） -->
-      <section v-if="hasAgencies" class="card" aria-labelledby="agencies-title">
-        <div class="card-header">
-          <div>
-            <h2 id="agencies-title" class="card-title">附近代销点</h2>
-            <p class="card-subtitle">便民查询 · 点击打开地图导航</p>
-          </div>
-        </div>
-        <div class="card-body">
-          <ul class="agency-list" role="list">
-            <li
-              v-for="agency in agencies"
-              :key="agency.name"
-              class="agency-item"
-            >
-              <button type="button" class="agency-card" @click="openMap(agency)">
-                <div class="agency-main">
-                  <span class="agency-name">{{ agency.name }}</span>
-                  <span class="agency-category" :class="agency.category">
-                    {{ agency.category === 'welfare' ? '福彩' : '体彩' }}
-                  </span>
-                </div>
-                <div class="agency-address">{{ agency.address }}</div>
-                <div v-if="agency.distance_m != null" class="agency-distance">{{ agency.distance_m }} 米</div>
-              </button>
-            </li>
-          </ul>
-        </div>
-      </section>
-    </template>
+              <div class="agency-address">{{ agency.address }}</div>
+              <div v-if="agency.distance_m != null" class="agency-distance">{{ agency.distance_m }} 米</div>
+            </button>
+          </li>
+        </ul>
+      </div>
+    </section>
   </div>
 </template>
 

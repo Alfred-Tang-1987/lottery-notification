@@ -23,9 +23,14 @@ interface WinRecord {
   deadline: string | null;
 }
 
+// Filtered record with derived days-left countdown attached.
+interface WinRecordWithDays extends WinRecord {
+  _days: number | null;
+}
+
 const records = ref<WinRecord[] | null>(null);
 const error = ref('');
-const filterStatus = ref<'all' | 'pending' | 'claimed'>('all');
+const filterStatus = ref<'all' | 'pending' | 'claimed' | 'expired'>('all');
 const filterLottery = ref('');
 const loadingRecords = ref(false);
 
@@ -46,13 +51,15 @@ function buildQuery(): string {
   return `/api/comparisons?${params.toString()}`;
 }
 
-async function load() {
+async function load(): Promise<boolean> {
   loadingRecords.value = true;
   error.value = '';
   try {
     records.value = await apiGet<WinRecord[]>(buildQuery());
+    return true;
   } catch (err) {
-    error.value = err instanceof Error ? err.message : '加载失败';
+    error.value = err instanceof Error ? err.message : String(err || '加载失败');
+    return false;
   } finally {
     loadingRecords.value = false;
   }
@@ -74,7 +81,17 @@ function resetCustomDateOnPeriodChange() {
 const filtered = computed(() => {
   if (!records.value) return [];
   let list = records.value;
-  if (filterStatus.value !== 'all') {
+  if (filterStatus.value === 'expired') {
+    // 'expired' is BOTH a persisted backend terminal status (claim_status='expired',
+    // set by the 07:30 scheduler) AND a client-side derivation (pending records
+    // whose deadline has passed). Filter must match the stats card logic so the
+    // card count and the filtered list stay consistent.
+    list = list.filter(
+      (r) =>
+        r.claim_status === 'expired' ||
+        (r.claim_status === 'pending' && deadlinePassed(r.deadline))
+    );
+  } else if (filterStatus.value !== 'all') {
     list = list.filter((r) => r.claim_status === filterStatus.value);
   }
   if (filterLottery.value) {
@@ -87,10 +104,18 @@ const filtered = computed(() => {
 });
 
 const stats = computed(() => {
-  const all = records.value || [];
+  const all = filtered.value;
   const pending = all.filter((r) => r.claim_status === 'pending');
   const claimed = all.filter((r) => r.claim_status === 'claimed');
-  const expired = pending.filter((r) => r.deadline && new Date(r.deadline) < new Date());
+  // 'expired' is BOTH a persisted backend terminal status (claim_status='expired',
+  // set by the 07:30 scheduler) AND a client-side derivation (pending records
+  // whose deadline has passed). Honoring the backend status field directly
+  // ensures scheduler-expired records are surfaced, not silently dropped.
+  const expired = all.filter(
+    (r) =>
+      r.claim_status === 'expired' ||
+      (r.claim_status === 'pending' && deadlinePassed(r.deadline))
+  );
 
   const sumPrize = (list: typeof all) =>
     list.reduce((sum, r) => sum + (r.prize_amount ?? 0), 0);
@@ -107,24 +132,46 @@ const stats = computed(() => {
   };
 });
 
-async function claim(record: typeof filtered.value[number]) {
+async function claim(record: WinRecordWithDays) {
   if (!record.claim_id) return;
   try {
     await apiPost(`/claims/${record.claim_id}/claim`);
-    await load();
   } catch (err) {
-    error.value = err instanceof Error ? err.message : '领取失败';
+    error.value = err instanceof Error ? err.message : String(err || '领取失败');
+    return;
+  }
+  const refreshed = await load();
+  if (!refreshed) {
+    // Only surface an error for the genuine failure case (refresh failed). A
+    // successful claim does not need a transient message: the refreshed list
+    // already shows the record's new 已领取 badge, which is sufficient feedback
+    // and avoids rendering a success as an error-typed State (which would hide
+    // the list behind an error banner for 1.5s).
+    error.value = '领取成功但刷新失败，请手动刷新';
   }
 }
 
 function daysLeft(deadline: string | null): number | null {
   if (!deadline) return null;
-  const diff = new Date(deadline).getTime() - Date.now();
+  const d = new Date(deadline);
+  if (isNaN(d.getTime())) return null;
+  const diff = d.getTime() - Date.now();
   return Math.max(0, Math.floor(diff / (1000 * 60 * 60 * 24)));
 }
 
+// Whether a pending record's deadline has passed (client-side derivation of the
+// 'expired' terminal state for records the scheduler hasn't flipped yet).
+function deadlinePassed(deadline: string | null): boolean {
+  if (!deadline) return false;
+  const d = new Date(deadline);
+  if (isNaN(d.getTime())) return false;
+  return d.getTime() < Date.now();
+}
+
 function needsTaxHint(amount: number | null): boolean {
-  return amount != null && amount >= 1_000_000; // >=1万元（10000*100分）
+  // Hint wording is "超 1 万元" (exceeds 1万元). Tax law taxes prizes strictly
+  // above 1万元, so exactly 1万元 (1_000_000 分) must NOT trigger the hint.
+  return amount != null && amount > 1_000_000;
 }
 
 onMounted(() => {
@@ -210,6 +257,7 @@ onMounted(() => {
           <button type="button" class="filter-btn" :class="{ active: filterStatus === 'all' }" data-testid="filter-status-all" @click="filterStatus = 'all'">全部</button>
           <button type="button" class="filter-btn" :class="{ active: filterStatus === 'pending' }" data-testid="filter-status-pending" @click="filterStatus = 'pending'">待兑奖</button>
           <button type="button" class="filter-btn" :class="{ active: filterStatus === 'claimed' }" data-testid="filter-status-claimed" @click="filterStatus = 'claimed'">已领取</button>
+          <button type="button" class="filter-btn" :class="{ active: filterStatus === 'expired' }" data-testid="filter-status-expired" @click="filterStatus = 'expired'">已过期</button>
         </div>
 
         <select v-model="filterLottery" class="lottery-select" aria-label="彩种筛选">
@@ -341,38 +389,6 @@ onMounted(() => {
   align-items: center;
   margin-bottom: 20px;
   flex-wrap: wrap;
-}
-
-.filter-group {
-  display: flex;
-  gap: 8px;
-}
-
-.filter-btn {
-  padding: 8px 16px;
-  border: 1px solid var(--border);
-  border-radius: 20px;
-  background: var(--surface);
-  color: var(--muted);
-  font-size: var(--text-md);
-  cursor: pointer;
-  min-height: 44px;
-}
-
-.filter-btn.active {
-  background: var(--accent);
-  color: #fff;
-  border-color: var(--accent);
-}
-
-.lottery-select {
-  padding: 8px 12px;
-  border: 1px solid var(--border);
-  border-radius: 20px;
-  background: var(--surface);
-  color: var(--fg);
-  font-size: var(--text-md);
-  min-height: 44px;
 }
 
 .record-list {
