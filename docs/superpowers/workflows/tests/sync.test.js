@@ -68,6 +68,8 @@ test('QC-4: 关键 helper 函数体 lib.js ↔ run-plans.js 字节一致', () =>
     'groupFindingsByFile', 'formatCrossReviewerNote',
     // bootstrap task_id sanitize (2026-07-05): 防 plan-scoped task_id → 双重前缀 + 重跑
     'bareTaskId',
+    // bootstrap leaf-guard (2026-07-05): 过滤非叶子父 task（T6+T6b 共存 → drop T6）
+    'dropParentTasks',
   ]
   for (const fn of fns) {
     const libBody = extractFunctionBody(libSrc, fn)

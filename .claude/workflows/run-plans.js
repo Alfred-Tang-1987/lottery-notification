@@ -356,6 +356,17 @@ function bareTaskId(id) {
   return String(id).replace(/^plan-\d+\/+/i, '')
 }
 
+// 过滤非叶子父 task（T{N} 与 T{N}{letter} 共存 → drop T{N}）—— inline 自 lib.js（sync QC-4 守护）。
+// bootstrap 偶不遵循 leaf-first → 返回 ## Task N 父说明段 → implementor 跑说明段混乱（wf_3e729d02 T6）。
+function dropParentTasks(tasks) {
+  return tasks.filter(t => {
+    const m = String(t.id).match(/^T(\d+)$/)
+    if (!m) return true
+    const re = new RegExp(`^T${m[1]}[a-z]`)
+    return !tasks.some(x => re.test(String(x.id)))
+  })
+}
+
 // args.plan 与 plan.id/plan.seq 的宽松匹配（Bug 10）—— inline 自 lib.js
 // 容忍 string/number/padded-seq/"plan-" 前缀差异。
 function matchesPlanFilter(plan, planArg) {
@@ -595,7 +606,7 @@ Inputs: configPath={{configPath}} plansDir={{plansDir}} runTs={{runTs}}
 Steps:
 1. Read {{configPath}} → {test_command, full_test_command, build_command, lint_command, extra_lint_commands, spec_path, reference_paths, language, silent_failure_context, silent_failure_intro, lessons_path}. extra_lint_commands / reference_paths / silent_failure_context / silent_failure_intro / lessons_path are OPTIONAL (may be absent → treat as [] / [] / [] / '' / ''). If config contains lessons_path, read that file. Extract entries (each has id, title, detail). For each task in the current plan, match lessons whose title/detail keywords overlap with the task's title. Return matched lessons per task in evidence as task_lessons: [{task_id, plan_seq, lessons:[{id, title, detail}]}] (plan_seq = the plan's seq from step 3). Absent lessons_path → empty array.
 2. Config smoke: run test_command with --collect-only. 判断：命令本身不存在（command not found / No such file: pytest）→ status=failed（环境/typo）；命令存在但 collect 失败（no module named pytest / pyproject.toml 不存在 / no tests collected / 业务代码未初始化）→ 记录 'project not yet initialized' 到 summary，status 仍 ok（业务代码由后续 task 创建，预期）。
-3. For each {{plansDir}}/*.md: if frontmatter (starts with ---) read task models; else generate — extract LEAF ids (## Task N with ### Task NX children → only NX; else N), modelHint (title contains 安全|加密|认证|JWT|CSRF|Fernet|算法|比对|策略|边界|集成|接口 → opus, else omit), write frontmatter at file top. Idempotent. Record each plan's file (full path) and seq (last two digits of filename, e.g. 01). Also read write_files from frontmatter if present (format: "write_files:\n  T1:\n    - src/a.py\n    - src/b.py"). Return as task_write_files in evidence: [{task_id, plan_seq, files:[...]}] (plan_seq = this plan's seq). Absent → empty array.
+3. For each {{plansDir}}/*.md: if frontmatter (starts with ---) read task models; else generate — extract LEAF ids — **CRITICAL: 必须返回 frontmatter models: 的每一个 key（含最大的 N，如 T10），一个不漏；body 里 ## Task N 若有 ### Task NX 子 task → 只取子 task（NX），子 task 不可遗漏；## Task N 无子 task → 取 N 本身**（leaf-first: ## Task N with ### Task NX children → only NX; else N), modelHint (title contains 安全|加密|认证|JWT|CSRF|Fernet|算法|比对|策略|边界|集成|接口 → opus, else omit), write frontmatter at file top. Idempotent. Record each plan's file (full path) and seq (last two digits of filename, e.g. 01). Also read write_files from frontmatter if present (format: "write_files:\n  T1:\n    - src/a.py\n    - src/b.py"). Return as task_write_files in evidence: [{task_id, plan_seq, files:[...]}] (plan_seq = this plan's seq). Absent → empty array.
 4. git log → completed task ids via convention feat(plan-X/T-Y).
 5. git status --porcelain → dirty_tree. If dirty_tree=true (uncommitted changes from a crashed previous run, §6.2 半提交自愈): run \`git reset --hard HEAD\` to clean the working tree (orchestrator has no shell, so bootstrap must self-heal here), then re-run \`git status --porcelain\` to confirm clean; set dirty_tree=false in evidence. If git reset fails, leave dirty_tree=true and record the error in summary.
 6. For each leaf task return its model (sonnet|opus|undefined→sonnet) and title (the description text from the Task header).
@@ -1298,7 +1309,10 @@ if (boot.status !== 'ok') { return await halt(null, null, { reason: `bootstrap $
 // (plan-06/plan-06/T1) 不匹配 state.completed (plan-06/T1) → 已完成 task 误判 pending → 重跑（实战 aae0ce2 bug）。
 // 源头归一化：strip 所有 task_id 的 plan-XX/ 前缀，下游统一用裸 id 拼出正确 plan-scoped key。
 for (const p of (boot.evidence.plans || [])) {
-  if (Array.isArray(p.tasks)) for (const t of p.tasks) t.id = bareTaskId(t.id)
+  if (Array.isArray(p.tasks)) {
+    for (const t of p.tasks) t.id = bareTaskId(t.id)
+    p.tasks = dropParentTasks(p.tasks)  // P2-leaf-guard: 过滤非叶子父 task（T6+T6b 共存 → drop T6）
+  }
 }
 for (const fa of (boot.evidence.failed_approaches || [])) fa.task_id = bareTaskId(fa.task_id)
 for (const twf of (boot.evidence.task_write_files || [])) twf.task_id = bareTaskId(twf.task_id)

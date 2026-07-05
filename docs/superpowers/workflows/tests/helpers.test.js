@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, isQuotaError, errStr, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound, resolveMaxRounds, detectOscillation, distillLessonInput, applyLessonDecisions, formatLessonsForDistill, validateAmendResult, validateCheckoutResult, groupFindingsByFile, formatCrossReviewerNote, bareTaskId } from '../lib.js'
+import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, isQuotaError, errStr, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound, resolveMaxRounds, detectOscillation, distillLessonInput, applyLessonDecisions, formatLessonsForDistill, validateAmendResult, validateCheckoutResult, groupFindingsByFile, formatCrossReviewerNote, bareTaskId, dropParentTasks } from '../lib.js'
 
 const ok = { status: 'ok', diagnostics: { files_touched: ['a.py'] } }
 const ok2 = { status: 'ok', diagnostics: { files_touched: ['b.py'] } }
@@ -118,6 +118,28 @@ test('REGRESSION (2026-07-05): plan-scoped task_id 须 strip，否则 taskKey �
   const sanitized = bareTaskId('plan-06/T1')
   const taskKey = `plan-${String(6).padStart(2, '0')}/${sanitized}`
   assert.equal(taskKey, 'plan-06/T1', 'taskKey 须为单层 plan 前缀，与 completed 同形')
+})
+
+// —— dropParentTasks（bootstrap leaf-guard，过滤非叶子父 task）——
+test('dropParentTasks: T6 + T6b/T6c 共存 → drop T6（父说明段，非叶子）', () => {
+  const tasks = ['T6', 'T6b', 'T6c', 'T6d'].map(id => ({ id }))
+  assert.deepEqual(dropParentTasks(tasks).map(t => t.id), ['T6b', 'T6c', 'T6d'])
+})
+test('dropParentTasks: T6 无子 task → 保留（真叶子）', () => {
+  const tasks = ['T1', 'T2', 'T6'].map(id => ({ id }))
+  assert.deepEqual(dropParentTasks(tasks).map(t => t.id), ['T1', 'T2', 'T6'])
+})
+test('dropParentTasks: 子 task (T6b) 永远保留（不被当父）', () => {
+  const tasks = ['T6', 'T6b', 'T6g'].map(id => ({ id }))
+  assert.deepEqual(dropParentTasks(tasks).map(t => t.id), ['T6b', 'T6g'])
+})
+test('REGRESSION (2026-07-05): bootstrap 实战返回 T6+T6b..T6g+T7..T9 → drop T6，保留其余', () => {
+  // wf_3e729d02 实战：bootstrap 返回 T1,T2,T3,T4,T5,T6,T6b,T6c,T6d,T6e,T6f,T6g,T7,T8,T9
+  // T6 是「9 页面 UI 基础已完成、拆 6b-6g」父说明段，派 implementor 跑会混乱
+  const tasks = ['T1','T2','T3','T4','T5','T6','T6b','T6c','T6d','T6e','T6f','T6g','T7','T8','T9'].map(id => ({ id }))
+  const kept = dropParentTasks(tasks).map(t => t.id)
+  assert.ok(!kept.includes('T6'), 'T6 须被 drop')
+  assert.deepEqual(kept, ['T1','T2','T3','T4','T5','T6b','T6c','T6d','T6e','T6f','T6g','T7','T8','T9'])
 })
 
 // —— classifyThrown（review catch 归类）——
