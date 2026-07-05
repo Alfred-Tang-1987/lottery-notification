@@ -30,7 +30,7 @@ for (const role of ROLES) {
 test('run-plans.js inlines the new conditional-render helpers', () => {
   // QC-3: formatLessonsForDistill / applyLessonDecisions / renderLessonEntry 不再 inline
   // （SH2 后 distiller 自读写盘，orchestrator 不调用这些函数）。lib.js 真源保留。
-  for (const fn of ['formatReferencePaths', 'formatSilentFailureContext', 'formatFailedApproaches', 'formatLessons', 'formatWriteFilesScope', 'formatSchemaCheck', 'languageChecklist', 'LANGUAGE_CHECKLISTS', 'gateCommands', 'collectReviewFindings', 'formatFindings', 'matchesPlanFilter', 'classifyThrown', 'reviewHaltReason', 'reviewHaltForEmptyFailed', 'haltLikelySource', 'fixModelForRound', 'resolveMaxRounds', 'resolveLessonsAutoDistill', 'distillLessonInput', 'summarizeReviewRound']) {
+  for (const fn of ['formatReferencePaths', 'formatSilentFailureContext', 'formatFailedApproaches', 'formatLessons', 'formatWriteFilesScope', 'formatSchemaCheck', 'languageChecklist', 'LANGUAGE_CHECKLISTS', 'gateCommands', 'collectReviewFindings', 'formatFindings', 'matchesPlanFilter', 'classifyThrown', 'reviewHaltReason', 'reviewHaltForEmptyFailed', 'haltLikelySource', 'fixModelForRound', 'resolveMaxRounds', 'resolveLessonsAutoDistill', 'distillLessonInput', 'summarizeReviewRound', 'groupFindingsByFile', 'formatCrossReviewerNote']) {
     assert.match(runSrc, new RegExp(`function ${fn}|const ${fn}`), `missing helper: ${fn}`)
   }
 })
@@ -64,6 +64,8 @@ test('QC-4: 关键 helper 函数体 lib.js ↔ run-plans.js 字节一致', () =>
     'validateAmendResult', 'validateCheckoutResult',
     // Q9 新增：collectReviewFindings / summarizeReviewRound 的内部 helper（inline 复制但未被字节比较守护）
     'findingsOf', 'summarizeFinding',
+    // cross-reviewer surfacing (2026-07-05)
+    'groupFindingsByFile', 'formatCrossReviewerNote',
   ]
   for (const fn of fns) {
     const libBody = extractFunctionBody(libSrc, fn)
@@ -921,6 +923,16 @@ test('P2-3c（第 14 轮）: formatSilentFailureContext 支持自定义 intro �
       'formatSilentFailureContext 须支持 intro 参数（P2-3c）')
     assert.match(src, /Project-Specific Silent-Failure Risks/,
       'formatSilentFailureContext 默认标题须中性（P2-3c）')
+  }
+})
+
+// ===== cross-reviewer surfacing (2026-07-05) =====
+
+test('finalReport prompt 须含 cross-reviewer 分组段落', () => {
+  for (const src of [libSrc, runSrc]) {
+    const p = promptBody(src, 'finalReport')
+    assert.match(p, /Cross-Reviewer/, 'finalReport 须含 cross-reviewer 分组指引')
+    assert.match(p, /grouped by file/, 'cross-reviewer 须按文件分组')
   }
 })
 

@@ -458,6 +458,36 @@ function gateCommands(config) {
   return cmds
 }
 
+// 跨 reviewer 文件重叠检测：按 file 分组 findings → 返回分组数组。
+// 纯函数，不依赖任何映射表或 agent 调用。spec §3.1。—— inline 自 lib.js
+function groupFindingsByFile(findings) {
+  const groups = {}
+  for (const f of findings) {
+    if (!f.file) continue
+    if (!groups[f.file]) groups[f.file] = { file: f.file, sources: new Set(), findings: [] }
+    groups[f.file].sources.add(f.source)
+    groups[f.file].findings.push(f)
+  }
+  return Object.values(groups)
+}
+
+// 格式化跨 reviewer 文件重叠为 implementor 可读的注入文本。
+// 仅当某文件有 ≥2 个不同 reviewer 标记时才输出该段。spec §3.1。—— inline 自 lib.js
+function formatCrossReviewerNote(findings) {
+  const groups = groupFindingsByFile(findings).filter(g => g.sources.size >= 2)
+  if (groups.length === 0) return ''
+
+  let out = '\n## ⚠ Cross-Reviewer Overlap (≥2 reviewers flagged same file — check for conflicts)\n'
+  for (const g of groups) {
+    const srcs = [...g.sources].sort().join('/')
+    out += `\n### ${g.file} (flagged by: ${srcs})\n`
+    for (const f of g.findings) {
+      out += `- [${f.source}${f.severity ? '|' + f.severity : ''}] ${f.title}${f.fix ? ' — fix: ' + f.fix : ''}\n`
+    }
+  }
+  return out
+}
+
 // ===== SCHEMAS（inline 自 lib.js Task 5，去 export）=====
 // 注意：'agent_error' 是 orchestrator-internal sentinel，由 safeAgent 的 catch 块构造、
 // 绕过 schema 校验（agent() 抛错时不走 schema），故不入下方 status enum。
@@ -785,6 +815,7 @@ Steps:
 4. If mode=halted: run "git status --porcelain" and "git diff --stat". BEST-EFFORT — if git fails (not a repo / index corrupt), skip this section (do NOT block manifest.json write).
    If "git status --porcelain" output is non-empty, append a "## Working Tree (dirty)" section to .workflow/blocked.md with: the porcelain output (file list) + the diff --stat output (change summary) + 接手指引（implementor 改动未提交，留在工作树。选项：git diff <file> 查看 / git checkout -- <file> 丢弃 / 手动修后 git commit -m "feat(plan-X/T-Y): ..." 再全新跑续，见 USAGE.md §7.1）。
    If output is empty, append "## Working Tree (clean)" — no uncommitted changes（likely_source=gate restored 时预期如此）。
+   Also include: if the halt was due to a failed review round (not model_unavailable/agent_error/gate/commit), add a "## Cross-Reviewer Findings (grouped by file)" section to blocked.md: group all findings from the halted task's blocked_info by file, and highlight files where ≥2 reviewers reported findings with ⚠ CROSS-REVIEWER markers. This helps spot reviewer disagreements at a glance. Use the blockedInfo.raw field to extract reviewer findings — the raw field contains the diagnostics from spec/quality/hunter reviews.
 5. Lessons ({{lessonsAutoDistill}}): If lessonsAutoDistill=true AND mode=halted: lesson-distiller agent has ALREADY been invoked by orchestrator before this finalReport call — it read lessonsPath, extracted reusable root causes, and updated lessons.md itself. You do NOT need to touch lessonsPath. If distiller failed (quota/error), orchestrator logged it and proceeded — lessonsPath may be stale but manifest write must proceed. If lessonsAutoDistill=false or mode=done: lessonsPath untouched.
 6. Print a digest summary (counts: done/blocked, total tasks, per-plan gate result).
 
@@ -1059,10 +1090,11 @@ async function runTask(plan, task) {
     // maxRounds=0（无限）永不因轮数上限 halt，只靠 detectOscillation halt
     if (maxRounds !== 0 && round === maxRounds) return { halted: true, reason: 'review max rounds', diag: { spec: spec.diagnostics, qual: qual.diagnostics, hunt: hunt.diagnostics } }
     const findings = collectReviewFindings(spec, qual, hunt)
+    const fixIssues = formatFindings(findings) + formatCrossReviewerNote(findings)
     // 最后 1 轮 fix 强制 opus（有限模式 round===maxRounds-1 / 无限模式 round>=4）：
     // 难度递增，最后机会用最强 model 降低 halt 概率。maxRounds 未传向后兼容默认 3（round=2 升级）。
     const fixModel = fixModelForRound(round, model, maxRounds)
-    impl = await dispatchImpl(buildPrompt('implementor', implCtx(formatFindings(findings), `修复 review round ${round} 问题（${findings.length} 项发现：spec/quality/hunter）。`)), { schema: SCHEMAS.implementor, model: fixModel, label: `impl:${task.id}:fix${round}` }, fixModel)
+    impl = await dispatchImpl(buildPrompt('implementor', implCtx(fixIssues, `修复 review round ${round} 问题（${findings.length} 项发现：spec/quality/hunter）。`)), { schema: SCHEMAS.implementor, model: fixModel, label: `impl:${task.id}:fix${round}` }, fixModel)
     if (impl.halted) return impl
     // Bug 4: fix-round implementor 返回 blocked/failed/needs_context 时不能静默忽略——
     // 否则 orchestrator 在 stale code 上继续下一轮 review，必然重复发现同样问题 → 浪费轮次。
