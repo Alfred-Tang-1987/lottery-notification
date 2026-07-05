@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlmodel import Field
+from sqlmodel import Field, Relationship
 
 from app.models._base import TimestampMixin
 
@@ -21,7 +21,26 @@ class NotificationRule(TimestampMixin, table=True):
     user_id: int = Field(foreign_key='users.id', index=True)
     lottery_code: str = Field(foreign_key='lottery_types.code', index=True)
     strategy: str = Field(default='every', max_length=8)  # every | win_only
-    timing: str | None = None
+
+
+class NotificationSettings(TimestampMixin, table=True):
+    """Per-user global notification settings.
+
+    Spec §12.2 row 8: master_enable, path_a_enable, summary_time and
+    new_numbers_default_enabled are global per-user items, not per-lottery.
+    Storing them in a dedicated table removes denormalization drift from
+    NotificationRule rows.
+    """
+
+    __tablename__ = 'notification_settings'
+    user_id: int = Field(foreign_key='users.id', primary_key=True)
+    master_enable: bool = Field(default=True)
+    path_a_enable: bool = Field(default=True)
+    summary_time: str | None = Field(default=None, max_length=5)  # "HH:MM"
+    new_numbers_default_enabled: bool = Field(default=True)
+
+    # Relationship is optional but clarifies the one-to-one nature.
+    user: 'User' = Relationship(back_populates='notification_settings')
 
 
 class NotificationLog(TimestampMixin, table=True):

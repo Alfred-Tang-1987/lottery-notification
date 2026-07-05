@@ -33,7 +33,6 @@ _EXPECTED_NOTIFICATION_RULE_COLS = {
     'user_id',
     'lottery_code',
     'strategy',
-    'timing',
     'created_at',
 }
 _EXPECTED_NOTIFICATION_LOG_COLS = {
@@ -248,13 +247,11 @@ def test_full_notification_writeback_roundtrip(db_engine):
             user_id=user.id,
             lottery_code=lottery.code,
             strategy='win_only',
-            timing='07:00',
         )
         s.add(rule)
         s.commit()
         loaded_rule = s.get(NotificationRule, rule.id)
         assert loaded_rule.strategy == 'win_only'
-        assert loaded_rule.timing == '07:00'
 
         # log
         log = NotificationLog(

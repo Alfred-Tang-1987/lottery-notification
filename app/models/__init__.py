@@ -7,6 +7,7 @@ from app.models.comparison import Comparison, PrizeClaim
 from app.models.notification import (
     NotificationChannel,
     NotificationRule,
+    NotificationSettings,
     NotificationLog,
 )
 from app.models.health import ApiSourceHealth
@@ -26,6 +27,7 @@ __all__ = [
     'NotificationChannel',
     'NotificationLog',
     'NotificationRule',
+    'NotificationSettings',
     'PendingComparison',
     'PrizeClaim',
     'Ticket',
