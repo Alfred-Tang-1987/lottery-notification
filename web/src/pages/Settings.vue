@@ -15,7 +15,17 @@ interface NotificationRule {
   id: number;
   lottery_code: string;
   strategy: 'every' | 'win_only';
-  timing: string | null;
+}
+
+interface NotificationSettings {
+  master_enable: boolean;
+  path_a_enable: boolean;
+  summary_time: string | null;
+  new_numbers_default_enabled: boolean;
+}
+
+interface Preferences {
+  theme: 'light' | 'dark' | 'auto';
 }
 
 interface TemplatePreview {
@@ -47,6 +57,10 @@ const CHANNELS = [
   },
 ];
 
+const DEFAULT_SUMMARY_TIME = '07:00';
+const DEFAULT_DND_START = '22:00';
+const DEFAULT_DND_END = '07:00';
+
 const theme = ref<'light' | 'dark' | 'auto'>(getSavedTheme());
 
 function getSavedTheme(): 'light' | 'dark' | 'auto' {
@@ -65,15 +79,21 @@ function applyTheme(t: 'light' | 'dark' | 'auto') {
 
 const channels = ref<Channel[] | null>(null);
 const rules = ref<NotificationRule[] | null>(null);
+const settings = ref<NotificationSettings | null>(null);
 const templates = ref<TemplatePreview | null>(null);
+const preferences = ref<Preferences | null>(null);
 const loading = ref(false);
 const error = ref('');
 const saving = ref(false);
+const savingRule = ref<string | null>(null);
+const savingSettings = ref(false);
+const savingDnd = ref(false);
+const savingPrefs = ref(false);
 const forms = ref<Record<string, string>>({});
 
 // DND form
-const dndStart = ref('22:00');
-const dndEnd = ref('07:00');
+const dndStart = ref(DEFAULT_DND_START);
+const dndEnd = ref(DEFAULT_DND_END);
 const dndEnabled = ref(false);
 const dndLoading = ref(false);
 const dndError = ref('');
@@ -88,23 +108,46 @@ const strategyMap = computed(() => {
   return m;
 });
 
+const summaryTime = computed(() => {
+  return settings.value?.summary_time ?? DEFAULT_SUMMARY_TIME;
+});
+
 async function load() {
   loading.value = true;
   error.value = '';
   try {
-    const [ch, rl, tpl, dnd] = await Promise.all([
+    const [ch, rl, set, tpl, dnd, prefs] = await Promise.all([
       apiGet<Channel[]>('/channels'),
       apiGet<NotificationRule[]>('/channels/rules'),
+      apiGet<NotificationSettings>('/channels/settings').catch((e) => {
+        error.value = e instanceof Error ? `通知设置加载失败：${e.message}` : '通知设置加载失败';
+        return null;
+      }),
       apiGet<TemplatePreview>('/channels/templates'),
-      apiGet<{ enabled: boolean; start: string; end: string }>('/channels/dnd').catch(() => null),
+      apiGet<{ enabled: boolean; start: string; end: string }>('/channels/dnd').catch(
+        (e) => {
+          error.value = e instanceof Error ? `DND 加载失败：${e.message}` : 'DND 加载失败';
+          return null;
+        }
+      ),
+      apiGet<Preferences>('/channels/preferences').catch((e) => {
+        error.value =
+          e instanceof Error ? `偏好加载失败：${e.message}` : '偏好加载失败';
+        return null;
+      }),
     ]);
     channels.value = ch;
     rules.value = rl;
+    settings.value = set;
     templates.value = tpl;
     if (dnd) {
       dndEnabled.value = dnd.enabled;
       dndStart.value = dnd.start;
       dndEnd.value = dnd.end;
+    }
+    if (prefs) {
+      preferences.value = prefs;
+      applyTheme(prefs.theme);
     }
   } catch (err) {
     error.value = err instanceof Error ? err.message : '加载失败';
@@ -134,35 +177,81 @@ async function addChannel(type: 'bark' | 'feishu' | 'email') {
   }
 }
 
-function strategyFor(code: string): 'every' | 'win_only' {
-  return strategyMap.value.get(code)?.strategy ?? 'every';
+function ruleFor(code: string): NotificationRule | undefined {
+  return strategyMap.value.get(code);
 }
 
-function timingFor(code: string): string {
-  return strategyMap.value.get(code)?.timing ?? '07:00';
+function strategyFor(code: string): 'every' | 'win_only' {
+  return ruleFor(code)?.strategy ?? 'every';
 }
 
 async function onStrategyChange(code: string, strategy: 'every' | 'win_only') {
+  await upsertRule(code, { strategy });
+}
+
+async function onSummaryTimeChange(value: string) {
+  if (savingSettings.value) return;
+  savingSettings.value = true;
   try {
-    await apiPut('/channels/rules', { lottery_code: code, strategy });
+    await apiPut('/channels/settings', {
+      ...settings.value,
+      summary_time: value,
+    });
     await load();
   } catch (err) {
-    error.value = err instanceof Error ? err.message : '保存策略失败';
+    error.value = err instanceof Error ? err.message : '保存汇总时间失败';
+  } finally {
+    savingSettings.value = false;
   }
 }
 
-async function onTimingChange(code: string, timing: string) {
+async function onSettingsToggle(
+  field: 'master_enable' | 'path_a_enable' | 'new_numbers_default_enabled',
+  value: boolean
+) {
+  if (savingSettings.value || !settings.value) return;
+  savingSettings.value = true;
   try {
-    await apiPut('/channels/rules', { lottery_code: code, strategy: strategyFor(code), timing });
+    const next = { ...settings.value, [field]: value };
+    await apiPut('/channels/settings', next);
     await load();
   } catch (err) {
-    error.value = err instanceof Error ? err.message : '保存时机失败';
+    error.value = err instanceof Error ? err.message : '保存设置失败';
+  } finally {
+    savingSettings.value = false;
+  }
+}
+
+async function upsertRule(
+  code: string,
+  patch: Partial<NotificationRule> & { strategy?: 'every' | 'win_only' }
+) {
+  if (savingRule.value) return;
+  savingRule.value = code;
+  try {
+    const existing = ruleFor(code);
+    await apiPut('/channels/rules', {
+      lottery_code: code,
+      strategy: patch.strategy ?? existing?.strategy ?? 'every',
+    });
+    await load();
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : '保存规则失败';
+  } finally {
+    savingRule.value = null;
   }
 }
 
 async function saveDnd() {
+  if (savingDnd.value) return;
+  savingDnd.value = true;
   dndLoading.value = true;
   dndError.value = '';
+  const previous = {
+    enabled: dndEnabled.value,
+    start: dndStart.value,
+    end: dndEnd.value,
+  };
   try {
     await apiPost('/channels/dnd', {
       enabled: dndEnabled.value,
@@ -171,8 +260,30 @@ async function saveDnd() {
     });
   } catch (err) {
     dndError.value = err instanceof Error ? err.message : '保存失败';
+    // Roll back to last known server state on failure so the UI stays in sync.
+    dndEnabled.value = previous.enabled;
+    dndStart.value = previous.start;
+    dndEnd.value = previous.end;
   } finally {
     dndLoading.value = false;
+    savingDnd.value = false;
+  }
+}
+
+async function savePreferences(patch: Partial<Preferences>) {
+  if (savingPrefs.value) return;
+  savingPrefs.value = true;
+  try {
+    const next: Preferences = {
+      theme: patch.theme ?? preferences.value?.theme ?? 'auto',
+    };
+    await apiPost('/channels/preferences', next);
+    preferences.value = next;
+    if (patch.theme) applyTheme(patch.theme);
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : '保存偏好失败';
+  } finally {
+    savingPrefs.value = false;
   }
 }
 
@@ -230,13 +341,47 @@ onMounted(() => {
         </div>
       </section>
 
-      <!-- 推送策略（每彩种） -->
+      <!-- 推送时机 -->
       <section class="card">
         <div class="card-header">
-          <h2 class="card-title">推送策略</h2>
-          <p class="card-subtitle">按彩种设置推送规则（every / win_only）</p>
+          <h2 class="card-title">推送时机</h2>
+          <p class="card-subtitle">总开关、大奖即时简讯、次日汇总时间、免打扰时段</p>
         </div>
         <div class="card-body">
+          <div class="timing-row">
+            <label class="toggle-row">
+              <span>总开关</span>
+              <input
+                type="checkbox"
+                :checked="settings?.master_enable ?? true"
+                :disabled="savingSettings"
+                @change="onSettingsToggle('master_enable', ($event.target as HTMLInputElement).checked)"
+              />
+            </label>
+            <label class="toggle-row">
+              <span>大奖即时简讯</span>
+              <input
+                type="checkbox"
+                :checked="settings?.path_a_enable ?? true"
+                :disabled="savingSettings"
+                @change="onSettingsToggle('path_a_enable', ($event.target as HTMLInputElement).checked)"
+              />
+            </label>
+          </div>
+
+          <div class="timing-row">
+            <label class="field-inline">
+              <span class="field-label">次日汇总时间</span>
+              <input
+                type="time"
+                :value="summaryTime"
+                :disabled="savingSettings"
+                @change="onSummaryTimeChange(($event.target as HTMLInputElement).value)"
+              />
+            </label>
+            <p class="hint-text">所有彩种统一在次日该时间发送详情汇总。</p>
+          </div>
+
           <div class="rule-list">
             <div
               v-for="lottery in LOTTERIES"
@@ -249,19 +394,12 @@ onMounted(() => {
                 <span class="field-label">策略</span>
                 <select
                   :value="strategyFor(lottery.code)"
+                  :disabled="savingRule === lottery.code"
                   @change="onStrategyChange(lottery.code, ($event.target as HTMLSelectElement).value as 'every' | 'win_only')"
                 >
                   <option value="every">每期推送</option>
                   <option value="win_only">仅中奖</option>
                 </select>
-              </label>
-              <label class="rule-field">
-                <span class="field-label">汇总时间</span>
-                <input
-                  type="time"
-                  :value="timingFor(lottery.code)"
-                  @change="onTimingChange(lottery.code, ($event.target as HTMLInputElement).value)"
-                />
               </label>
             </div>
           </div>
@@ -302,23 +440,43 @@ onMounted(() => {
               v-model="dndEnabled"
               class="dnd-toggle"
               type="checkbox"
+              :disabled="savingDnd"
               @change="saveDnd"
             />
           </label>
           <div v-if="dndEnabled" class="dnd-row">
             <label class="field-inline">
               <span class="field-label">开始</span>
-              <input v-model="dndStart" type="time" @change="saveDnd" />
+              <input v-model="dndStart" type="time" :disabled="savingDnd" @change="saveDnd" />
             </label>
             <span class="dnd-sep">—</span>
             <label class="field-inline">
               <span class="field-label">结束</span>
-              <input v-model="dndEnd" type="time" @change="saveDnd" />
+              <input v-model="dndEnd" type="time" :disabled="savingDnd" @change="saveDnd" />
             </label>
           </div>
           <p class="hint-text">免打扰时段内暂停次日汇总/周月报；大奖即时简讯可破例。</p>
           <p v-if="dndError" class="error" role="alert">{{ dndError }}</p>
           <p v-if="dndLoading" class="hint-text">保存中…</p>
+        </div>
+      </section>
+
+      <!-- 偏好 -->
+      <section class="card">
+        <div class="card-header">
+          <h2 class="card-title">偏好</h2>
+        </div>
+        <div class="card-body">
+          <label class="toggle-row">
+            <span>新号码默认启用</span>
+            <input
+              type="checkbox"
+              :checked="settings?.new_numbers_default_enabled ?? true"
+              :disabled="savingSettings"
+              @change="onSettingsToggle('new_numbers_default_enabled', ($event.target as HTMLInputElement).checked)"
+            />
+          </label>
+          <p class="hint-text">开启后，新添加的号码默认参与自动比对与推送。</p>
         </div>
       </section>
 
@@ -333,7 +491,8 @@ onMounted(() => {
               type="button"
               class="theme-btn"
               :class="{ active: theme === 'light' }"
-              @click="applyTheme('light')"
+              :disabled="savingPrefs"
+              @click="savePreferences({ theme: 'light' })"
             >
               <span class="theme-icon">&#9728;</span>
               <span>浅色</span>
@@ -342,7 +501,8 @@ onMounted(() => {
               type="button"
               class="theme-btn"
               :class="{ active: theme === 'dark' }"
-              @click="applyTheme('dark')"
+              :disabled="savingPrefs"
+              @click="savePreferences({ theme: 'dark' })"
             >
               <span class="theme-icon">&#9790;</span>
               <span>深色</span>
@@ -351,7 +511,8 @@ onMounted(() => {
               type="button"
               class="theme-btn"
               :class="{ active: theme === 'auto' }"
-              @click="applyTheme('auto')"
+              :disabled="savingPrefs"
+              @click="savePreferences({ theme: 'auto' })"
             >
               <span class="theme-icon">&#9788;</span>
               <span>跟随系统</span>
@@ -471,6 +632,13 @@ select {
   cursor: not-allowed;
 }
 
+.timing-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
 .rule-list {
   display: flex;
   flex-direction: column;
@@ -479,7 +647,7 @@ select {
 
 .rule-row {
   display: grid;
-  grid-template-columns: 1fr 120px 120px;
+  grid-template-columns: 1fr 120px;
   gap: 12px;
   align-items: end;
   padding: 12px;
@@ -553,6 +721,11 @@ select {
   background: color-mix(in srgb, var(--accent) 8%, var(--surface));
 }
 
+.theme-btn:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
 .theme-icon {
   font-size: 24px;
 }
@@ -564,7 +737,7 @@ select {
   padding: 8px 0;
 }
 
-.toggle-row input[type="checkbox"] {
+.toggle-row input[type='checkbox'] {
   width: auto;
   min-height: auto;
   transform: scale(1.3);
