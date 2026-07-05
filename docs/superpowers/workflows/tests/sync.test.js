@@ -72,6 +72,8 @@ test('QC-4: 关键 helper 函数体 lib.js ↔ run-plans.js 字节一致', () =>
     'dropParentTasks',
     // bootstrap deterministic-completed (2026-07-05): git log subjects → completed 正则提取（不依赖 LLM）
     'extractCompletedFromSubjects',
+    // OSCILLATING opus 升级 + flip-flop 区分 (2026-07-05): 改进 1+2
+    'shouldEscalateOnOscillation', 'isFlipFlop',
   ]
   for (const fn of fns) {
     const libBody = extractFunctionBody(libSrc, fn)

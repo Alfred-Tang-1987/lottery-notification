@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, isQuotaError, errStr, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound, resolveMaxRounds, detectOscillation, distillLessonInput, applyLessonDecisions, formatLessonsForDistill, validateAmendResult, validateCheckoutResult, groupFindingsByFile, formatCrossReviewerNote, bareTaskId, dropParentTasks, extractCompletedFromSubjects, extractTaskKey } from '../lib.js'
+import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, isQuotaError, errStr, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound, resolveMaxRounds, detectOscillation, distillLessonInput, applyLessonDecisions, formatLessonsForDistill, validateAmendResult, validateCheckoutResult, groupFindingsByFile, formatCrossReviewerNote, bareTaskId, dropParentTasks, extractCompletedFromSubjects, extractTaskKey, shouldEscalateOnOscillation, isFlipFlop } from '../lib.js'
 
 const ok = { status: 'ok', diagnostics: { files_touched: ['a.py'] } }
 const ok2 = { status: 'ok', diagnostics: { files_touched: ['b.py'] } }
@@ -186,6 +186,46 @@ test('extractTaskKey: chore/docs/无 type → null', () => {
   assert.equal(extractTaskKey('chore(plan-06/T1): x'), null)
   assert.equal(extractTaskKey('docs: update'), null)
   assert.equal(extractTaskKey('plan-06/T1: no type'), null)
+})
+
+// —— shouldEscalateOnOscillation（改进1: OSCILLATING 触发时升级 opus 一搏）——
+test('shouldEscalateOnOscillation: 当前非 opus 且未升级过 → true（升级 opus 一搏）', () => {
+  assert.equal(shouldEscalateOnOscillation('sonnet', false), true)
+  assert.equal(shouldEscalateOnOscillation('haiku', false), true)
+})
+test('shouldEscalateOnOscillation: 已 opus → false（opus 也振荡，真 halt）', () => {
+  assert.equal(shouldEscalateOnOscillation('opus', false), false)
+})
+test('shouldEscalateOnOscillation: 已升级过 opus 仍振荡 → false（不重复升级）', () => {
+  assert.equal(shouldEscalateOnOscillation('opus', true), false)
+  assert.equal(shouldEscalateOnOscillation('sonnet', true), false)
+})
+
+// —— isFlipFlop（改进2: 区分 flip-flop vs 补充）——
+test('isFlipFlop: 同 title 跨轮反复出现 → true（flip-flop，真振荡）', () => {
+  const mk = (specFindings) => ({ spec: { status: 'failed', findings: specFindings }, quality: { status: 'ok', findings: [] }, hunter: { status: 'ok', findings: [] } })
+  const history = [
+    mk([{ title: 'missing X', severity: 'Medium' }]),
+    mk([{ title: 'missing Y', severity: 'Medium' }]),
+    mk([{ title: 'missing X', severity: 'Medium' }]), // X 重复 → flip-flop
+  ]
+  assert.equal(isFlipFlop(history), true)
+})
+test('isFlipFlop: 每轮新 title（补充）→ false（非振荡，继续）', () => {
+  const mk = (t) => ({ spec: { status: 'failed', findings: [{ title: t }] }, quality: { status: 'ok', findings: [] }, hunter: { status: 'ok', findings: [] } })
+  const history = [mk('A'), mk('B'), mk('C')]
+  assert.equal(isFlipFlop(history), false)
+})
+test('isFlipFlop: history < 2 → false（不够判定）', () => {
+  assert.equal(isFlipFlop([]), false)
+  assert.equal(isFlipFlop([{ spec: {}, quality: {}, hunter: {} }]), false)
+})
+test('isFlipFlop: 跨 reviewer 的 title 也算（quality title 在 prev.spec 出现过）', () => {
+  const history = [
+    { spec: { status: 'failed', findings: [{ title: 'shared issue' }] }, quality: { status: 'ok', findings: [] }, hunter: { status: 'ok', findings: [] } },
+    { spec: { status: 'ok', findings: [] }, quality: { status: 'failed', findings: [{ title: 'shared issue' }] }, hunter: { status: 'ok', findings: [] } },
+  ]
+  assert.equal(isFlipFlop(history), true)
 })
 
 // —— classifyThrown（review catch 归类）——

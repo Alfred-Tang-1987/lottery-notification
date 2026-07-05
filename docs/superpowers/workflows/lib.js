@@ -44,6 +44,35 @@ export function detectOscillation(filesTouchedPerRound) {
   return { oscillating: false }
 }
 
+// 改进 1 (2026-07-05): OSCILLATING 触发时是否先升级 opus 跑一轮（而非直接 halt）。
+// 当前非 opus 且未升级过 → true（升级 opus 一搏）；已升级 / 已 opus → false（真 halt）。
+// 防「无限模式 round>=4 才 opus + OSCILLATING 在 round 3 触发」挡住 opus 升级路径（实战 T6e）。
+export function shouldEscalateOnOscillation(currentModel, alreadyEscalated) {
+  if (alreadyEscalated) return false
+  return currentModel !== 'opus'
+}
+
+// 改进 2 (2026-07-05): 区分 flip-flop（同 finding title 跨轮反复 = 真振荡）vs 补充（每轮新 title）。
+// 检查 last 轮的 findings title 是否在**任意前轮**出现过（含间隔反复，如 round 1+3 同 title）。
+// 跨 reviewer 也算（quality 某 title 在前轮 spec 出现过 = 同问题反复）。全新 title → 补充。
+export function isFlipFlop(reviewHistory) {
+  if (!Array.isArray(reviewHistory) || reviewHistory.length < 2) return false
+  const last = reviewHistory[reviewHistory.length - 1]
+  const prevTitles = new Set()
+  for (let i = 0; i < reviewHistory.length - 1; i++) {
+    const round = reviewHistory[i]
+    for (const r of [round?.spec, round?.quality, round?.hunter]) {
+      for (const f of (r?.findings || [])) if (f?.title) prevTitles.add(f.title)
+    }
+  }
+  for (const r of [last?.spec, last?.quality, last?.hunter]) {
+    for (const f of (r?.findings || [])) {
+      if (f?.title && prevTitles.has(f.title)) return true
+    }
+  }
+  return false
+}
+
 export function buildPrompt(role, ctx = {}) {
   const tpl = PROMPTS[role]
   if (!tpl) throw new Error(`unknown role: ${role}`)

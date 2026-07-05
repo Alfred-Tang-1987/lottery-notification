@@ -45,6 +45,29 @@ function detectOscillation(filesTouchedPerRound) {
   }
   return { oscillating: false }
 }
+// 改进 1 (2026-07-05): OSCILLATING 触发时升级 opus 一搏 —— inline 自 lib.js（sync QC-4 守护）。
+function shouldEscalateOnOscillation(currentModel, alreadyEscalated) {
+  if (alreadyEscalated) return false
+  return currentModel !== 'opus'
+}
+// 改进 2 (2026-07-05): 区分 flip-flop（同 title 跨轮反复）vs 补充（新 title）—— inline 自 lib.js。
+function isFlipFlop(reviewHistory) {
+  if (!Array.isArray(reviewHistory) || reviewHistory.length < 2) return false
+  const last = reviewHistory[reviewHistory.length - 1]
+  const prevTitles = new Set()
+  for (let i = 0; i < reviewHistory.length - 1; i++) {
+    const round = reviewHistory[i]
+    for (const r of [round?.spec, round?.quality, round?.hunter]) {
+      for (const f of (r?.findings || [])) if (f?.title) prevTitles.add(f.title)
+    }
+  }
+  for (const r of [last?.spec, last?.quality, last?.hunter]) {
+    for (const f of (r?.findings || [])) {
+      if (f?.title && prevTitles.has(f.title)) return true
+    }
+  }
+  return false
+}
 function buildPrompt(role, ctx = {}) {
   const tpl = PROMPTS[role]
   if (!tpl) throw new Error(`unknown role: ${role}`)
@@ -938,7 +961,7 @@ async function agentWithFallback(role, ctx, labelPrefix) {
 function ensurePerTaskDefaults(entry) {
   return {
     planId: null, status: 'in_progress', model: 'sonnet', review_rounds: 0,
-    files_touched_per_round: [], review_history: [], commit_sha: null,
+    files_touched_per_round: [], review_history: [], commit_sha: null, opus_escalated: false,
     simplify_reverted: false, simplify_review_findings: [],
     destructive_review_failed: false, destructive_review_findings: [],
     concerns: [], blocked_info: null,
@@ -1114,7 +1137,20 @@ async function runTask(plan, task) {
     // 自然落进 detectOscillation 正确 halt 让人介入。单轮全绿即 review 共识，足以放行。
     if (allGreen(spec, qual, hunt)) break
     const osc = detectOscillation(state.perTask[taskKey].files_touched_per_round)
-    if (osc.oscillating) return { halted: true, reason: 'OSCILLATING', diag: osc }
+    if (osc.oscillating) {
+      // 改进 1+2 (2026-07-05): OSCILLATING 触发时升级 opus 跑一轮（改进1），区分 flip-flop vs 补充（改进2）。
+      // 防「无限模式 round>=4 才 opus + OSCILLATING 在 round 3 触发」挡住 opus 升级路径（实战 T6e）。
+      // shouldEscalateOnOscillation: 非 opus + 未升级过 → 升级；已 opus / 已升级过 → halt。
+      const flipFlop = isFlipFlop(state.perTask[taskKey].review_history || [])
+      if (shouldEscalateOnOscillation(model, state.perTask[taskKey].opus_escalated)) {
+        state.perTask[taskKey].opus_escalated = true
+        model = 'opus'
+        log(`⚠ ${task.id}: r${round} OSCILLATING (${flipFlop ? 'flip-flop 真振荡' : 'new-findings 补充'}) — escalate to opus for one more round (改进1)`)
+        // 不 halt，继续下一轮（model 已升 opus，下一轮 fix dispatch 用 opus）
+      } else {
+        return { halted: true, reason: 'OSCILLATING', diag: { ...osc, flipFlop, model } }
+      }
+    }
     // maxRounds=0（无限）永不因轮数上限 halt，只靠 detectOscillation halt
     if (maxRounds !== 0 && round === maxRounds) return { halted: true, reason: 'review max rounds', diag: { spec: spec.diagnostics, qual: qual.diagnostics, hunt: hunt.diagnostics } }
     const findings = collectReviewFindings(spec, qual, hunt)
