@@ -73,6 +73,59 @@ test('QC2: agentWithFallback 末尾 try/catch + 返回 null（Q7 第 4 轮抽象
   assert.match(defaultPart, /catch/, '环境默认 model 调用须包 try/catch')
 })
 
+// 改进 7.1 (2026-07-05): implementor 各 dispatch 点须传 retryModel='opus'。
+// 背景见 docs/superpowers/workflows/research/t6f-halt-token-limit-2026-07-05.md：
+//   T6f implementor prompt 262533 token > kimi-k2.7 router limit 262144 → router fallback
+//   也超限 → agent() 返 null → dispatchImpl 无 retryModel → model_unavailable halt。
+//   opus (glm-5.2[1M]) 1M context 能装下，retryModel='opus' 让 null 时自动升级重试一次。
+// 校验：每个 buildPrompt('implementor', ...) 行所在的 dispatchImpl 调用，
+//      若 model 参数非 'opus'（即 sonnet/haiku/fixModel），须传第 4 参 retryModel='opus'。
+test('改进7.1: implementor dispatch 调用点须传 retryModel=opus（防 token-limit halt）', () => {
+  // 按 dispatchImpl( 起始切分；每个 implementor 调用块跨越到对应 `if (impl.halted)` 或下一 dispatchImpl。
+  // 简化：取每个含 buildPrompt('implementor' 的 dispatchImpl 行起、到 `}, model[^)]*)` 或 `}, 'opus')` 闭合为止。
+  // 实际生产写法均为单行 dispatchImpl(...)，故按行扫描即可。
+  const lines = runSrc.split('\n')
+  const calls = []
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    // 命中 implementor dispatch 行（buildPrompt('implementor', ...）
+    if (/dispatchImpl\(buildPrompt\('implementor'/.test(line)) {
+      // 该 dispatchImpl 调用可能跨多行；合并直到括号配平
+      let buf = line
+      let j = i
+      while ((buf.match(/\(/g) || []).length > (buf.match(/\)/g) || []).length && j + 1 < lines.length) {
+        buf += '\n' + lines[++j]
+      }
+      // 提取 model 参数（第 3 参）与 retryModel（第 4 参，可选）
+      // dispatchImpl(PROMPT, OPTS, MODEL [, RETRYMODEL])
+      // MODEL / RETRYMODEL 出现在最后一个 }, 之后、到行尾 ) 之前，逗号分隔
+      const tail = buf.slice(buf.lastIndexOf('},') + 2).trim().replace(/\)\s*$/, '').trim()
+      // tail 形如 "model" 或 "'opus'" 或 "model, retryModel='opus' 不存在"；实际: "model" / "'opus'" / "fixModel" / "model /* c */"
+      // 也可能是 "model\n" 多行——取整段
+      const parts = tail.split(',').map(s => s.split('//')[0].trim()).filter(Boolean)
+      calls.push({
+        modelArg: parts[0] || '',
+        retryArg: parts[1] || '',
+        line: i + 1,
+        preview: line.trim().slice(0, 90),
+      })
+    }
+  }
+  assert.ok(calls.length >= 5, `须至少 5 个 implementor dispatch 点（initial/blocked-upgrade/ctx/ctx-retry/initial-retry/fix-round），实际 ${calls.length}`)
+
+  // 已是 opus 的调用点（model 含 'opus'）无需 retryModel='opus'（dispatchImpl 内 retryModel !== model 会短路）
+  // 非 opus 调用点（含 fixModel 变量 —— 它在非末轮解析为 sonnet，token-limit 同样会 halt）必须传 'opus' retryModel
+  const offenders = calls.filter(c => {
+    if (/'opus'|"opus"/.test(c.modelArg)) return false  // 已是 opus（blocked-upgrade / ctx-opus）
+    return !/'opus'|"opus"/.test(c.retryArg)             // 其余（含 fixModel）须传 retryModel='opus'
+  })
+  assert.strictEqual(offenders.length, 0, [
+    '改进7.1: 所有非 opus 的 implementor dispatch 须传 retryModel=\'opus\'（防 token-limit halt）。',
+    '以下调用点未传：',
+    ...offenders.map(c => `  L${c.line}: model=${c.modelArg} retry=${c.retryArg || '(none)'} | ${c.preview}`),
+  ].join('\n'))
+})
+
 test('SH2: distiller 是 halt() 中独立 agent 调用（S5 第 5 轮：单次 agent 调用，非 agentWithFallback）', () => {
   // S5（第 5 轮）: spec §2.4 fallback 链 [opus,sonnet,haiku] 仅用于 finalReport 保存进度；
   //   distiller 是 lesson 提炼通道（非进度保存），改用单次 agent() 调用（model: 'opus'），

@@ -1060,7 +1060,7 @@ async function runTask(plan, task) {
   // P1-11（第 6 轮）: implCtx 传 buildCommand（implementor GREEN 前跑 build 验证可构建性）。
   const implCtx = (fix, note, ctx = '') => ({ planId: plan.id, taskId: task.id, planFilePath: plan.file, specPath: cfg.spec_path, testCommand: cfg.test_command, buildCommand: cfg.build_command || '', fixIssues: fix, retryNote: note, fetchedContext: ctx, referencePaths: formatReferencePaths(cfg.reference_paths), failedApproaches: formatFailedApproaches(state.failedApproaches?.[taskKey] || []), lessons: formatLessons(state.taskLessons?.[taskKey] || []) })
   let impl
-  impl = await dispatchImpl(buildPrompt('implementor', implCtx('', '')), { schema: SCHEMAS.implementor, model, label: `impl:${task.id}` }, model)
+  impl = await dispatchImpl(buildPrompt('implementor', implCtx('', '')), { schema: SCHEMAS.implementor, model, label: `impl:${task.id}` }, model, 'opus')
   if (impl.halted) return impl
   // —— blocked 升级链：sonnet→opus→halt（§2.3）——
   if (impl.status === 'blocked') {
@@ -1080,7 +1080,7 @@ async function runTask(plan, task) {
     }), { schema: SCHEMAS.contextFetcher, label: `ctx:${task.id}` }, 'sonnet')
     if (ctxr.halted) return ctxr
     const fetchedCtx = ctxr.diagnostics?.context || ''
-    impl = await dispatchImpl(buildPrompt('implementor', implCtx('', `补充上下文后重试。`, fetchedCtx)), { schema: SCHEMAS.implementor, model, label: `impl:${task.id}:ctx` }, model)
+    impl = await dispatchImpl(buildPrompt('implementor', implCtx('', `补充上下文后重试。`, fetchedCtx)), { schema: SCHEMAS.implementor, model, label: `impl:${task.id}:ctx` }, model, 'opus')
     if (impl.halted) return impl
     // Bug 8: needs_context → blocked 时先升 opus 再 halt（mirror 初始 blocked 升级链）
     if (impl.status === 'blocked') {
@@ -1092,7 +1092,7 @@ async function runTask(plan, task) {
     }
     // Bug 9: needs_context → failed 时允许一次重试（mirror 初始 failed 路径），非直接 halt
     if (impl.status === 'failed') {
-      impl = await dispatchImpl(buildPrompt('implementor', implCtx('', '上下文补充后仍 failed，重试一次。', fetchedCtx)), { schema: SCHEMAS.implementor, model, label: `impl:${task.id}:ctx:retry` }, model)
+      impl = await dispatchImpl(buildPrompt('implementor', implCtx('', '上下文补充后仍 failed，重试一次。', fetchedCtx)), { schema: SCHEMAS.implementor, model, label: `impl:${task.id}:ctx:retry` }, model, 'opus')
       if (impl.halted) return impl
       if (impl.status !== 'ok' && impl.status !== 'done_with_concerns') return { halted: true, reason: `implementor ${impl.status} after context-fetch retry`, diag: impl.diagnostics }
     }
@@ -1100,7 +1100,7 @@ async function runTask(plan, task) {
   }
   // —— failed: retry once → halt (§4.4) ——
   if (impl.status === 'failed') {
-    impl = await dispatchImpl(buildPrompt('implementor', implCtx('', '上次 failed，重试一次。')), { schema: SCHEMAS.implementor, model, label: `impl:${task.id}:retry` }, model)
+    impl = await dispatchImpl(buildPrompt('implementor', implCtx('', '上次 failed，重试一次。')), { schema: SCHEMAS.implementor, model, label: `impl:${task.id}:retry` }, model, 'opus')
     if (impl.halted) return impl
     if (impl.status !== 'ok' && impl.status !== 'done_with_concerns') return { halted: true, reason: `implementor ${impl.status} after retry`, diag: impl.diagnostics }
   }
@@ -1158,7 +1158,7 @@ async function runTask(plan, task) {
     // 最后 1 轮 fix 强制 opus（有限模式 round===maxRounds-1 / 无限模式 round>=4）：
     // 难度递增，最后机会用最强 model 降低 halt 概率。maxRounds 未传向后兼容默认 3（round=2 升级）。
     const fixModel = fixModelForRound(round, model, maxRounds)
-    impl = await dispatchImpl(buildPrompt('implementor', implCtx(fixIssues, `修复 review round ${round} 问题（${findings.length} 项发现：spec/quality/hunter）。`)), { schema: SCHEMAS.implementor, model: fixModel, label: `impl:${task.id}:fix${round}` }, fixModel)
+    impl = await dispatchImpl(buildPrompt('implementor', implCtx(fixIssues, `修复 review round ${round} 问题（${findings.length} 项发现：spec/quality/hunter）。`)), { schema: SCHEMAS.implementor, model: fixModel, label: `impl:${task.id}:fix${round}` }, fixModel, 'opus')
     if (impl.halted) return impl
     // Bug 4: fix-round implementor 返回 blocked/failed/needs_context 时不能静默忽略——
     // 否则 orchestrator 在 stale code 上继续下一轮 review，必然重复发现同样问题 → 浪费轮次。
