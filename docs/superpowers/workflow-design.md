@@ -357,6 +357,8 @@ commit agent 在 step 2.6 用 `git diff HEAD --numstat` 检测 `deleted_code` / 
 
 **无限模式的防线**：maxRounds=0 时永不因轮数 halt，仅靠 `detectOscillation`（§13g，同文件 ≥3 round 或连续两轮完全重叠 ≥2 文件）halt。这是独立于 maxRounds 的防线，保证无限模式不会真的无限循环。
 
+**OSCILLATING 触发先升级 opus**（2026-07-05 改进 1，§13g）：detectOscillation 触发时若当前 model 非 opus + 该 task 未升级过 opus（`perTask.opus_escalated`）→ 升级 opus 跑一轮（不 halt），给 opus 一次机会；只有已 opus 仍振荡才真 halt。避免「无限模式 round>=4 才 opus + OSCILLATING 在 round 3 触发」挡住 opus 升级路径（实战 T6e：sonnet 跑 round 0-2 反复改 Settings.vue，round 3 spec 补充新 finding 触发 OSCILLATING，opus 没机会上场；改进后 round 3 触发会升 opus 跑 round 4，opus 一次修干净）。
+
 ### 5.4 lesson 自动提炼（distiller agent，2026-07-03）
 
 **问题**：旧版"halt 时自动写 lesson"产生废条目（title/detail 均为 halt reason 如 `OSCILLATING`），污染知识库；2026-07-01 改为"完全不自动写、靠人工复盘"，但人工复盘成本高、可复用知识流失。
@@ -823,7 +825,11 @@ function detectOscillation(filesTouchedPerRound) {
 }
 ```
 
-**触发动作**：振荡 → orchestrator halt（写 per-task `{status: OSCILLATING, blocked_info}` + finalReport 写盘 manifest/blocked.md + `log()` surface）。
+**触发动作**（2026-07-05 改进 1+2）：振荡检测触发后**不直接 halt**，先经两层处理：
+1. **改进 2 `isFlipFlop(reviewHistory)`**：区分 flip-flop（last 轮 findings title 在任意前轮出现过 = reviewer 真矛盾）vs 补充（每轮新 title = implementor 没修完，更强 model 能解）。跨 reviewer 也算（quality 某 title 在前轮 spec 出现过 = 同问题反复）。
+2. **改进 1 `shouldEscalateOnOscillation(currentModel, alreadyEscalated)`**：若当前 model 非 opus + 该 task `opus_escalated=false` → 升级 opus 跑一轮（`model='opus'`、`opus_escalated=true`），**不 halt**；下一轮 fix dispatch 用 opus。只有已 opus / 已升级过仍振荡 → halt（`diag.flipFlop` + `diag.model` 持久化便于排查）。
+
+halt 含义（2026-07-05 后）：**opus 也修不好**。看 `diag.flipFlop`：true = reviewer 矛盾需人工裁定（如 CLAUDE.md 两规则冲突、T7 claims 时区）；false = model 能力极限，拆 task（参照 T6b-T6g 模式，把大 task 拆成功能域子 task）。原「直接 halt」语义被前移到「opus 升级后仍振荡」——把 opus 升级路径从 OSCILLATING 手里抢回来。
 
 **⚠️ allGreen 必须在 detectOscillation 之前**（收敛误报根治，2026-07-01）：run-plans.js review rounds 循环里 `if (allGreen(spec, qual, hunt)) break` 在 `detectOscillation` 检查之前调用。否则 r3 三 reviewer 全 ok 时，先被「核心文件被审 ≥3 轮」OSCILLATING 截胡、allGreen break 永远轮不到 → 收敛误报。Plan 05 跑 T2/T5 时反复踩此（r3 全 ok 仍 halt）。提前后：
 - **收敛**（r3 全 ok）→ allGreen break 放行，不进 OSCILLATING；
