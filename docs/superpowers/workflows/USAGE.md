@@ -171,9 +171,9 @@ task 被识别为 completed 直接跳过，从第一个未 commit 的 task 接�
 `resumeFromRunId` 是 Workflow runtime 的**缓存回放**机制——它把上次 run 里**已完成的 agent 调用**
 按 `(prompt, opts)` 原样返回缓存结果，**第一个未命中缓存的 agent 起才真正重跑**。这对
 
-## 7.2 retryModel 机制：模型能力不足自动升级
+## 7.2 retryModel 机制：模型能力不足 / token-limit 自动升级
 
-**场景**：`agent()` 返回 `null` 不一定是 quota 耗尽——也可能是**模型能力不足**（如 `qwen3.7-plus` 跑复杂 bootstrap 被 router 以 "Repetitive tool calls" 400 中断，runtime 吞为 null）。旧逻辑一律视作 `model_unavailable` halt，导致弱 model 永远无法完成任务。
+**场景**：`agent()` 返回 `null` 不一定是 quota 耗尽——也可能是**模型能力不足**（如 `qwen3.7-plus` 跑复杂 bootstrap 被 router 以 "Repetitive tool calls" 400 中断，runtime 吞为 null），或 **prompt 超过 router 的 context 上限**（如 T6f implementor prompt 262533 token > kimi-k2.7 router limit 262144，router fallback 也超限 → runtime 吞为 null）。旧逻辑一律视作 `model_unavailable` halt，导致弱 / 中等 context 的 model 永远无法完成大 task。opus（`glm-5.2[1M]`）有 1M context，能装下这些大 prompt。
 
 **机制**：`dispatchImpl(prompt, opts, model, retryModel = null)` 新增第 4 参数：
 - `agent()` 返回 `null` 时，若 `retryModel` 非空且 ≠ `model`，用 `retryModel` **重试一次**
@@ -182,9 +182,13 @@ task 被识别为 completed 直接跳过，从第一个未 commit 的 task 接�
 
 **当前使用**：
 - bootstrap 调用：`dispatchImpl(..., 'sonnet', 'opus')`——sonnet 跑 bootstrap 失败时自动升级 opus
-- 其他 agent 调用（implementor/review/commit/gate）：暂不启用 retryModel，保留旧行为
+- **implementor 全部 5 个 dispatch 点：`dispatchImpl(..., model, 'opus')`（改进 7.1，2026-07-05）**
+  - initial / ctx-fetch / ctx-retry / initial-retry / fix-round 全部传 `retryModel='opus'`
+  - 防 token-limit halt：sonnet（kimi-k2.7，262144 token）跑大 task 超 context → null → 自动升级 opus（1M context）重试一次
+  - 已是 `'opus'` 的调用点（blocked-upgrade / ctx-opus 分支）：`dispatchImpl` 内 `retryModel !== model` 守护自动短路，重试 opus 无意义 → 直接 halt
+- 其他 agent 调用（review / commit / gate）：暂不启用 retryModel，保留旧行为
 
-**测试**：`docs/superpowers/workflows/tests/dispatchImpl-retry.test.js` 覆盖 8 个场景（null 无 retry / null 有 retry 成功 / retry 也 null / retry == model 跳过 / quota 错误各路径）。
+**测试**：`docs/superpowers/workflows/tests/dispatchImpl-retry.test.js` 含源码字面量断言（改进 7.1）——按行扫描所有 `buildPrompt('implementor')` dispatch 点，校验非 opus 调用点（含 `fixModel` 变量，非末轮解析为 sonnet）都传了 `'opus'` retryModel。共 9 个场景（null 无 retry / null 有 retry 成功 / retry 也 null / retry == model 跳过 / quota 错误各路径 + 改进 7.1 implementor 全覆盖）。
 
 **日志**：重试时 `log()` 打 `⚠ label: model returned null (capability failure likely), retry with retryModel`，便于定位。
 
