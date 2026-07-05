@@ -9,7 +9,7 @@ models:
   T6c: sonnet
   T6d: sonnet
   T6e: sonnet
-  T6f: sonnet
+  T6f: opus
   T6g: sonnet
   T7: sonnet
   T8: sonnet
