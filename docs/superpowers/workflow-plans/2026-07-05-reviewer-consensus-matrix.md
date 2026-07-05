@@ -465,3 +465,47 @@ for (let round = 1; ...; round++) {
 | Plan 05 T7: 3 轮 OSCILLATING halt + 考古推断分歧点 | Round 2: 仲裁 → spec 追加澄清 → fix → Round 3 全绿 |
 | `review_history` 看不出 reviewer 间矛盾 | `conflict_history[]` 显式记录双方论据 + 仲裁结果 |
 | 无 reviewer 间分歧可观测性 | manifest.json + `log()` 实时 surface |
+
+## GSTACK REVIEW REPORT
+
+**Runs**: CEO (Claude subagent) + Eng (Claude subagent) | **Status**: issues found | **Date**: 2026-07-05
+
+### Findings
+
+| # | Severity | Source | Area | Issue |
+|---|----------|--------|------|-------|
+| C1 | CRITICAL | CEO | Problem Frequency | 47 tasks completed, exactly 1 genuine reviewer conflict (Plan 05 T7). Occurrence rate ~2%. The other OSCILLATING halts were scope/planning issues, not reviewer disagreements. |
+| C2 | CRITICAL | CEO | Maintenance | Hardcoded `MAPPING` table must be synchronized with 3 review prompts that change over time. Stale mappings = silently missed conflicts or false positives. |
+| C3 | CRITICAL | Eng | Error Handling | `arb.halted` not checked before accessing `arb.verdict`. On quota error, dispatchImpl returns `{halted:true}` which has no `.verdict` → `undefined !== 'unclear'` is true → code records undefined verdict and proceeds as if arbitration succeeded. |
+| C4 | CRITICAL | Eng | Runtime Safety | Arbitrator writes spec/plan files but there is NO commit mechanism within the review loop. The plan says "commit spec/plan" in §5.5 but Section 8 pseudo-code has no commit step between arbitrator and fix-round. The next task's commit agent would bundle these unrelated changes. |
+| H1 | HIGH | CEO | Failure Mode | Arbitrator autonomously appends to spec documents. An opus agent misunderstanding the conflict and writing a wrong clarification is a single point of spec-corruption -- downstream tasks follow corrupted spec. "只追加不删改" prevents deletion but not hallucinated content. |
+| H2 | HIGH | CEO | Alternatives | A simpler alternative exists and is not evaluated: enhance `blocked.md` generation to group findings by file and flag cross-reviewer patterns (~5-10 lines, zero new agents). Surface the observability gap without building the full matrix. |
+| H3 | HIGH | Eng | Error Handling | haiku strictResolution returns null → treated as non-conflict (`continue`). Plan says `unclear` should be treated conservatively as conflict; null (agent failure) gets the OPPOSITE treatment. |
+| H4 | HIGH | Eng | Pattern Violation | `strictResolutionAgent(c)` is a bare agent call, not using `dispatchImpl`. Violates the existing codebase pattern -- misses null-guard, quota-handling, and retryModel. |
+| M1 | MEDIUM | CEO | Cost | No cost analysis. Opus arbitrator per stale conflict x 6+ remaining plans. A human spending 15 min reading enhanced `blocked.md` costs zero tokens. |
+| M2 | MEDIUM | CEO | Complexity | 3-round arbitration path: round1 detect → round2 arbitrate+commit+fix → round3 re-review. Still 3 rounds before allGreen, same as current OSCILLATING halt. Net round savings not established. |
+| M3 | MEDIUM | Eng | Undefined Symbol | `formatConflictSummary` referenced in §8 pseudo-code but never defined in §7.1 (new components list). |
+| M4 | MEDIUM | Eng | Integration | No framing in fixIssues to help implementor distinguish "fix this specific code issue" from "advisory: reviewers disagree, here is a recommendation." |
+| M5 | MEDIUM | Eng | Data Model | `conflict_history` not in `ensurePerTaskDefaults` despite plan claiming "no modification needed" in §7.3. Accessing before first write returns undefined, breaks `detectConflictStalemate`. |
+| L1 | LOW | Eng | Accuracy | §2.1 flow chart implies matrix runs before `collectReviewFindings`; actually must run after it but before `formatFindings`. |
+| L2 | LOW | Eng | Pseudo-code | `conflictRecord` used before initialization in §8 loop. |
+| L3 | LOW | Eng | Naming | "Arbitrator (haiku)" in §4.3 example text is misleading -- Round 1 uses strictResolution (not arbitration). |
+| L4 | LOW | Eng | Sync | PROMPTS key enumeration in sync.test needs `'arbitrator'` added. |
+| L5 | LOW | CEO | Risk | Arbitrator writes may violate task `writeFilesScope` boundary, causing commit agent to reject as `out_of_scope`. |
+| L6 | LOW | Eng | LikelySource | `conflict_stalemate` halt reason's `likelySource` should note potential arbitrator spec/plan edits, not just `'implementor changes'`. |
+
+### VERDICT
+
+**4 CRITICAL, 4 HIGH, 6 MEDIUM, 6 LOW findings across both reviews.**
+
+The core strategic concern (C1) is that reviewer conflict is a ~2% occurrence event, and the plan builds substantial infrastructure (~40 tests, 5 functions, 1 agent type, mapping table maintenance burden) to automate resolution. The CEO reviewer recommends a phased approach: first enhance `blocked.md` surface-only (5-10 lines, zero new agents, zero ongoing maintenance), then collect data for 3 more plans, and only build arbitration if it remains the bottleneck.
+
+The core engineering concerns (C3, C4) are fixable with existing patterns (`dispatchImpl` + null guard, dedicated commit agent dispatch), but the plan as written does not address them.
+
+**Recommended path**: 
+1. Defer the full consensus matrix
+2. Implement the "surfacing" alternative first: enhance `blocked.md` to group findings by file with `⚠ CROSS-REVIEWER` flags when two reviewers touch the same file with different stances
+3. Track for 3 plans whether enhanced blocked.md is sufficient
+4. If OSCILLATING halts remain frequent and are genuinely reviewer-conflict-driven, revisit arbitration with actual frequency data
+
+**NO UNRESOLVED DECISIONS**
