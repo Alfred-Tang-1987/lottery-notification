@@ -91,13 +91,17 @@ Workflow({
 | `plansDir` | **是** | plan 目录路径（第 7 轮 P2-7 起必填，缺失/空串 → fail-fast throw） |
 | `plan` | 否 | 限定单 plan。传 **seq**（如 `'01'`）或 **id**（如 `'plan-01'`）。不传 → 跑所有 plan |
 | `tasks` | 否 | 限定 task 子集（如 `['T1']`）。不传 → 跑该 plan 所有叶子 task |
-| `completed` | 否 | 手动覆盖已完成 task id 列表（如 `['plan-01/T1']`）。不传 → bootstrap 从 git log 提取。**双保险**：resume 时显式传已 commit 的 plan-scoped id 列表，防 bootstrap git log 漏识别（第 8 轮 #2 文档化） |
+| `completed` | 否 | 手动覆盖已完成 task id 列表（如 `['plan-01/T1']`）。**最高优先级**——runtime completed 提取三层 fallback：`args.completed` > `extractCompletedFromSubjects(git_log_subjects)`（正则，feat\|fix\|refactor）> `boot.evidence.completed`（LLM 提取，不稳定）。bootstrap agent (kimi-k2.7) 偶漏识别已 commit task（如 plan-06/T6d：feat `b08e3e7` + fix `ac28750` 都在，bootstrap evidence.completed 却漏 T6d → 已完成 task 误判 pending 重跑）。应急：`git log --oneline \| grep -oE '(feat\|fix\|refactor)\(plan-[0-9]+/T[0-9]+[a-z]?\)'` 提取完整列表传 args.completed 强制 skip。正常无需传（git_log_subjects 正则提取已确定性，2026-07-05 起 Defaults 到此机制） |
 
 ## 5. 运行流程（自动）
 
 ```
 get-ts（取时间戳）
-  → bootstrap：读 config + 给 plan 生成 frontmatter(modelHint) + git log 识别已完成 task
+  → bootstrap：读 config + 生成 frontmatter(modelHint) + git log 返回 git_log_subjects（原始 subjects）+ completed（LLM 提取，fallback）→ runtime 三层处理：
+      (a) extractCompletedFromSubjects 正则提取确定性 completed（feat|fix|refactor，不依赖 LLM）
+      (b) bareTaskId strip plan-XX/ 前缀（防 task_id 双重前缀 feat(plan-06/plan-06/T1)）
+      (c) dropParentTasks 过滤非叶子父 task（T6+T6b 共存 → drop T6，防 implementor 跑说明段）
+    详见设计文档 §13k
     （sonnet 执行，失败自动升级 opus 重试——retryModel 机制，见 §7.2）
     → for plan（args.plan 过滤）:
         for task（叶子优先，args.tasks 过滤，已完成跳过）:
@@ -293,7 +297,7 @@ plan frontmatter 的 `model` 字段决定 implementor 用 sonnet 还是 opus：
 | 文件 | 作用 |
 |---|---|
 | `.claude/workflows/run-plans.js` | orchestrator 主体（顶层 await + runTask/halt/编排；inline 复制 lib.js 的 PROMPTS/SCHEMAS/helpers） |
-| `docs/superpowers/workflows/lib.js` | 纯函数真源（leafTasks/detectOscillation/buildPrompt/SCHEMAS/PROMPTS + 条件渲染 helpers + **cross-reviewer 重叠检测**（`groupFindingsByFile` / `formatCrossReviewerNote`），55+ 测试） |
+| `docs/superpowers/workflows/lib.js` | 纯函数真源（leafTasks/detectOscillation/buildPrompt/SCHEMAS/PROMPTS + 条件渲染 helpers + cross-reviewer 重叠检测 `groupFindingsByFile`/`formatCrossReviewerNote` + **bootstrap task 识别三层防御** `bareTaskId`（sanitize task_id）/ `dropParentTasks`（leaf-guard）/ `extractCompletedFromSubjects`（确定性 completed 提取），253 测试） |
 | `docs/superpowers/workflows/tests/` | node:test 单元测试；含 `sync.test.js` 同步护栏（断言 run-plans.js 的 PROMPTS/SCHEMAS 与 lib.js 一致——改 lib 必须 sync 副本，否则测试红） |
 | `workflow.config.json` | 项目配置（命令 + spec_path） |
 | `docs/superpowers/workflow-design.md` | 设计 spec（§1-14 + cross-reviewer surfacing §13j） |

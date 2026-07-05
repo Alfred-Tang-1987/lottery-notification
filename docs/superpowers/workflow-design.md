@@ -409,13 +409,21 @@ status: active
 [首启动] bootstrap subagent:
   读 project config（§11）→ {test_command, spec_path, ...}
   读 plan files → 生成/读取 frontmatter（§13e，含叶子 task 解析规则）→ {plans: [{id, tasks:[{id, model}]}]}
-  读 git log → completed_task_ids（via commit convention feat(plan-X/T-Y)）
+  读 git log → 返回 git_log_subjects（原始 commit subjects，最多 200 条，原样复制不解析）
+              + completed（LLM 自己的提取，作 fallback）
   检查 dirty_tree（兜底，见 6.2）
-  返回 {config, plans, completed, dirty_tree}
+  返回 {config, plans, completed, git_log_subjects, dirty_tree}
                        ▼
-orchestrator 路由:
-  committed task（git log 有对应 commit）→ 跳过
-  未完成 task → 正常派发
+orchestrator 三层处理（§13k bootstrap task 识别防御）:
+  1. completed 提取（三层 fallback）:
+       args.completed（手动覆盖）
+       > extractCompletedFromSubjects(git_log_subjects)（正则 ^feat|fix|refactor\(plan-XX/TY)，确定性）
+       > boot.evidence.completed（LLM 提取，不稳定，仅 fallback）
+     —— 把"提取 completed"这件确定性的事从 LLM 拿走交给正则（2026-07-05）
+  2. task_id sanitize（bareTaskId）: strip plan-XX/ 前缀，防 taskKey 双重前缀 feat(plan-06/plan-06/T1)
+  3. leaf-guard（dropParentTasks）: T6+T6b 共存 → drop 父 T6，防 implementor 跑说明段
+                       ▼
+  committed task（completed 含）→ 跳过；未完成 task → 正常派发
 
 [崩溃后 resume] Workflow({scriptPath, resumeFromRunId: <runId>}):
   - 未改动的 agent()（同 prompt+opts）→ journal 秒回缓存
@@ -423,7 +431,7 @@ orchestrator 路由:
   - bootstrap 重新读 git log 确认 completed（git log 是 ground truth，不读 manifest）
 ```
 
-> **提交 scope 区分（infra vs business）**：bootstrap 的 `extractTaskKey` 仅识别 `feat(plan-XX/TY):` 前缀作为"已完成业务 task"（§6.1 识别约定）。workflow 自身基建改动（lib.js / run-plans.js / tests / workflow.config.json）**不得**用 `feat(plan-` 前缀——否则会被误识别为同号业务 plan 的已完成 task → bootstrap 跳过 → 漏做。基建提交约定用 `chore(workflow-NN/TN):`：`extractTaskKey` 对此前缀返回 `null` → 对 bootstrap 不可见，零碰撞风险。此约定是 `extractTaskKey` 单一识别源的对称面（emission ↔ recognition）。
+> **提交 scope 区分（infra vs business）**：bootstrap 的 `extractTaskKey` 识别 `feat|fix|refactor(plan-XX/TY):` 前缀作为"已完成业务 task"（§6.1 识别约定；2026-07-05 扩展认 fix|refactor——plan-06/T6d 既有 feat `b08e3e7` 也有 fix `ac28750`，只认 feat 会漏识别）。workflow 自身基建改动（lib.js / run-plans.js / tests / workflow.config.json）**不得**用 `feat(plan-` 前缀——否则会被误识别为同号业务 plan 的已完成 task → bootstrap 跳过 → 漏做。基建提交约定用 `chore(workflow-NN/TN):`：`extractTaskKey` 对此前缀返回 `null` → 对 bootstrap 不可见，零碰撞风险。此约定是 `extractTaskKey` 单一识别源的对称面（emission ↔ recognition）。
 
 ### 6.2 半提交状态清理（DX5）
 
@@ -861,6 +869,29 @@ function detectOscillation(filesTouchedPerRound) {
 - 不改 halt 逻辑（不新增 halt reason）
 
 **后续演进**：积累 3 个 plan 的真实冲突数据后，若频率证明仲裁有价值，重评估自动化方案。
+
+### 13k. Bootstrap Task Recognition 三层防御（2026-07-05）
+
+bootstrap agent (kimi-k2.7) 在 plan-06 跑时连续暴露 3 类 task 识别不稳定问题。每层都用 **runtime 确定性兜底**（不依赖 LLM），三层共同策略：把"提取/判断"这类确定性可正则化的事从 LLM 拿走交给纯函数，LLM 只负责"读 + 复制"。
+
+**问题 1：task_id 双重前缀**（commit `0566230`）
+bootstrap 偶返 plan-scoped task_id（`"plan-06/T1"`，frontmatter 是裸 `T1`）→ taskKey/commitSubject 再拼一层 plan 前缀 → `feat(plan-06/plan-06/T1)` + completed 比对 key (`plan-06/plan-06/T1`) 不匹配 `state.completed` (`plan-06/T1`) → 已完成 task 误判 pending → 重跑（实战 aae0ce2 bug）。
+**修复**：`bareTaskId(id)` 纯函数 strip `^plan-\d+\/+` 前缀。boot 返回后源头 sanitize 所有 task_id（plans.tasks / failed_approaches / task_write_files / task_lessons）。
+
+**问题 2：非叶子父 task 当 leaf**（commit `e50a851`）
+bootstrap 不遵循 leaf-first：把 `## Task 6`（"9 页 UI 基础已完成、拆 6b-6g" 父说明段，frontmatter 无 T6）当 leaf 返回 + 漏提 frontmatter 里的 T10。runtime 派 implementor 跑 T6 说明段，agent 困惑「maybe nothing is done yet」乱改代码（实战 wf_3e729d02）。
+**修复**：`dropParentTasks(tasks)` 纯函数——`T{N}` 与 `T{N}{letter}` 共存 → drop `T{N}`（基于返回列表判定，不需读 plan 文件）。bootstrap prompt step 3 强化（CRITICAL：必须返回 frontmatter `models:` 每个 key，含最大 N 如 T10；leaf-first 子 task 不可遗漏）。
+
+**问题 3：completed 漏识别**（commit `0cd42c6`）
+bootstrap `evidence.completed` 不稳定：plan-06/T6d 有 feat `b08e3e7` + fix `ac28750` commit，但 bootstrap 漏识别 → 已完成 task 被当 pending 重跑（实战 wf_d06b1394，用户发现「implement T6d 但 T6d 已 commit」）。根因：LLM 做「git log → task ids」提取偶漏，且只认 feat 不认 fix/refactor。
+**修复（deterministic-completed）**：把"提取 completed"这件确定性的事从 LLM 拿走交给正则。
+- bootstrap prompt step 4 改：返回 `git_log_subjects`（`git log --format=%s -n 200` 原样复制，不解析/提取/去重）
+- `extractCompletedFromSubjects(subjects)` 纯函数：正则 `^(feat|fix|refactor)\(plan-(\d+)/(T[\w-]+)\)\s*:` 提取去重
+- runtime `_rawCompleted` 三层 fallback：`args.completed`（手动覆盖）> `extractCompletedFromSubjects(git_log_subjects)`（正则）> `boot.evidence.completed`（LLM，仅 fallback）
+- `extractTaskKey` 扩展认 feat|fix|refactor（向后兼容 feat；T6d 两种 commit 都识别）
+- SCHEMAS.bootstrap evidence 加 `git_log_subjects`（required + 字段定义）
+
+**守护**：sync QC-4 字节比较 `bareTaskId`/`dropParentTasks`/`extractCompletedFromSubjects` 函数体（lib.js ↔ run-plans.js inline）；helpers.test 含三个 REGRESSION 用例（plan-06/T1 双重前缀、T6 非叶子、T6d feat+fix 漏识别）；sync S6 断言跟进 8→9 evidence 字段。
 
 ## 14. Wontfix / TODO 决策记录（第 6 轮 review 收敛）
 
