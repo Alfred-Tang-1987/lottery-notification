@@ -17,3 +17,6 @@ htmlcov/
 static/
 web/node_modules/
 graphify-out/
+
+# workflow halt 临时输出（OSCILLATING/blocked.md，halt 后过时）
+.workflow/
