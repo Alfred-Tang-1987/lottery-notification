@@ -1,9 +1,9 @@
 """Plan 06 / T6f: admin 后台管理扩展 API。
 
 在 Plan 05 / T6 admin.py 基础上追加：
-- SMTP 发件配置读取与测试发送
+- SMTP 发件配置读取、写入与测试发送
 - 邀请码创建与列表
-- 彩种启用/停用 toggle
+- 彩种列表查询与启用/停用 toggle
 - 管理员操作审计日志查询
 - 推送日志 6 维筛选 + 分页
 
@@ -13,17 +13,19 @@
 from __future__ import annotations
 
 import json
+import logging
+import secrets
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from app.api.deps import current_user, get_session_dep, require_admin, verify_csrf
-from app.config import SmtpEncryption, get_settings
+from app.config import SmtpEncryption, get_settings, reset_settings_cache
 from app.models import (
     AdminAuditLog,
     DrawResult,
@@ -35,6 +37,8 @@ from app.models import (
 from app.notifications.base import NotificationPayload
 from app.notifications.email_channel import EmailChannel
 from app.services.audit_service import write_audit
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix='/admin', tags=['admin'], dependencies=[Depends(require_admin)])
 
@@ -51,6 +55,34 @@ class SmtpConfigOut(BaseModel):
     smtp_from: str | None
     # smtp_pass 不回显
     configured: bool
+
+
+# 服务商预设（spec §12.2 row 9：QQ/网易/Gmail/自定义·选中自动填服务器/端口/加密）
+# 列表顺序固定，前端下拉按此渲染。
+SMTP_PROVIDERS: dict[str, dict[str, Any]] = {
+    'qq': {'host': 'smtp.qq.com', 'port': 465, 'encryption': 'SSL/TLS'},
+    'netease': {'host': 'smtp.163.com', 'port': 465, 'encryption': 'SSL/TLS'},
+    'gmail': {'host': 'smtp.gmail.com', 'port': 587, 'encryption': 'STARTTLS'},
+    'custom': {},  # 自定义需手动填 host/port/encryption
+}
+
+
+class SmtpConfigIn(BaseModel):
+    """SMTP 写入表单 payload（spec §12.2 row 9：服务商下拉 + 账号 + 授权码 + 保存）。
+
+    provider=qq/netease/gmail 自动填 host/port/encryption；provider=custom 需手动填。
+    account + auth_code 是必填项（spec：只填账号+授权码）。
+    from_address 缺省等于 account。
+    """
+    provider: Literal['qq', 'netease', 'gmail', 'custom'] = Field(
+        ..., description='服务商下拉，custom 需手动填 host/port/encryption',
+    )
+    account: str = Field(..., min_length=1, description='发件账号（邮箱地址）')
+    auth_code: str = Field(..., min_length=1, description='SMTP 授权码（不回显）')
+    host: str | None = Field(default=None, description='自定义服务商 SMTP host')
+    port: int | None = Field(default=None, ge=1, le=65535, description='自定义服务商 SMTP port')
+    encryption: SmtpEncryption | None = Field(default=None, description='自定义服务商加密方式')
+    from_address: str | None = Field(default=None, description='发件地址，缺省=account')
 
 
 class SmtpTestOut(BaseModel):
@@ -70,6 +102,101 @@ def get_smtp_config() -> SmtpConfigOut:
         smtp_from=s.smtp_from,
         configured=bool(s.smtp_host and s.smtp_user and s.smtp_pass and s.smtp_from),
     )
+
+
+@router.post('/smtp-config', response_model=SmtpConfigOut)
+def save_smtp_config(
+    payload: SmtpConfigIn,
+    admin: User = Depends(current_user),
+    session: Session = Depends(get_session_dep),
+    _csrf_ok: None = Depends(verify_csrf),
+) -> SmtpConfigOut:
+    """写入 SMTP 发件配置（运行时内存热更，不持久化到 .env）。
+
+    spec §12.2 row 9 要求 SMTP UI 为写入表单（服务商下拉 + 自动填 + 只填账号+授权码）。
+    本端点把 provider 预设展开为 host/port/encryption，连同 account/auth_code 写入
+    当前进程环境变量 + 重置 settings 缓存，后续 GET /admin/smtp-config 与发送邮件
+    均用新值（即时生效）。
+
+    ⚠️ 不写 .env 文件（反模式，见 lesson L-20260706T010300Z）：运行时改 .env 非原子
+    （crash 中途砖化启动）+ 密钥明文落盘 + Docker 相对路径失锚。跨重启持久化由运维
+    通过 .env / docker-compose env_file 管理；本端点只保证当前进程即时生效。
+
+    静默失败防护：写入失败立即抛 500，不静默吞错。
+    """
+    preset = SMTP_PROVIDERS.get(payload.provider, {})
+    # custom 必须手动填 host/port/encryption；preset 模式下可被显式覆盖
+    host = payload.host or preset.get('host')
+    port = payload.port or preset.get('port')
+    encryption = payload.encryption or preset.get('encryption')
+    if not host or port is None or encryption is None:
+        raise HTTPException(400, '自定义服务商需填 host/port/encryption')
+
+    from_address = payload.from_address or payload.account
+
+    # 内存热更：更新当前进程环境变量 + 重置 settings 缓存（不碰 .env 文件）
+    _apply_smtp_env(
+        host=host,
+        port=port,
+        encryption=encryption,
+        account=payload.account,
+        auth_code=payload.auth_code,
+        from_address=from_address,
+    )
+    reset_settings_cache()
+    s = get_settings()
+
+    write_audit(
+        session,
+        admin_id=admin.id,
+        action='smtp_config_save',
+        target_type='system',
+        target_id='smtp',
+        old_values={'provider': payload.provider},
+        new_values={'host': host, 'port': port, 'encryption': encryption, 'account': payload.account},
+        commit=False,
+    )
+    session.commit()
+
+    return SmtpConfigOut(
+        smtp_host=s.smtp_host,
+        smtp_port=s.smtp_port,
+        smtp_encryption=s.smtp_encryption,
+        smtp_user=s.smtp_user,
+        smtp_from=s.smtp_from,
+        configured=bool(s.smtp_host and s.smtp_user and s.smtp_pass and s.smtp_from),
+    )
+
+
+def _apply_smtp_env(
+    *,
+    host: str,
+    port: int,
+    encryption: str,
+    account: str,
+    auth_code: str,
+    from_address: str,
+) -> None:
+    """把 SMTP 配置写入当前进程环境变量（内存热更，不碰 .env 文件）。
+
+    反模式警示（lesson L-20260706T010300Z）：早期实现 _persist_smtp_env 会运行时改写
+    .env 文件，导致非原子写（crash 中途砖化启动）+ 密钥明文落盘 + Docker 相对路径失锚，
+    更曾因测试隔离不当污染用户真实 .env（覆盖 JWT_SECRET/CRYPTO_KEY_V1 等密钥）。
+    现改为纯内存热更：只更新 os.environ + 由调用方 reset_settings_cache()，让
+    get_settings() 重新读取环境变量拿到新值。跨重启持久化交运维（.env / env_file）。
+    """
+    import os
+
+    updates = {
+        'SMTP_HOST': host,
+        'SMTP_PORT': str(port),
+        'SMTP_ENCRYPTION': encryption,
+        'SMTP_USER': account,
+        'SMTP_PASS': auth_code,
+        'SMTP_FROM': from_address,
+    }
+    for key, value in updates.items():
+        os.environ[key] = value
 
 
 @router.post('/smtp-test', response_model=SmtpTestOut)
@@ -95,6 +222,7 @@ def test_smtp(
         smtp_user=s.smtp_user,  # type: ignore[arg-type]
         smtp_pass=s.smtp_pass,  # type: ignore[arg-type]
         smtp_from=s.smtp_from,  # type: ignore[arg-type]
+        smtp_encryption=s.smtp_encryption,
     )
     payload = NotificationPayload(
         title='兑奖了吗 · SMTP 测试',
@@ -142,33 +270,39 @@ def create_invite_code(
 ) -> InviteCodeOut:
     """admin 生成一个新的 6 位邀请码。
 
-    静默失败纪律： InviteService.generate 默认会开启独立 Session，但项目 engine 是
-    pool_size=1 / max_overflow=0，请求 Session 已占用唯一连接 → 嵌套 Session 会
-    QueuePool 超时死锁。因此这里直接在请求 session 内生成并 commit，与审计日志同事务。
+    静默失败纪律（lesson L-20260706T010400Z）：邀请码 insert + 审计 insert 必须同事务
+    单次 commit，否则第二次 commit 失败时邀请码落库但审计静默丢失。早期实现因
+    pool_size=1 + InviteService.generate 死锁而 split-commit（先 commit 邀请码再 commit
+    审计），此处改用 savepoint：邀请码 flush 在 begin_nested 内（冲突只回滚 savepoint
+    不毒化外层事务），审计 insert 在外层事务，最后一次 session.commit() 让两者原子落库。
     """
     now = datetime.now(UTC).replace(tzinfo=None)
+    ic: InviteCode | None = None
     for attempt in range(3):
-        code = f'{__import__("secrets").randbelow(1_000_000):06d}'
+        code = f'{secrets.randbelow(1_000_000):06d}'
         ic = InviteCode(
             code=code,
             created_by=admin.id,
             expires_at=now + timedelta(days=30),
         )
-        session.add(ic)
+        # savepoint 隔离 flush：IntegrityError（code 唯一冲突）只回滚 savepoint，
+        # 不毒化外层 session（PendingRollback），审计 insert 仍可在同事务后续执行。
         try:
-            session.flush()
+            with session.begin_nested():
+                session.add(ic)
+                session.flush()
         except IntegrityError:
-            session.rollback()
+            ic = None  # 本轮失败，重置 ic 防止误用半成品
             if attempt == 2:
                 raise HTTPException(500, '邀请码生成冲突过多，请重试') from None
             continue
-        session.commit()
-        session.refresh(ic)
-        break
-    else:
-        raise HTTPException(500, '邀请码生成失败')
+        break  # flush 成功（savepoint 释放，邀请码行仍在 pending 外层事务里）
+    # 循环正常 break 时 ic 已 flush；若三轮全冲突则上面 raise 了。生产路径禁用 assert
+    # （review round 3 finding：assert 在 -O 模式被剥离 + 不符合生产错误处理规范）。
+    if ic is None:
+        raise HTTPException(500, '邀请码生成失败：内部状态异常')
 
-    # 新建一个只读事务写审计日志（刚 commit 的 session 仍可复用）
+    # 审计 insert 在外层事务（与邀请码同事务），单次 commit 让两者原子落库
     write_audit(
         session,
         admin_id=admin.id,
@@ -177,6 +311,8 @@ def create_invite_code(
         target_id=ic.code,
         commit=False,
     )
+    session.commit()
+    session.refresh(ic)
     return InviteCodeOut(
         code=ic.code,
         created_by=ic.created_by,
@@ -221,6 +357,51 @@ class LotteryToggleOut(BaseModel):
     enabled: bool
 
 
+class LotteryOut(BaseModel):
+    """彩种配置（spec §12.2 row 9：启用/开奖日/双源三要素）。
+
+    draw_days 从 draw_schedule_json 解析；enabled 反映 DB 真实状态（前端不再硬编码 true）。
+    category 为福彩/体彩分类（welfare/sport）——spec §12.2 row 9「双源」指双源容灾
+    （MXNZP+聚合数据，spec §4.2/§7.2），所有种子彩种均双源容灾，无独立字段需渲染
+    （lesson L-20260706T010200Z：避免「双源」与 category 语义重叠导致顶替渲染）。
+    """
+    code: str
+    name: str
+    category: str
+    enabled: bool
+    draw_days: list[int]
+
+
+@router.get('/lotteries', response_model=list[LotteryOut])
+def list_lotteries(session: Session = Depends(get_session_dep)) -> list[LotteryOut]:
+    """列出所有彩种及其启用状态 + 开奖日（spec §12.2 row 9）。
+
+    供 Admin.vue 渲染真实启用状态而非硬编码 true。
+    """
+    result: list[LotteryOut] = []
+    for lt in session.exec(select(LotteryType).order_by(LotteryType.code)).all():
+        try:
+            sched = json.loads(lt.draw_schedule_json) if lt.draw_schedule_json else {}
+            draw_days = list(sched.get('draw_days', []))
+        except (json.JSONDecodeError, TypeError):
+            # hunter finding：原静默兜底 draw_days=[] 掩盖数据腐烂，运维无法察觉。
+            # 改记 warning 让损坏的 draw_schedule_json 可被监控发现（draw_days 仅展示用，
+            # 不影响比对/推送业务路径，故不 raise 中断整批列表）。
+            logger.warning(
+                'lottery %s draw_schedule_json 解析失败，回退 draw_days=[]: %r',
+                lt.code, lt.draw_schedule_json,
+            )
+            draw_days = []
+        result.append(LotteryOut(
+            code=lt.code,
+            name=lt.name,
+            category=lt.category,
+            enabled=lt.enabled,
+            draw_days=draw_days,
+        ))
+    return result
+
+
 @router.patch('/lotteries/{code}/enabled', response_model=LotteryToggleOut)
 def toggle_lottery(
     code: str,
@@ -252,16 +433,6 @@ def toggle_lottery(
 # ---------------------------------------------------------------------------
 # 推送日志 6 维筛选 + 分页
 # ---------------------------------------------------------------------------
-
-
-class PushLogFilter(BaseModel):
-    user_id: int | None = None
-    lottery_code: str | None = None
-    channel: str | None = None
-    type: str | None = None
-    status: str | None = None
-    date_from: str | None = None
-    date_to: str | None = None
 
 
 class PushLogOut(BaseModel):
@@ -297,8 +468,6 @@ def _parse_date(value: str | None) -> datetime | None:
 def filtered_push_logs(
     user_id: int | None = Query(None),
     lottery_code: str | None = Query(None),
-    channel: str | None = Query(None),
-    type: str | None = Query(None),
     status: str | None = Query(None),
     date_from: str | None = Query(None),
     date_to: str | None = Query(None),
@@ -306,17 +475,23 @@ def filtered_push_logs(
     page_size: int = Query(20, ge=1, le=100),
     session: Session = Depends(get_session_dep),
 ) -> PushLogPageOut:
-    """推送日志 6 维筛选 + 分页。
+    """推送日志筛选 + 分页。
 
-    6 维：日期/用户/彩种/渠道/类型/状态。lottery_code 来自关联 comparison.draw_result。
+    筛选维度：日期/用户/彩种/状态（4 维）。lottery_code 来自关联 comparison.draw_result。
+
+    注：spec §12.2 row 9 列「6 维筛选」含「类型/渠道」两维，但当前 NotificationLog
+    表均无独立列支撑：
+    - 「类型」（path_a/path_b）：type 列存的是通知标题（如「兑奖了吗 · 核对汇总」），
+      与前端 TYPE_OPTIONS=['path_a','path_b'] 语义不匹配。原实现用 payload.contains(type)
+      子串匹配对 path_a/path_b 永不命中，属误导性假筛选（lesson L-20260706T010500Z）。
+    - 「渠道」（bark/feishu/email）：NotificationLog 无 channel 字段，渠道信息在
+      Notifier._send_to_user_channels 内循环发送时不落库。原实现用 type == channel
+      同样是 no-op 假筛选（type 存标题，永不等于 bark/feishu/email）。
+    两维均需 DB 加列 + 迁移，超出 T6f 范围，暂移除；前端同步禁用两个下拉。
     """
     conds: list[Any] = []
     if user_id is not None:
         conds.append(NotificationLog.user_id == user_id)
-    if channel:
-        conds.append(NotificationLog.type == channel)  # type 字段存渠道/类型混合，按原型筛选语义
-    if type:
-        conds.append(NotificationLog.payload.contains(type))
     if status:
         conds.append(NotificationLog.status == status)
 
