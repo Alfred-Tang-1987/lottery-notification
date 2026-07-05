@@ -23,6 +23,13 @@ interface PushLog {
   error: string | null;
 }
 
+interface PushLogPage {
+  total: number;
+  page: number;
+  page_size: number;
+  items: PushLog[];
+}
+
 const users = ref<User[] | null>(null);
 const health = ref<{ sources: HealthSource[] } | null>(null);
 const logs = ref<PushLog[] | null>(null);
@@ -36,11 +43,11 @@ async function load() {
     const [u, h, l] = await Promise.all([
       apiGet<User[]>('/admin/users'),
       apiGet<{ sources: HealthSource[] }>('/admin/health'),
-      apiGet<PushLog[]>('/admin/push-logs?limit=20'),
+      apiGet<PushLogPage>('/admin/push-logs?page=1&page_size=20'),
     ]);
     users.value = u;
     health.value = h;
-    logs.value = l;
+    logs.value = l.items;
   } catch (err) {
     error.value = err instanceof Error ? err.message : '加载失败';
   } finally {

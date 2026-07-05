@@ -165,25 +165,31 @@ def test_admin_force_verify_writes_audit_log(db_engine, monkeypatch):
         assert log.new_values is not None and '"verified": true' in log.new_values
 
 
-def test_admin_push_logs_limit_is_capped(db_engine, monkeypatch):
-    """push-logs limit 须被限制在合理上限，防止无界查询。"""
+def test_admin_push_logs_page_size_capped(db_engine, monkeypatch):
+    """push-logs page_size 须被限制在合理上限，防止无界查询（spec §12.2 row 9）。
+
+    旧版 /push-logs（裸 list + ?limit=）已迁移至 admin_ext.py（envelope + ?page_size=）。
+    page_size 上限钳制到 [1, 100]（admin_ext Query(ge=1, le=100)）。
+    """
     with Session(db_engine) as s:
         for _i in range(5):
             s.add(NotificationLog(user_id=1, type='bark', payload='{}', status='sent'))
         s.commit()
     client = _admin_client(db_engine, monkeypatch)
-    # 请求 limit=1000 应被钳制到上限（如 500），这里上限 >= 5 即可验证钳制行为
-    r = client.get('/admin/push-logs?limit=1000')
-    assert r.status_code == 200
-    assert len(r.json()) == 5
+    # page_size=1000 超上限 → 422（Query le=100）
+    r = client.get('/admin/push-logs?page_size=1000')
+    assert r.status_code == 422
 
 
-def test_admin_push_logs_limit_negative_is_clamped(db_engine, monkeypatch):
-    """push-logs limit 非法值须被钳制到 [1, 500]。"""
+def test_admin_push_logs_envelope_shape(db_engine, monkeypatch):
+    """push-logs 返回 {total, page, page_size, items} envelope（spec §12.2 row 9）。"""
     with Session(db_engine) as s:
         s.add(NotificationLog(user_id=1, type='bark', payload='{}', status='sent'))
         s.commit()
     client = _admin_client(db_engine, monkeypatch)
-    r = client.get('/admin/push-logs?limit=0')
+    r = client.get('/admin/push-logs?page=1&page_size=20')
     assert r.status_code == 200
-    assert len(r.json()) == 1
+    data = r.json()
+    assert set(data.keys()) >= {'total', 'page', 'page_size', 'items'}
+    assert data['total'] == 1
+    assert len(data['items']) == 1

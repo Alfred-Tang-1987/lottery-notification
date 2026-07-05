@@ -203,6 +203,11 @@ from app.api.admin import router as admin_router  # noqa: E402
 
 app.include_router(admin_router)
 
+# T6f admin 后台扩展 API（Plan 06 / T6f）
+from app.api.admin_ext import router as admin_ext_router  # noqa: E402
+
+app.include_router(admin_ext_router)
+
 # 号码池 CRUD API（Plan 05 / T7）：复用 Plan 03 TicketRepo（IDOR-safe via user_id 注入）。
 from app.api.tickets import router as tickets_router  # noqa: E402
 
