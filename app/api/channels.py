@@ -1,32 +1,28 @@
-"""Plan 05 / T5：渠道配置加密写入/读取 API（spec §8.1）。
+"""Plan 05 / T5 + Plan 06 / T6e：渠道配置 + 推送策略规则 + DND + 模板预览 API。
 
-每用户配置自己的推送渠道（Bark/飞书存 webhook+key，邮箱存收件地址），config 必须
+每用户配置自己的推送渠道（Bark/飞书/邮箱存 webhook+key，邮箱存收件地址），config 必须
 **加密存储**（Fernet，config_json = {"ct": "<密文>"} + key_version 单列）。明文绝不
 落库或入日志（spec §8.1 / §10 安全要求）。
 
-写入路径必须与 Plan 04 Notifier._decrypt_config 的读取路径严格对齐——Notifier 读
-``raw['ct']``（明文拒绝）+ ``ch_row.key_version``，故本模块写入时：
-
-1. ``config_json`` 必须是 ``{"ct": "<Fernet 密文>"}``（不含明文字段）。
-2. ``key_version`` 必须记 ``CryptoService.encrypt`` 返回的真实版本号（轮换后逐条
-   re-encrypt 时据此选解密 key；若记错，推送时 Fernet 解密失败 → 该渠道永不推送 →
-   「中奖静默漏通知」spec §10）。
-
-IDOR（spec §6.3）：所有读写经 ``current_user`` 拿 user_id，SQLModel 查询一律
-``WHERE user_id == user.id``，用户只能看到/改自己的渠道。
+T6e 新增：
+- 每彩种推送规则 NotificationRule（every/win_only + timing）。
+- 用户 DND 配置持久化到 users.dnd_json。
+- 模板预览 GET /channels/templates 返回路径 A/B 示例文案。
 """
 
 import json
 import logging
+import re
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlmodel import Session, select
 
 from app.api.deps import current_user, get_session_dep, verify_csrf
 from app.config import get_settings
 from app.infrastructure.crypto import CryptoService
-from app.models import NotificationChannel, User
+from app.models import NotificationChannel, NotificationRule, User
+from app.notifications.templates import build_path_a, build_path_b
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +39,8 @@ _REQUIRED_CONFIG_KEYS: dict[str, set[str]] = {
     'email': {'address'},
 }
 
+_ALLOWED_STRATEGIES = {'every', 'win_only'}
+
 
 class ChannelOut(BaseModel):
     """渠道响应模型（id/type/config/enabled），OpenAPI schema 与返回结构一致。"""
@@ -53,13 +51,53 @@ class ChannelOut(BaseModel):
     enabled: bool
 
 
-def _validate_config(channel_type: str, config: dict) -> None:
-    """系统边界对 config 做按类型的最小结构校验（spec §10 fail-fast）。
+class RuleOut(BaseModel):
+    id: int
+    lottery_code: str
+    strategy: str
+    timing: str | None
 
-    缺必要键即 raise 400——把错误配置挡在落库前，而非存成不可用渠道（后者在推送阶段
-    会因 Notifier/Channel.send 取 config[key] 失败变成「静默漏通知」）。空对象 {} 同样拒绝。
-    必备字段集对齐各 Channel.send 实际取值的 key（见 _REQUIRED_CONFIG_KEYS）。
-    """
+
+class RuleIn(BaseModel):
+    lottery_code: str = Field(min_length=1, max_length=8)
+    strategy: str = Field(default='every', max_length=8)
+    timing: str | None = None
+
+    @field_validator('strategy')
+    @classmethod
+    def _check_strategy(cls, v: str) -> str:
+        if v not in _ALLOWED_STRATEGIES:
+            raise ValueError(f'策略必须是 {", ".join(sorted(_ALLOWED_STRATEGIES))}')
+        return v
+
+
+class DndIn(BaseModel):
+    enabled: bool
+    start: str = Field(pattern=r'^\d{2}:\d{2}$')
+    end: str = Field(pattern=r'^\d{2}:\d{2}$')
+
+    @field_validator('start', 'end')
+    @classmethod
+    def _check_time(cls, v: str) -> str:
+        hh, mm = v.split(':')
+        if not (0 <= int(hh) < 24 and 0 <= int(mm) < 60):
+            raise ValueError('时间格式无效')
+        return v
+
+
+class DndOut(BaseModel):
+    enabled: bool
+    start: str
+    end: str
+
+
+class TemplatePreview(BaseModel):
+    path_a: dict
+    path_b: dict
+
+
+def _validate_config(channel_type: str, config: dict) -> None:
+    """系统边界对 config 做按类型的最小结构校验（spec §10 fail-fast）。"""
     if not isinstance(config, dict) or not config:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, '渠道 config 不能为空')
     required = _REQUIRED_CONFIG_KEYS.get(channel_type, set())
@@ -89,23 +127,14 @@ def save_channel(
     session: Session = Depends(get_session_dep),
     _csrf_ok: None = Depends(verify_csrf),
 ) -> ChannelOut:
-    """新增渠道配置：加密 config 后落库（{"ct": <密文>} + key_version）。
-
-    已登录 state-changing 路由——挂 verify_csrf 强制 double-submit（spec §4.3），
-    与 /auth/logout 模式一致；CSRF 伪造可让攻击者把用户 webhook 改指向攻击者端点
-    劫持中奖通知、或污染配置。GET /channels 只读不挂。
-    """
+    """新增渠道配置：加密 config 后落库（{"ct": <密文>} + key_version）。"""
     if body.type not in _ALLOWED_TYPES:
-        # 早失败：未知渠道类型不浪费一次加密/落库。
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f'不支持的渠道类型: {body.type}')
-
-    # 边界校验（spec §10）：必备字段缺失即 400，避免落库成不可用渠道→推送静默漏通知。
     _validate_config(body.type, body.config)
 
     crypto = _crypto()
     plaintext = json.dumps(body.config, ensure_ascii=False)
     blob = crypto.encrypt(plaintext)
-    # config_json 严格 {"ct": ...}（对齐 Notifier._decrypt_config：raw['ct']）。
     stored = json.dumps({'ct': blob.ciphertext}, ensure_ascii=False)
     channel = NotificationChannel(
         user_id=user.id,
@@ -125,12 +154,7 @@ def list_channels(
     user: User = Depends(current_user),
     session: Session = Depends(get_session_dep),
 ) -> list[ChannelOut]:
-    """列出当前用户的全部渠道：解密 config 回明文（对齐 Notifier._decrypt_config）。
-
-    逐行的 JSON 解析、结构校验、解密统一包进同一 try/except——单行坏数据（手改 DB /
-    非 JSON config_json / 密文损坏 / key_version 失配 / Fernet key 轮换错位）记 WARNING
-    后 continue，健康行照常返回，绝不让单条坏数据让整张渠道列表 500（spec §10 可靠性）。
-    """
+    """列出当前用户的全部渠道：解密 config 回明文。"""
     crypto = _crypto()
     rows = session.exec(
         select(NotificationChannel).where(NotificationChannel.user_id == user.id)
@@ -141,7 +165,6 @@ def list_channels(
             raw = json.loads(ch.config_json)
             ct = raw.get('ct')
             if ct is None:
-                # 明文/异常结构：与 Notifier 一致地跳过（不解密、不爆栈），不泄露给前端。
                 continue
             plaintext = crypto.decrypt((ch.key_version, ct))
             out.append(
@@ -153,14 +176,8 @@ def list_channels(
                 )
             )
         except Exception:
-            # 对齐 Notifier._decrypt_config（notifier.py:277-287）：JSON 解析失败 / 密文损坏
-            # / key_version 失配 / Fernet key 轮换错位时跳过该行，记 WARNING 含 channel 标识
-            # 便于运维定位，而非让单条坏数据让整张渠道列表 500——否则用户无法加载列表、
-            # 运维只能从前端报错察觉。
             logger.warning(
-                'channel_decrypt_failed user_id=%s channel_id=%s type=%s key_version=%s '
-                '（config_json 非法 / 密文损坏 / key_version 失配 / Fernet key 轮换错位，'
-                '该渠道已从列表跳过）',
+                'channel_decrypt_failed user_id=%s channel_id=%s type=%s key_version=%s',
                 user.id,
                 ch.id,
                 ch.type,
@@ -169,3 +186,148 @@ def list_channels(
             )
             continue
     return out
+
+
+# ---------------------------------------------------------------------------
+# T6e: notification rules
+# ---------------------------------------------------------------------------
+
+
+@router.get('/rules', response_model=list[RuleOut])
+def list_rules(
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session_dep),
+) -> list[RuleOut]:
+    """列出当前用户的全部推送规则。"""
+    rows = session.exec(
+        select(NotificationRule).where(NotificationRule.user_id == user.id)
+    ).all()
+    return [
+        RuleOut(
+            id=r.id,
+            lottery_code=r.lottery_code,
+            strategy=r.strategy,
+            timing=r.timing,
+        )
+        for r in rows
+    ]
+
+
+@router.put('/rules', response_model=RuleOut)
+def upsert_rule(
+    body: RuleIn,
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session_dep),
+    _csrf_ok: None = Depends(verify_csrf),
+) -> RuleOut:
+    """新增/更新每彩种推送规则。同一 (user, lottery_code) 只保留一行。"""
+    existing = session.exec(
+        select(NotificationRule).where(
+            NotificationRule.user_id == user.id,
+            NotificationRule.lottery_code == body.lottery_code,
+        )
+    ).first()
+    if existing is None:
+        existing = NotificationRule(user_id=user.id, lottery_code=body.lottery_code)
+        session.add(existing)
+    existing.strategy = body.strategy
+    existing.timing = body.timing
+    session.commit()
+    session.refresh(existing)
+    return RuleOut(
+        id=existing.id,
+        lottery_code=existing.lottery_code,
+        strategy=existing.strategy,
+        timing=existing.timing,
+    )
+
+
+@router.delete('/rules/{rule_id}', response_model=dict[str, bool])
+def delete_rule(
+    rule_id: int,
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session_dep),
+    _csrf_ok: None = Depends(verify_csrf),
+) -> dict[str, bool]:
+    """删除当前用户的某条推送规则。"""
+    rule = session.get(NotificationRule, rule_id)
+    if rule is None or rule.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, '规则不存在')
+    session.delete(rule)
+    session.commit()
+    return {'ok': True}
+
+
+# ---------------------------------------------------------------------------
+# T6e: DND
+# ---------------------------------------------------------------------------
+
+
+@router.get('/dnd', response_model=DndOut)
+def get_dnd(
+    user: User = Depends(current_user),
+) -> DndOut:
+    """读取当前用户的 DND 配置。"""
+    dnd = _parse_dnd(user.dnd_json)
+    return DndOut(enabled=dnd['enabled'], start=dnd['start'], end=dnd['end'])
+
+
+@router.post('/dnd', response_model=DndOut)
+def save_dnd(
+    body: DndIn,
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session_dep),
+    _csrf_ok: None = Depends(verify_csrf),
+) -> DndOut:
+    """保存当前用户的 DND 配置。"""
+    user.dnd_json = json.dumps(
+        {'enabled': body.enabled, 'start': body.start, 'end': body.end},
+        ensure_ascii=False,
+    )
+    session.add(user)
+    session.commit()
+    return DndOut(enabled=body.enabled, start=body.start, end=body.end)
+
+
+def _parse_dnd(raw: str | None) -> dict:
+    """解析用户 DND 配置；损坏/缺失时回退默认。"""
+    default = {'enabled': False, 'start': '22:00', 'end': '07:00'}
+    if not raw:
+        return default
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict) and 'enabled' in parsed and 'start' in parsed and 'end' in parsed:
+            return parsed
+    except Exception:
+        pass
+    return default
+
+
+# ---------------------------------------------------------------------------
+# T6e: template preview
+# ---------------------------------------------------------------------------
+
+
+@router.get('/templates', response_model=TemplatePreview)
+def template_preview(
+    user: User = Depends(current_user),
+) -> TemplatePreview:
+    """返回路径 A/B 推送模板示例文案。"""
+    path_a = build_path_a(
+        lottery_name='双色球',
+        draw_no='2026150',
+        tier_name='二等奖',
+        tier=2,
+        amount=None,
+    )
+    path_b = build_path_b(
+        date_str='2026-01-01',
+        total=3,
+        wins=1,
+        win_details=[('双色球', '二等奖', None)],
+        loses=2,
+    )
+    return TemplatePreview(
+        path_a={'title': path_a.title, 'body': path_a.body},
+        path_b={'title': path_b.title, 'body': path_b.body},
+    )

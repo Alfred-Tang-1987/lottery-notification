@@ -11,3 +11,4 @@ class User(TimestampMixin, table=True):
     role: str = Field(default='user', max_length=16)  # user | admin
     invite_code: str = Field(max_length=16, index=True)  # 注册时用的码
     enabled: bool = Field(default=True)
+    dnd_json: str | None = Field(default=None)  # {"enabled":bool,"start":"HH:MM","end":"HH:MM"}
