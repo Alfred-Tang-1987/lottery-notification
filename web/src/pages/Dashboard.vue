@@ -36,28 +36,67 @@ interface Summary {
   net: number;
   win_count: number;
   ticket_count: number;
+  win_rate: number;
+  welfare_contribution: number;
+}
+
+interface CalendarItem {
+  lottery_code: string;
+  lottery_name: string;
+  category: string;
+  draw_days: number[];
+  next_draw_date: string | null;
+}
+
+interface AgencyItem {
+  name: string;
+  address: string;
+  category: string;
+  lat: number;
+  lng: number;
+  distance_m: number | null;
+}
+
+interface Hit {
+  id: number;
+  lottery_name: string;
+  draw_no: string;
+  prize_tier: number | null;
+  prize_amount: number | null;
+  claim_status: string | null;
 }
 
 interface DashboardData {
   latest_draws: LatestDraw[];
   pending_claims: PendingClaim[];
-  recent_hits: unknown[];
+  recent_hits: Hit[];
   summary: Summary;
 }
 
 const router = useRouter();
 const data = ref<DashboardData | null>(null);
+const calendar = ref<CalendarItem[] | null>(null);
+const agencies = ref<AgencyItem[] | null>(null);
 const loading = ref(false);
 const error = ref('');
 
 const hasClaims = computed(() => (data.value?.pending_claims.length ?? 0) > 0);
 const hasDraws = computed(() => (data.value?.latest_draws.length ?? 0) > 0);
+const hasCalendar = computed(() => (calendar.value?.length ?? 0) > 0);
+const hasAgencies = computed(() => (agencies.value?.length ?? 0) > 0);
 
 async function load() {
   loading.value = true;
   error.value = '';
   try {
-    data.value = await apiGet<DashboardData>('/api/dashboard');
+    const [dash, cal, ag] = await Promise.all([
+      apiGet<DashboardData>('/api/dashboard'),
+      apiGet<CalendarItem[]>('/api/dashboard/calendar'),
+      apiGet<AgencyItem[]>('/api/dashboard/agencies'),
+    ]);
+    data.value = dash;
+    calendar.value = cal;
+    agencies.value = ag;
   } catch (err) {
     error.value = err instanceof Error ? err.message : '加载失败';
   } finally {
@@ -67,6 +106,15 @@ async function load() {
 
 async function gotoClaim(claimId: number) {
   await router.push(`/wins?claim=${claimId}`);
+}
+
+function openMapUrl(lat: number, lng: number): string {
+  // High-level map intent compatible with iOS Safari and desktop; user can choose preferred app
+  return `https://maps.apple.com/?ll=${lat},${lng}&q=${encodeURIComponent(lat + ',' + lng)}`;
+}
+
+function openMap(agency: AgencyItem) {
+  window.open(openMapUrl(agency.lat, agency.lng), '_blank');
 }
 
 onMounted(() => {
@@ -139,7 +187,31 @@ onMounted(() => {
         </div>
       </section>
 
-      <!-- 盈亏速览 -->
+      <!-- 我的命中（D5 第二优先级） -->
+      <section v-if="data.recent_hits && data.recent_hits.length > 0" class="card" aria-labelledby="hits-title">
+        <div class="card-header">
+          <h2 id="hits-title" class="card-title">我的命中</h2>
+        </div>
+        <div class="card-body">
+          <div class="hits-grid">
+            <article v-for="hit in data.recent_hits" :key="hit.id" class="hit-card">
+              <div class="hit-header">
+                <span class="hit-lottery">{{ hit.lottery_name }}</span>
+                <span class="hit-draw">第{{ hit.draw_no }}期</span>
+              </div>
+              <div class="hit-tier" v-if="hit.prize_tier">{{ hit.prize_tier }}等奖</div>
+              <div class="hit-amount">{{ fmtMoney(hit.prize_amount) }}</div>
+              <div class="hit-status">
+                <span v-if="hit.claim_status === 'claimed'" class="tag claimed">已领取</span>
+                <span v-else-if="hit.claim_status === 'pending'" class="tag pending">待兑奖</span>
+                <span v-else class="tag none">无兑奖</span>
+              </div>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- 盈亏速览（D5 第三优先级，含公益贡献卡） -->
       <section class="card" aria-labelledby="summary-title">
         <div class="card-header">
           <h2 id="summary-title" class="card-title">盈亏速览</h2>
@@ -165,34 +237,17 @@ onMounted(() => {
               <div class="stat-value">{{ data.summary.ticket_count }}</div>
             </div>
           </div>
-        </div>
-      </section>
-
-      <!-- 我的命中 -->
-      <section v-if="data.recent_hits && data.recent_hits.length > 0" class="card" aria-labelledby="hits-title">
-        <div class="card-header">
-          <h2 id="hits-title" class="card-title">我的命中</h2>
-        </div>
-        <div class="card-body">
-          <div class="hits-grid">
-            <article v-for="hit in data.recent_hits" :key="hit.id" class="hit-card">
-              <div class="hit-header">
-                <span class="hit-lottery">{{ hit.lottery_name }}</span>
-                <span class="hit-draw">第{{ hit.draw_no }}期</span>
-              </div>
-              <div class="hit-tier" v-if="hit.prize_tier">{{ hit.prize_tier }}等奖</div>
-              <div class="hit-amount">{{ fmtMoney(hit.prize_amount) }}</div>
-              <div class="hit-status">
-                <span v-if="hit.claim_status === 'claimed'" class="tag claimed">已领取</span>
-                <span v-else-if="hit.claim_status === 'pending'" class="tag pending">待兑奖</span>
-                <span v-else class="tag none">无兑奖</span>
-              </div>
-            </article>
+          <div class="welfare-card" v-if="data.summary.welfare_contribution != null">
+            <div>
+              <div class="welfare-label">公益贡献</div>
+              <div class="welfare-hint">按各彩种公益金比例累计</div>
+            </div>
+            <div class="welfare-value">{{ fmtMoney(data.summary.welfare_contribution) }}</div>
           </div>
         </div>
       </section>
 
-      <!-- 开奖概览 -->
+      <!-- 开奖概览（D5 第四优先级） -->
       <section v-if="hasDraws" class="card" aria-labelledby="draws-title">
         <div class="card-header">
           <div>
@@ -223,6 +278,62 @@ onMounted(() => {
               <div v-else class="source-tag ok">双源校验</div>
             </article>
           </div>
+        </div>
+      </section>
+
+      <!-- 开奖日历（D5 次屏） -->
+      <section v-if="hasCalendar" class="card" aria-labelledby="calendar-title">
+        <div class="card-header">
+          <div>
+            <h2 id="calendar-title" class="card-title">开奖日历</h2>
+            <p class="card-subtitle">按已启用彩种过滤 · 下一期预告</p>
+          </div>
+        </div>
+        <div class="card-body">
+          <ul class="calendar-list" role="list">
+            <li v-for="item in calendar" :key="item.lottery_code" class="calendar-item">
+              <div class="calendar-main">
+                <span class="calendar-name">{{ item.lottery_name }}</span>
+                <span class="calendar-category" :class="item.category">
+                  {{ item.category === 'welfare' ? '福彩' : '体彩' }}
+                </span>
+              </div>
+              <div class="calendar-next">
+                <span v-if="item.next_draw_date">{{ fmtShortDate(item.next_draw_date) }}</span>
+                <span v-else class="calendar-none">—</span>
+              </div>
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- 附近代销点（D5 次屏，MVP mock） -->
+      <section v-if="hasAgencies" class="card" aria-labelledby="agencies-title">
+        <div class="card-header">
+          <div>
+            <h2 id="agencies-title" class="card-title">附近代销点</h2>
+            <p class="card-subtitle">便民查询 · 点击打开地图导航</p>
+          </div>
+        </div>
+        <div class="card-body">
+          <ul class="agency-list" role="list">
+            <li
+              v-for="agency in agencies"
+              :key="agency.name"
+              class="agency-item"
+            >
+              <button type="button" class="agency-card" @click="openMap(agency)">
+                <div class="agency-main">
+                  <span class="agency-name">{{ agency.name }}</span>
+                  <span class="agency-category" :class="agency.category">
+                    {{ agency.category === 'welfare' ? '福彩' : '体彩' }}
+                  </span>
+                </div>
+                <div class="agency-address">{{ agency.address }}</div>
+                <div v-if="agency.distance_m != null" class="agency-distance">{{ agency.distance_m }} 米</div>
+              </button>
+            </li>
+          </ul>
         </div>
       </section>
     </template>
@@ -438,6 +549,33 @@ onMounted(() => {
   color: var(--danger);
 }
 
+.welfare-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 16px;
+  padding: 16px 18px;
+  background: var(--surface-2);
+  border-radius: 16px;
+}
+
+.welfare-label {
+  font-size: var(--text-sm);
+  color: var(--muted);
+}
+
+.welfare-hint {
+  font-size: var(--text-xs);
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.welfare-value {
+  font-size: var(--text-xl);
+  font-weight: 600;
+  color: var(--success);
+}
+
 .hits-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
@@ -508,5 +646,83 @@ onMounted(() => {
 .tag.none {
   background: #f3f4f6;
   color: var(--muted);
+}
+
+.calendar-list,
+.agency-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.calendar-item,
+.agency-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  background: var(--surface-2);
+  border-radius: 14px;
+  width: 100%;
+  text-align: left;
+  border: none;
+  cursor: pointer;
+}
+
+.calendar-main,
+.agency-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.calendar-name,
+.agency-name {
+  font-weight: 600;
+}
+
+.calendar-category,
+.agency-category {
+  font-size: var(--text-xs);
+  padding: 2px 8px;
+  border-radius: 20px;
+  font-weight: 600;
+}
+
+.calendar-category.welfare,
+.agency-category.welfare {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.calendar-category.sport,
+.agency-category.sport {
+  background: #dbeafe;
+  color: #1e40af;
+}
+
+.calendar-next {
+  font-size: var(--text-sm);
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.calendar-none {
+  color: var(--muted);
+}
+
+.agency-address {
+  font-size: var(--text-sm);
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+.agency-distance {
+  font-size: var(--text-xs);
+  color: var(--muted);
+  margin-top: 2px;
 }
 </style>

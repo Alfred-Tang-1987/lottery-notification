@@ -12,7 +12,7 @@
  * - update:numbers: 选中号码变化（immutable update）
  */
 import { computed } from "vue";
-import { getLotteryRange, frontNumbers, backNumbers } from "../lib/lotteries";
+import { frontNumbers, backNumbers } from "../lib/lotteries";
 
 const props = defineProps<{
   numbers: number[];
@@ -23,8 +23,6 @@ const props = defineProps<{
 const emit = defineEmits<{
   "update:numbers": [numbers: number[]];
 }>();
-
-const range = computed(() => getLotteryRange(props.lotteryCode));
 
 const pool = computed(() => {
   if (props.zone === "front") return frontNumbers(props.lotteryCode);
