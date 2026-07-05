@@ -70,6 +70,8 @@ test('QC-4: 关键 helper 函数体 lib.js ↔ run-plans.js 字节一致', () =>
     'bareTaskId',
     // bootstrap leaf-guard (2026-07-05): 过滤非叶子父 task（T6+T6b 共存 → drop T6）
     'dropParentTasks',
+    // bootstrap deterministic-completed (2026-07-05): git log subjects → completed 正则提取（不依赖 LLM）
+    'extractCompletedFromSubjects',
   ]
   for (const fn of fns) {
     const libBody = extractFunctionBody(libSrc, fn)
@@ -485,12 +487,15 @@ test('S5（第 5 轮）: distiller 须用单次 agent 调用（非 agentWithFall
   assert.match(runSrc, /agent\(buildPrompt\('lessonDistiller'/, 'distiller 须用单次 agent 调用（S5）')
 })
 
-test('S6（第 5 轮）: SCHEMAS.bootstrap evidence required 须含 8 字段（§13c）', () => {
+test('S6（第 5 轮）+ P3（2026-07-05）: SCHEMAS.bootstrap evidence required 须含 9 字段（§13c + deterministic-completed）', () => {
   // S6: spec §13c 标注 8 个 evidence 必填字段，但 schema required 仅 4 个
   //   修：required 补齐 in_progress/failed_approaches/task_lessons/task_write_files
+  // P3 (2026-07-05): 加 git_log_subjects（bootstrap 返回原始 commit subjects，
+  //   runtime 用 extractCompletedFromSubjects 正则提取 completed，不依赖 LLM）
   for (const src of [libSrc, runSrc]) {
-    assert.match(src, /required:\s*\['config',\s*'plans',\s*'completed',\s*'dirty_tree',\s*'in_progress',\s*'failed_approaches',\s*'task_lessons',\s*'task_write_files'\]/, 'SCHEMAS.bootstrap.evidence.required 须含 8 字段（S6，§13c）')
+    assert.match(src, /required:\s*\['config',\s*'plans',\s*'completed',\s*'git_log_subjects',\s*'dirty_tree',\s*'in_progress',\s*'failed_approaches',\s*'task_lessons',\s*'task_write_files'\]/, 'SCHEMAS.bootstrap.evidence.required 须含 9 字段（含 git_log_subjects，P3）')
     assert.match(src, /in_progress:\s*\{\s*type:\s*'boolean'\s*\}/, 'SCHEMAS.bootstrap 须含 in_progress 字段定义（S6）')
+    assert.match(src, /git_log_subjects:\s*\{\s*type:\s*'array',\s*items:\s*\{\s*type:\s*'string'\s*\}\s*\}/, 'SCHEMAS.bootstrap 须含 git_log_subjects 字段定义（P3 deterministic-completed）')
   }
 })
 

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, isQuotaError, errStr, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound, resolveMaxRounds, detectOscillation, distillLessonInput, applyLessonDecisions, formatLessonsForDistill, validateAmendResult, validateCheckoutResult, groupFindingsByFile, formatCrossReviewerNote, bareTaskId, dropParentTasks } from '../lib.js'
+import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, isQuotaError, errStr, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound, resolveMaxRounds, detectOscillation, distillLessonInput, applyLessonDecisions, formatLessonsForDistill, validateAmendResult, validateCheckoutResult, groupFindingsByFile, formatCrossReviewerNote, bareTaskId, dropParentTasks, extractCompletedFromSubjects, extractTaskKey } from '../lib.js'
 
 const ok = { status: 'ok', diagnostics: { files_touched: ['a.py'] } }
 const ok2 = { status: 'ok', diagnostics: { files_touched: ['b.py'] } }
@@ -140,6 +140,52 @@ test('REGRESSION (2026-07-05): bootstrap 实战返回 T6+T6b..T6g+T7..T9 → dro
   const kept = dropParentTasks(tasks).map(t => t.id)
   assert.ok(!kept.includes('T6'), 'T6 须被 drop')
   assert.deepEqual(kept, ['T1','T2','T3','T4','T5','T6b','T6c','T6d','T6e','T6f','T6g','T7','T8','T9'])
+})
+
+// —— extractCompletedFromSubjects（git log subjects → completed，确定性正则提取）——
+test('extractCompletedFromSubjects: 认 feat|fix|refactor 三种 type（去重）', () => {
+  const subjects = [
+    'feat(plan-06/T6d): MyStats 双饼图',
+    'fix(plan-06/T6d): address review',   // fix 也认（T6d 既有 feat 也有 fix）
+    'feat(plan-06/T6e): Settings',
+    'refactor(plan-05/T3): rename',
+    'chore(plan-06/T1): x',                // chore 不认
+    'feat(plan-06/T6d): duplicate',        // 去重
+  ]
+  assert.deepEqual(extractCompletedFromSubjects(subjects).sort(),
+    ['plan-05/T3', 'plan-06/T6d', 'plan-06/T6e'])
+})
+test('extractCompletedFromSubjects: 空数组/非数组 → []', () => {
+  assert.deepEqual(extractCompletedFromSubjects([]), [])
+  assert.deepEqual(extractCompletedFromSubjects(null), [])
+  assert.deepEqual(extractCompletedFromSubjects('not array'), [])
+})
+test('extractCompletedFromSubjects: 无 (plan-X/T-Y) scope 的 commit 忽略', () => {
+  assert.deepEqual(extractCompletedFromSubjects(['Merge pull request #1', 'docs: update', 'feat: no scope']), [])
+})
+test('REGRESSION (2026-07-05): plan-06/T6d feat+fix commit 都识别（bootstrap LLM 漏 T6d）', () => {
+  // bootstrap agent (kimi-k2.7) evidence.completed 漏 T6d，但 git log 有 feat+fix commit。
+  // runtime 改用 extractCompletedFromSubjects(git_log_subjects) 后，T6d 由正则确定性识别。
+  const subjects = [
+    'feat(plan-06/T6d): MyStats 双饼图+月柱图+中奖率/公益卡（ECharts dispose）',
+    'fix(plan-06/T6d): pending_amount display + datetime UTC alignment',
+    'feat(plan-06/T6e): Settings',
+  ]
+  const completed = extractCompletedFromSubjects(subjects)
+  assert.ok(completed.includes('plan-06/T6d'), 'T6d 须被正则识别（不依赖 LLM）')
+  assert.ok(completed.includes('plan-06/T6e'))
+})
+
+// —— extractTaskKey（commit subject → task key，扩展认 fix|refactor）——
+test('extractTaskKey: feat|fix|refactor 都认', () => {
+  assert.equal(extractTaskKey('feat(plan-06/T1): x'), 'plan-06/T1')
+  assert.equal(extractTaskKey('fix(plan-06/T6d): y'), 'plan-06/T6d')
+  assert.equal(extractTaskKey('refactor(plan-05/T3): z'), 'plan-05/T3')
+})
+test('extractTaskKey: chore/docs/无 type → null', () => {
+  assert.equal(extractTaskKey('chore(plan-06/T1): x'), null)
+  assert.equal(extractTaskKey('docs: update'), null)
+  assert.equal(extractTaskKey('plan-06/T1: no type'), null)
 })
 
 // —— classifyThrown（review catch 归类）——

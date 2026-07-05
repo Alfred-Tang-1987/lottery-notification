@@ -367,6 +367,17 @@ function dropParentTasks(tasks) {
   })
 }
 
+// 从 git log subjects 正则提取 completed task keys —— inline 自 lib.js（sync QC-4 守护）。
+// 把"提取 completed"从 LLM 拿走交给正则（kimi-k2.7 偶漏 task 如 plan-06/T6d）。自包含，便于 inline。
+function extractCompletedFromSubjects(subjects) {
+  const out = new Set()
+  for (const s of (Array.isArray(subjects) ? subjects : [])) {
+    const m = String(s).match(/^(?:feat|fix|refactor)\(plan-(\d+)\/(T[\w-]+)\)\s*:/i)
+    if (m) out.add(`plan-${m[1]}/${m[2]}`)
+  }
+  return [...out]
+}
+
 // args.plan 与 plan.id/plan.seq 的宽松匹配（Bug 10）—— inline 自 lib.js
 // 容忍 string/number/padded-seq/"plan-" 前缀差异。
 function matchesPlanFilter(plan, planArg) {
@@ -538,8 +549,8 @@ const SCHEMAS = {
     type: 'object', required: ['status', 'evidence'], additionalProperties: true,
     properties: {
       status: { type: 'string', enum: ['ok', 'failed', 'blocked'] },
-      evidence: { type: 'object', required: ['config', 'plans', 'completed', 'dirty_tree', 'in_progress', 'failed_approaches', 'task_lessons', 'task_write_files'],
-        properties: { config: { type: 'object' }, plans: { type: 'array' }, completed: { type: 'array' }, dirty_tree: { type: 'boolean' }, in_progress: { type: 'boolean' }, failed_approaches: { type: 'array', items: { type: 'object', required: ['task_id', 'plan_seq', 'reason', 'error'], properties: { task_id: { type: 'string' }, plan_seq: { type: 'integer' }, reason: { type: 'string' }, error: { type: 'string' } } } }, task_write_files: { type: 'array' }, task_lessons: { type: 'array' } } },
+      evidence: { type: 'object', required: ['config', 'plans', 'completed', 'git_log_subjects', 'dirty_tree', 'in_progress', 'failed_approaches', 'task_lessons', 'task_write_files'],
+        properties: { config: { type: 'object' }, plans: { type: 'array' }, completed: { type: 'array' }, git_log_subjects: { type: 'array', items: { type: 'string' } }, dirty_tree: { type: 'boolean' }, in_progress: { type: 'boolean' }, failed_approaches: { type: 'array', items: { type: 'object', required: ['task_id', 'plan_seq', 'reason', 'error'], properties: { task_id: { type: 'string' }, plan_seq: { type: 'integer' }, reason: { type: 'string' }, error: { type: 'string' } } } }, task_write_files: { type: 'array' }, task_lessons: { type: 'array' } } },
       diagnostics: { type: 'object' }, summary: { type: 'string' },
     },
   },
@@ -607,7 +618,7 @@ Steps:
 1. Read {{configPath}} → {test_command, full_test_command, build_command, lint_command, extra_lint_commands, spec_path, reference_paths, language, silent_failure_context, silent_failure_intro, lessons_path}. extra_lint_commands / reference_paths / silent_failure_context / silent_failure_intro / lessons_path are OPTIONAL (may be absent → treat as [] / [] / [] / '' / ''). If config contains lessons_path, read that file. Extract entries (each has id, title, detail). For each task in the current plan, match lessons whose title/detail keywords overlap with the task's title. Return matched lessons per task in evidence as task_lessons: [{task_id, plan_seq, lessons:[{id, title, detail}]}] (plan_seq = the plan's seq from step 3). Absent lessons_path → empty array.
 2. Config smoke: run test_command with --collect-only. 判断：命令本身不存在（command not found / No such file: pytest）→ status=failed（环境/typo）；命令存在但 collect 失败（no module named pytest / pyproject.toml 不存在 / no tests collected / 业务代码未初始化）→ 记录 'project not yet initialized' 到 summary，status 仍 ok（业务代码由后续 task 创建，预期）。
 3. For each {{plansDir}}/*.md: if frontmatter (starts with ---) read task models; else generate — extract LEAF ids — **CRITICAL: 必须返回 frontmatter models: 的每一个 key（含最大的 N，如 T10），一个不漏；body 里 ## Task N 若有 ### Task NX 子 task → 只取子 task（NX），子 task 不可遗漏；## Task N 无子 task → 取 N 本身**（leaf-first: ## Task N with ### Task NX children → only NX; else N), modelHint (title contains 安全|加密|认证|JWT|CSRF|Fernet|算法|比对|策略|边界|集成|接口 → opus, else omit), write frontmatter at file top. Idempotent. Record each plan's file (full path) and seq (last two digits of filename, e.g. 01). Also read write_files from frontmatter if present (format: "write_files:\n  T1:\n    - src/a.py\n    - src/b.py"). Return as task_write_files in evidence: [{task_id, plan_seq, files:[...]}] (plan_seq = this plan's seq). Absent → empty array.
-4. git log → completed task ids via convention feat(plan-X/T-Y).
+4. git log → 运行 git log --format=%s -n 200，**原样复制**每个 commit subject 第一行到 git_log_subjects（string[]，最多 200 条）。**不要解析、提取、转换、过滤、去重**——orchestrator 用正则从 subjects 确定性提取 completed，你只负责忠实复制 git log 输出。同时仍返回 completed（你最好的 task-id 提取，作 fallback，但不再作为单一事实源）。
 5. git status --porcelain → dirty_tree. If dirty_tree=true (uncommitted changes from a crashed previous run, §6.2 半提交自愈): run \`git reset --hard HEAD\` to clean the working tree (orchestrator has no shell, so bootstrap must self-heal here), then re-run \`git status --porcelain\` to confirm clean; set dirty_tree=false in evidence. If git reset fails, leave dirty_tree=true and record the error in summary.
 6. For each leaf task return its model (sonnet|opus|undefined→sonnet) and title (the description text from the Task header).
 7. If runs/ directory exists: scan runs/*/manifest.json files. For each, read per_task object. For each task_id in per_task that has blocked_info, extract {task_id, plan_seq (the plan sequence this task belongs to, from the task_id prefix 'plan-<seq>/T-Y' or from the plan context), reason (from blocked_info.reason), error (from blocked_info.last_error)}. Filter to task_ids that match leaf tasks in the current plans. Return as failed_approaches in evidence. Also check if any task has status='in_progress' → in_progress=true (else false). If runs/ does not exist → failed_approaches=[], in_progress=false.
@@ -1324,7 +1335,14 @@ state.plans = boot.evidence.plans
 // task（Plan 01/02 都有 T1-T10）会让 Plan 02 的 T2 被 Plan 01 的 T2 误 skip → domain layer 残缺。
 // plan-scoped key 修复：见下方比对 `plan-${plan.seq}/${task.id}`。
 // args.completed 可手动覆盖（resume 时显式传已 commit 的 plan-scoped id 列表，双保险）。
-const _rawCompleted = (Array.isArray(args.completed) && args.completed.length ? args.completed : boot.evidence.completed) || []
+// P3-deterministic-completed (2026-07-05): completed 提取从 LLM 拿走交给正则。
+// 优先 args.completed（手动覆盖）；其次 extractCompletedFromSubjects(git_log_subjects)
+// （确定性正则，bootstrap 返回原始 subjects）；最后 boot.evidence.completed（LLM 提取，仅 fallback）。
+const _rawCompleted = (Array.isArray(args.completed) && args.completed.length
+  ? args.completed
+  : (Array.isArray(boot.evidence.git_log_subjects) && boot.evidence.git_log_subjects.length
+      ? extractCompletedFromSubjects(boot.evidence.git_log_subjects)
+      : boot.evidence.completed)) || []
 state.completed = normalizeCompleted(_rawCompleted)
 // 跨 session 失败方案追踪：按 plan-scoped taskKey 索引存入 state，供 implCtx 注入 implementor prompt
 // P1-2（第 13 轮）: bootstrap 返回的 task_id 可能是裸 T1 或 plan-scoped；统一归一化为 plan-scoped key，防跨 plan 同名 task 查找失败
