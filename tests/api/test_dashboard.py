@@ -544,6 +544,152 @@ def test_dashboard_custom_period_with_date_range(db_engine):
     assert summary['total_cost'] == 200, f"Expected 200 (custom range), got {summary['total_cost']}"
 
 
+# -----------------------------
+# T6g: 开奖日历 + 附近代销点（spec §12.2 row 2）
+# -----------------------------
+
+
+def test_calendar_requires_auth(db_engine):
+    """未登录 GET /api/dashboard/calendar → 401。"""
+    client = _client(db_engine)
+    r = client.get('/api/dashboard/calendar')
+    assert r.status_code == 401
+
+
+def test_calendar_returns_enabled_lotteries_schedule(db_engine):
+    """GET /api/dashboard/calendar 返回**启用**彩种的开奖日程 + 预告。
+
+    draw_days 用 Python weekday（0=周一…6=周日）。返回字段须含：
+    - lottery_code / lottery_name / category
+    - draw_days（list[int]，0-6）
+    - next_draw_date（ISO date 字符串， YYYY-MM-DD，从今天起最近一个匹配 weekday）
+
+    禁用彩种（enabled=False）不应出现。
+    """
+    with Session(db_engine) as s:
+        s.add(LotteryType(
+            code='ssq', name='双色球', category='welfare',
+            spec_json='{}', draw_schedule_json='{"draw_days": [1, 3, 6]}',
+            enabled=True,
+        ))
+        s.add(LotteryType(
+            code='dlt', name='大乐透', category='sport',
+            spec_json='{}', draw_schedule_json='{"draw_days": [0, 2, 5]}',
+            enabled=True,
+        ))
+        # Disabled lottery — must NOT appear in response
+        s.add(LotteryType(
+            code='qlc', name='七乐彩', category='welfare',
+            spec_json='{}', draw_schedule_json='{"draw_days": [0, 2, 4]}',
+            enabled=False,
+        ))
+        s.commit()
+
+    uid = _make_user(db_engine, 'cal_user')
+    client = _auth_client(db_engine, uid)
+    r = client.get('/api/dashboard/calendar')
+    assert r.status_code == 200, r.text
+    items = r.json()
+    assert isinstance(items, list)
+    assert len(items) == 2, f'Expected 2 enabled lotteries, got {len(items)}'
+
+    by_code = {it['lottery_code']: it for it in items}
+    assert set(by_code.keys()) == {'ssq', 'dlt'}, 'disabled qlc must be filtered out'
+
+    # Each item exposes schedule + next preview
+    ssq = by_code['ssq']
+    assert ssq['lottery_name'] == '双色球'
+    assert ssq['category'] == 'welfare'
+    assert ssq['draw_days'] == [1, 3, 6]
+    # next_draw_date must be an ISO date today-or-future and fall on a declared weekday
+    assert isinstance(ssq['next_draw_date'], str)
+    next_dt = datetime.strptime(ssq['next_draw_date'], '%Y-%m-%d').date()
+    today = datetime.now(_CST).date()
+    assert next_dt >= today, f'next_draw_date {next_dt} should be today or future'
+    # Python weekday: 0=Mon…6=Sun
+    assert next_dt.weekday() in [1, 3, 6], (
+        f'next_draw_date weekday {next_dt.weekday()} not in declared draw_days [1,3,6]'
+    )
+
+
+def test_calendar_handles_missing_draw_schedule(db_engine):
+    """彩种 draw_schedule_json 缺失或非法 JSON 时该彩种仍返回（draw_days=[]），不整体 500。"""
+    with Session(db_engine) as s:
+        s.add(LotteryType(
+            code='ssq', name='双色球', category='welfare',
+            spec_json='{}', draw_schedule_json='',  # empty / missing
+            enabled=True,
+        ))
+        s.commit()
+
+    uid = _make_user(db_engine, 'cal_empty')
+    client = _auth_client(db_engine, uid)
+    r = client.get('/api/dashboard/calendar')
+    assert r.status_code == 200, r.text
+    items = r.json()
+    assert len(items) == 1
+    assert items[0]['draw_days'] == []
+    assert items[0]['next_draw_date'] is None  # no schedule → no preview
+
+
+def test_agencies_requires_auth(db_engine):
+    """未登录 GET /api/dashboard/agencies → 401。"""
+    client = _client(db_engine)
+    r = client.get('/api/dashboard/agencies')
+    assert r.status_code == 401
+
+
+def test_agencies_returns_mock_list_with_category(db_engine):
+    """GET /api/dashboard/agencies 返回 MVP mock 代销点列表。
+
+    Spec §12.2 row 2 / §5.4：MVP 可 mock；按 category=welfare|sport 过滤；
+    每条含 name / address / category / lat / lng / distance_m（导航/定位字段齐全）。
+    无 category 参数 → 返回全部。
+    """
+    uid = _make_user(db_engine, 'agency_user')
+    client = _auth_client(db_engine, uid)
+
+    # No filter → all
+    r = client.get('/api/dashboard/agencies')
+    assert r.status_code == 200, r.text
+    all_items = r.json()
+    assert isinstance(all_items, list)
+    assert len(all_items) >= 2, 'mock should return at least 2 agencies'
+    # Each item has navigation/POI fields
+    for it in all_items:
+        assert {'name', 'address', 'category', 'lat', 'lng'} <= set(it.keys()), (
+            f'agency missing required fields: {it}'
+        )
+        assert it['category'] in ('welfare', 'sport')
+
+    categories_present = {it['category'] for it in all_items}
+    assert categories_present == {'welfare', 'sport'}, (
+        f'mock should cover both categories, got {categories_present}'
+    )
+
+    # Filter welfare
+    r = client.get('/api/dashboard/agencies?category=welfare')
+    assert r.status_code == 200
+    welfare = r.json()
+    assert len(welfare) >= 1
+    assert all(it['category'] == 'welfare' for it in welfare), 'welfare filter broken'
+
+    # Filter sport
+    r = client.get('/api/dashboard/agencies?category=sport')
+    assert r.status_code == 200
+    sport = r.json()
+    assert len(sport) >= 1
+    assert all(it['category'] == 'sport' for it in sport), 'sport filter broken'
+
+
+def test_agencies_rejects_invalid_category(db_engine):
+    """非法 category 值 → 422（Query pattern validation）。"""
+    uid = _make_user(db_engine, 'agency_bad')
+    client = _auth_client(db_engine, uid)
+    r = client.get('/api/dashboard/agencies?category=invalid')
+    assert r.status_code == 422
+
+
 def test_dashboard_monthly_returns_last_12_months(db_engine):
     """GET /api/dashboard/monthly 返回最近12个月的投入/中奖月数据。"""
     _seed_lottery(db_engine)

@@ -366,6 +366,147 @@ def _recent_hits(session: Session, user_id: int, period: str = 'month', lottery_
     return hits
 
 
+class CalendarItemOut(BaseModel):
+    """开奖日历单条（spec §12.2 row 2）：彩种开奖日程 + 下一期预告。"""
+
+    lottery_code: str
+    lottery_name: str
+    category: str
+    draw_days: list[int] = Field(description='开奖日（Python weekday: 0=周一…6=周日）')
+    next_draw_date: str | None = Field(
+        default=None,
+        description='下一期开奖日（YYYY-MM-DD），从今天起最近的 draw_day；无日程则为 null',
+    )
+
+
+class AgencyOut(BaseModel):
+    """附近代销点（spec §12.2 row 2 / §5.4）：MVP mock，POI 数据源待接入。"""
+
+    name: str
+    address: str
+    category: str = Field(description='welfare=福彩 / sport=体彩')
+    lat: float
+    lng: float
+    distance_m: int | None = Field(default=None, description='距用户距离（米）；MVP mock 可为空')
+
+
+# MVP mock 代销点（spec §5.4：高德/百度 POI 待接入，MVP mock 可）。
+# 坐标用北京参考点；前端拿到后可直接调起地图导航。
+_MOCK_AGENCIES: list[AgencyOut] = [
+    AgencyOut(
+        name='中国福利彩票（朝阳路销售厅）',
+        address='北京市朝阳区朝阳路 XX 号',
+        category='welfare',
+        lat=39.9242,
+        lng=116.4987,
+        distance_m=320,
+    ),
+    AgencyOut(
+        name='中国福利彩票（双井店）',
+        address='北京市朝阳区双井桥东路南',
+        category='welfare',
+        lat=39.8963,
+        lng=116.4647,
+        distance_m=850,
+    ),
+    AgencyOut(
+        name='中国体育彩票（建国路网点）',
+        address='北京市朝阳区建国路 XX 号',
+        category='sport',
+        lat=39.9082,
+        lng=116.4870,
+        distance_m=540,
+    ),
+    AgencyOut(
+        name='中国体育彩票（大望路店）',
+        address='北京市朝阳区大望路 XX 号',
+        category='sport',
+        lat=39.9098,
+        lng=116.5074,
+        distance_m=1100,
+    ),
+]
+
+
+def _compute_next_draw_date(draw_days: list[int], today: datetime) -> str | None:
+    """从今天起最近一个匹配的 draw_day（Python weekday），返回 ISO date 字符串。
+
+    draw_days 为空 → None。today 取 naive CST date 对齐用户视角。
+    """
+    valid = sorted({d for d in draw_days if isinstance(d, int) and 0 <= d <= 6})
+    if not valid:
+        return None
+    today_date = today.replace(hour=0, minute=0, second=0, microsecond=0)
+    for offset in range(0, 8):  # 一周内必中
+        candidate = today_date + timedelta(days=offset)
+        if candidate.weekday() in valid:
+            return candidate.strftime('%Y-%m-%d')
+    return None  # 不可达；兜底
+
+
+def _parse_draw_days(draw_schedule_json: str | None) -> list[int]:
+    """从 draw_schedule_json 提取 draw_days；非法/空 JSON → []。"""
+    if not draw_schedule_json:
+        return []
+    try:
+        data = json.loads(draw_schedule_json)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    days = data.get('draw_days') if isinstance(data, dict) else None
+    if not isinstance(days, list):
+        return []
+    return [d for d in days if isinstance(d, int)]
+
+
+@router.get('/calendar', response_model=list[CalendarItemOut])
+def dashboard_calendar(
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session_dep),
+) -> list[CalendarItemOut]:
+    """开奖日历：返回**启用**彩种的开奖日程 + 下一期预告日（spec §12.2 row 2）。
+
+    仅返回 enabled=True 的彩种（按启用彩种过滤）。draw_days 从 draw_schedule_json 解析；
+    缺失/非法的彩种仍返回（draw_days=[]，next_draw_date=null），不阻断整体响应。
+    next_draw_date 取 naive CST 视角的"今天起最近一个 draw_day"。
+    """
+    rows = session.exec(
+        select(LotteryType).where(LotteryType.enabled == True)  # noqa: E712
+    ).all()
+
+    today = datetime.now(_CST).replace(tzinfo=None)
+    items: list[CalendarItemOut] = []
+    for lt in sorted(rows, key=lambda x: x.code):
+        days = _parse_draw_days(lt.draw_schedule_json)
+        items.append(
+            CalendarItemOut(
+                lottery_code=lt.code,
+                lottery_name=lt.name,
+                category=lt.category,
+                draw_days=days,
+                next_draw_date=_compute_next_draw_date(days, today),
+            )
+        )
+    return items
+
+
+@router.get('/agencies', response_model=list[AgencyOut])
+def dashboard_agencies(
+    category: str | None = Query(None, pattern='^(welfare|sport)$'),
+    user: User = Depends(current_user),
+) -> list[AgencyOut]:
+    """附近代销点（spec §12.2 row 2 / §5.4）：MVP mock 数据。
+
+    - 无 category → 返回全部
+    - category=welfare → 仅福彩；category=sport → 仅体彩
+    - 非法 category → 422（Query pattern）
+
+    POI 数据源（高德/百度地图）待后续接入；当前用固定 mock 供前端联调。
+    """
+    if category is None:
+        return list(_MOCK_AGENCIES)
+    return [a for a in _MOCK_AGENCIES if a.category == category]
+
+
 class MonthlyPointOut(BaseModel):
     month: str  # "2026-01"
     cost: int
