@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, isQuotaError, errStr, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound, resolveMaxRounds, detectOscillation, distillLessonInput, applyLessonDecisions, formatLessonsForDistill, validateAmendResult, validateCheckoutResult, groupFindingsByFile, formatCrossReviewerNote, bareTaskId, dropParentTasks, extractCompletedFromSubjects, extractTaskKey, shouldEscalateOnOscillation, isFlipFlop } from '../lib.js'
+import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, isQuotaError, errStr, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound, resolveMaxRounds, detectOscillation, distillLessonInput, applyLessonDecisions, formatLessonsForDistill, validateAmendResult, validateCheckoutResult, groupFindingsByFile, formatCrossReviewerNote, bareTaskId, dropParentTasks, extractCompletedFromSubjects, extractTaskKey, shouldEscalateOnOscillation, isFlipFlop, formatLessons, formatUniversalLessons, formatDomainLessons } from '../lib.js'
 
 const ok = { status: 'ok', diagnostics: { files_touched: ['a.py'] } }
 const ok2 = { status: 'ok', diagnostics: { files_touched: ['b.py'] } }
@@ -769,4 +769,90 @@ test('formatCrossReviewerNote multiple overlap groups', () => {
   const aIdx = out.indexOf('a.py')
   const bIdx = out.indexOf('b.py')
   assert.ok(aIdx > -1 && bIdx > -1)
+})
+
+// —— formatUniversalLessons (Tier 1: silent-failure 始终注入) ——
+
+test('formatUniversalLessons returns non-empty when silent-failure present', () => {
+  const all = [
+    { id: 'L1', title: 'savepoint', detail: 'use savepoint', category: 'silent-failure' },
+    { id: 'L2', title: 'csv format', detail: 'use comma', category: 'test-strategy' },
+  ]
+  // 有 silent-failure → 非空
+  assert.ok(formatUniversalLessons(all).length > 0)
+})
+
+test('formatUniversalLessons returns empty string when no silent-failure category', () => {
+  const all = [
+    { id: 'L2', title: 'csv format', detail: 'use comma', category: 'test-strategy' },
+    { id: 'L3', title: 'no category', detail: 'legacy' },  // 无 category 字段
+  ]
+  assert.equal(formatUniversalLessons(all), '')
+})
+
+test('formatUniversalLessons includes only silent-failure category lessons', () => {
+  const all = [
+    { id: 'L1', title: 'savepoint', detail: 'use savepoint', category: 'silent-failure' },
+    { id: 'L2', title: 'timezone', detail: 'naive UTC', category: 'silent-failure' },
+    { id: 'L3', title: 'csv format', detail: 'use comma', category: 'test-strategy' },
+  ]
+  const out = formatUniversalLessons(all)
+  assert.ok(out.includes('savepoint'))
+  assert.ok(out.includes('timezone'))
+  assert.ok(!out.includes('csv format'))
+})
+
+// —— formatDomainLessons (Tier 2: 按 task category 匹配，cap 5，同 plan 优先) ——
+
+test('formatDomainLessons returns empty string when taskCategories empty', () => {
+  const all = [{ id: 'L1', title: 'csv', detail: 'use comma', category: 'test-strategy' }]
+  assert.equal(formatDomainLessons(all, []), '')
+})
+
+test('formatDomainLessons matches lessons by taskCategories', () => {
+  const all = [
+    { id: 'L1', title: 'csv format', detail: 'use comma', category: 'test-strategy' },
+    { id: 'L2', title: 'no category', detail: 'legacy' },
+    { id: 'L3', title: 'timezone', detail: 'naive UTC', category: 'silent-failure' },
+  ]
+  // task 声明 test-strategy → 只匹配 L1（L3 是 silent-failure 由 Tier 1 注入，不重复）
+  const out = formatDomainLessons(all, ['test-strategy'])
+  assert.ok(out.includes('csv format'))
+  assert.ok(!out.includes('timezone'))  // silent-failure 不进 Tier 2
+  assert.ok(!out.includes('no category'))  // 无 category 不匹配
+})
+
+test('formatDomainLessons excludes silent-failure (Tier 1 已注入，防重复)', () => {
+  const all = [
+    { id: 'L1', title: 'savepoint', detail: 'use savepoint', category: 'silent-failure' },
+    { id: 'L2', title: 'csv', detail: 'use comma', category: 'test-strategy' },
+  ]
+  // 即使 task 声明 silent-failure，Tier 2 也不重复注入（Tier 1 已兜底始终注入）
+  const out = formatDomainLessons(all, ['silent-failure', 'test-strategy'])
+  assert.ok(!out.includes('savepoint'))
+  assert.ok(out.includes('csv'))
+})
+
+test('formatDomainLessons caps at 5 lessons, same-plan source first', () => {
+  const all = []
+  for (let i = 1; i <= 8; i++) {
+    all.push({ id: `L${i}`, title: `lesson ${i}`, detail: `d${i}`, category: 'test-strategy', source: i <= 3 ? 'plan-06/T1@x' : 'plan-05/T1@x' })
+  }
+  const out = formatDomainLessons(all, ['test-strategy'], 'plan-06')
+  // cap 5 + 同 plan（plan-06）优先 → L1,L2,L3（同 plan）+ L4,L5（其他）
+  const ids = (out.match(/L\d+/g) || [])
+  assert.equal(ids.length, 5, `expected 5 lessons after cap, got ${ids.length}`)
+  assert.ok(ids.includes('L1') && ids.includes('L2') && ids.includes('L3'), 'same-plan lessons first')
+})
+
+test('formatDomainLessons falls back to title keyword match when taskCategories absent', () => {
+  // taskCategories null/undefined → 旧行为：按 title 关键词（用 task title 当唯一关键词）
+  const all = [
+    { id: 'L1', title: 'CSV import format', detail: 'use comma', category: 'test-strategy' },
+    { id: 'L2', title: 'timezone', detail: 'naive UTC', category: 'silent-failure' },
+  ]
+  // 无 category 维度，用 taskTitle='CSV 批量导入' 关键词匹配 → L1（CSV）
+  const out = formatDomainLessons(all, null, 'plan-06', 'CSV 批量导入')
+  assert.ok(out.includes('CSV import format'))
+  assert.ok(!out.includes('timezone'))  // silent-failure 不进 Tier 2
 })

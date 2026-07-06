@@ -515,6 +515,58 @@ ${lines}
 If your plan is similar to any lesson above, explicitly state why your approach differs.`
 }
 
+// —— v3 lessons 两层注入（2026-07-06，§5.5 A+B）——
+// Tier 1 formatUniversalLessons: silent-failure category 始终注入（项目最高优先级纪律，
+//   不靠关键词撞运气）。allLessons 是 bootstrap 解析 lessons.md 的全量数组。
+// Tier 2 formatDomainLessons: 其余 category 按 task 声明匹配，cap 5，同 plan 优先；
+//   taskCategories 为空时 fallback 到 title 关键词匹配（向后兼容）。
+// 两层都排除对方已覆盖的 lesson 防重复：Tier 1 只取 silent-failure；Tier 2 排除 silent-failure。
+
+export function formatUniversalLessons(allLessons) {
+  if (!Array.isArray(allLessons) || allLessons.length === 0) return ''
+  const universal = allLessons.filter(l => l && l.category === 'silent-failure')
+  if (universal.length === 0) return ''
+  const lines = universal.map(l => `- [${l.id}] ${l.title} — ${l.detail}`).join('\n')
+  return `## Universal Discipline (silent-failure — always apply)
+${lines}
+These are project-wide silent-failure disciplines. Before reporting done, verify your code does not violate any of them (savepoint isolation, naive-UTC datetime, single-transaction commits, etc.).`
+}
+
+// taskCategories: task 声明的 lesson_categories（数组），null/空 → fallback title 关键词
+// currentPlanSeq: 当前 plan seq（如 'plan-06'），用于同 plan 优先排序
+// taskTitle: fallback 关键词匹配用（task 标题）
+export function formatDomainLessons(allLessons, taskCategories, currentPlanSeq, taskTitle) {
+  if (!Array.isArray(allLessons) || allLessons.length === 0) return ''
+  // 排除 silent-failure（Tier 1 已注入）
+  const candidates = allLessons.filter(l => l && l.category !== 'silent-failure')
+  let matched = []
+  if (Array.isArray(taskCategories) && taskCategories.length > 0) {
+    // category 匹配
+    matched = candidates.filter(l => taskCategories.includes(l.category))
+  } else if (taskTitle) {
+    // fallback: title 关键词重叠（旧行为）
+    const tokens = String(taskTitle).toLowerCase().split(/[\s,，、]+/).filter(t => t.length > 1)
+    matched = candidates.filter(l => {
+      const text = `${l.title || ''} ${l.detail || ''}`.toLowerCase()
+      return tokens.some(t => text.includes(t))
+    })
+  }
+  if (matched.length === 0) return ''
+  // 同 plan 优先（source 含 currentPlanSeq 排前）
+  if (currentPlanSeq) {
+    matched.sort((a, b) => {
+      const aSame = a.source && String(a.source).includes(currentPlanSeq) ? 0 : 1
+      const bSame = b.source && String(b.source).includes(currentPlanSeq) ? 0 : 1
+      return aSame - bSame
+    })
+  }
+  const capped = matched.slice(0, 5)
+  const lines = capped.map(l => `- [${l.id}] ${l.title} — ${l.detail}`).join('\n')
+  return `## Domain Lessons (check against these before implementing)
+${lines}
+If your plan is similar to any lesson above, explicitly state why your approach differs.`
+}
+
 // write_files 边界控制：plan frontmatter 可选声明 write_files，
 // commit agent 提交前检查 git diff 是否越界。不声明 → 空串 → 检查跳过。
 export function formatWriteFilesScope(files) {
