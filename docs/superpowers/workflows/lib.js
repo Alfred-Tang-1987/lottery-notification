@@ -567,6 +567,98 @@ ${lines}
 If your plan is similar to any lesson above, explicitly state why your approach differs.`
 }
 
+// —— v3 findings 状态机（2026-07-06，§5.5 E'）——
+// findings_history 累积全历史，每条带状态 open|fixed|regressed。
+// regressed = 曾 fixed 的 finding 再次出现 = 回归循环信号 → 触发 halt（不注入 fix prompt）。
+// [OPEN] 全注入（必须修）+ [FIXED] 全注入（标注 file，防回归）+ [REGRESSED] 不注入。
+// currentFindings 形态同 collectReviewFindings 输出：{source, severity, title, file, fix}。
+// 不可变：返回新数组，不改输入。
+
+export function updateFindingsHistory(history, currentFindings, round) {
+  if (!Array.isArray(history)) history = []
+  const current = Array.isArray(currentFindings) ? currentFindings : []
+  const currentTitles = new Set(current.map(f => f?.title).filter(Boolean))
+  const result = history.map(h => {
+    const stillPresent = currentTitles.has(h.title)
+    if (stillPresent) {
+      // 仍存在：open→open / fixed→regressed / regressed→regressed
+      const status = h.status === 'open' ? 'open' : 'regressed'
+      return {
+        ...h,
+        last_seen: round,
+        rounds: [...h.rounds, round],
+        status,
+        // fixed→regressed 时保留 fixed_at_round（diag 用）；open/regressed 不变
+        fixed_at_round: h.fixed_at_round,
+      }
+    }
+    // 不存在：open→fixed；fixed/regressed 保持（已修好/已回归的不因缺席改变）
+    if (h.status === 'open') {
+      return { ...h, status: 'fixed', fixed_at_round: round }
+    }
+    return h
+  })
+  // 新 finding（title 在 history 无）：首次出现 → open
+  const existingTitles = new Set(history.map(h => h.title))
+  for (const f of current) {
+    if (f?.title && !existingTitles.has(f.title)) {
+      result.push({
+        title: f.title,
+        severity: f.severity,
+        fix: f.fix,
+        file: f.file,
+        first_seen: round,
+        last_seen: round,
+        rounds: [round],
+        status: 'open',
+      })
+    }
+  }
+  return result
+}
+
+export function hasRegressed(history) {
+  if (!Array.isArray(history)) return false
+  return history.some(h => h?.status === 'regressed')
+}
+
+// D1 (2026-07-06): formatFindingsHistory(history, currentRound) — history 主导单源注入。
+// currentRound 用于标 ★本轮新增（last_seen===currentRound），让 implementor 分辨紧急度。
+// 配合 Task 5 Step 8：fix prompt 不再单独注入 formatFindings(本轮)，避免重复。
+export function formatFindingsHistory(history, currentRound) {
+  if (!Array.isArray(history) || history.length === 0) return ''
+  const open = history.filter(h => h.status === 'open')
+  const fixed = history.filter(h => h.status === 'fixed')
+  const sections = []
+  if (open.length > 0) {
+    // DX medium: 按 severity 排序（critical > important > minor），防弱模型先修容易的 minor 漏 critical
+    const sevRank = { critical: 0, important: 1, minor: 2 }
+    const sortedOpen = [...open].sort((a, b) => (sevRank[a.severity] ?? 9) - (sevRank[b.severity] ?? 9))
+    const lines = sortedOpen.map(h => {
+      const sev = h.severity ? `[${h.severity}]` : ''
+      // D1: 本轮新增加 ★ 标记（last_seen === currentRound），否则显式 seen 信息
+      const isNew = currentRound !== undefined && h.last_seen === currentRound
+      const seen = isNew ? '★本轮新增' : `(seen: r${h.first_seen}-${h.last_seen}, ${h.rounds.length}轮)`
+      const file = h.file ? `, file: ${h.file}` : ''
+      const fix = h.fix ? ` — fix: ${h.fix}` : ''
+      return `- ${sev} ${h.title} ${seen}${file}${fix}`
+    }).join('\n')
+    sections.push(`### [OPEN] 本轮仍存在 — 必须修完（★ = 本轮新增，优先修）\n${lines}`)
+  }
+  if (fixed.length > 0) {
+    const lines = fixed.map(h => {
+      const sev = h.severity ? `[${h.severity}]` : ''
+      const file = h.file ? `, file: ${h.file}` : ''
+      const fix = h.fix ? ` — fix: ${h.fix}` : ''
+      return `- ${sev} ${h.title} (fixed r${h.fixed_at_round}${file})${fix}`
+    }).join('\n')
+    sections.push(`### [FIXED] 已修好的 — 修新问题时核对这里列出的 fix 仍存在（若 [OPEN] 与 [FIXED] 同文件，只动 [OPEN] 描述的代码，不要回退 [FIXED] 对应的修改）\n${lines}`)
+  }
+  // [REGRESSED] 不注入（触发即 halt，implementor 看不到）
+  if (sections.length === 0) return ''
+  return `## Findings History (全轮累积)\n${sections.join('\n\n')}`
+}
+
 // write_files 边界控制：plan frontmatter 可选声明 write_files，
 // commit agent 提交前检查 git diff 是否越界。不声明 → 空串 → 检查跳过。
 export function formatWriteFilesScope(files) {

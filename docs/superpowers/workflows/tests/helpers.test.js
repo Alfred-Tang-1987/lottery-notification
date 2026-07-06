@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, isQuotaError, errStr, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound, resolveMaxRounds, detectOscillation, distillLessonInput, applyLessonDecisions, formatLessonsForDistill, validateAmendResult, validateCheckoutResult, groupFindingsByFile, formatCrossReviewerNote, bareTaskId, dropParentTasks, extractCompletedFromSubjects, extractTaskKey, shouldEscalateOnOscillation, isFlipFlop, formatLessons, formatUniversalLessons, formatDomainLessons } from '../lib.js'
+import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, isQuotaError, errStr, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound, resolveMaxRounds, detectOscillation, distillLessonInput, applyLessonDecisions, formatLessonsForDistill, validateAmendResult, validateCheckoutResult, groupFindingsByFile, formatCrossReviewerNote, bareTaskId, dropParentTasks, extractCompletedFromSubjects, extractTaskKey, shouldEscalateOnOscillation, isFlipFlop, formatLessons, formatUniversalLessons, formatDomainLessons, updateFindingsHistory, formatFindingsHistory, hasRegressed } from '../lib.js'
 
 const ok = { status: 'ok', diagnostics: { files_touched: ['a.py'] } }
 const ok2 = { status: 'ok', diagnostics: { files_touched: ['b.py'] } }
@@ -855,4 +855,161 @@ test('formatDomainLessons falls back to title keyword match when taskCategories 
   const out = formatDomainLessons(all, null, 'plan-06', 'CSV 批量导入')
   assert.ok(out.includes('CSV import format'))
   assert.ok(!out.includes('timezone'))  // silent-failure 不进 Tier 2
+})
+
+// —— updateFindingsHistory (状态机转换) ——
+
+test('updateFindingsHistory returns empty array for first round', () => {
+  const current = [{ source: 'spec', title: 'bug A', severity: 'important', file: 'a.py', fix: 'fix A' }]
+  const h = updateFindingsHistory([], current, 1)
+  assert.equal(h.length, 1)
+  assert.equal(h[0].status, 'open')
+  assert.equal(h[0].first_seen, 1)
+  assert.equal(h[0].last_seen, 1)
+  assert.deepEqual(h[0].rounds, [1])
+})
+
+test('updateFindingsHistory marks absent open finding as fixed', () => {
+  const history = [{ title: 'bug A', severity: 'important', fix: 'fix A', file: 'a.py', first_seen: 1, last_seen: 1, rounds: [1], status: 'open' }]
+  // round 2: bug A 不再出现 → fixed
+  const h = updateFindingsHistory(history, [], 2)
+  assert.equal(h[0].status, 'fixed')
+  assert.equal(h[0].fixed_at_round, 2)
+  assert.deepEqual(h[0].rounds, [1])  // rounds 不追加（本轮未出现）
+})
+
+test('updateFindingsHistory keeps open finding open with updated last_seen', () => {
+  const history = [{ title: 'bug A', severity: 'important', fix: 'fix A', file: 'a.py', first_seen: 1, last_seen: 1, rounds: [1], status: 'open' }]
+  const current = [{ source: 'spec', title: 'bug A', severity: 'important', file: 'a.py', fix: 'fix A' }]
+  const h = updateFindingsHistory(history, current, 2)
+  assert.equal(h[0].status, 'open')
+  assert.equal(h[0].last_seen, 2)
+  assert.deepEqual(h[0].rounds, [1, 2])
+})
+
+test('updateFindingsHistory marks regressed when fixed finding reappears', () => {
+  const history = [{ title: 'bug A', severity: 'important', fix: 'fix A', file: 'a.py', first_seen: 1, last_seen: 1, rounds: [1], status: 'fixed', fixed_at_round: 2 }]
+  const current = [{ source: 'spec', title: 'bug A', severity: 'important', file: 'a.py', fix: 'fix A' }]
+  const h = updateFindingsHistory(history, current, 3)
+  assert.equal(h[0].status, 'regressed')
+  assert.equal(h[0].last_seen, 3)
+  assert.deepEqual(h[0].rounds, [1, 3])
+  assert.equal(h[0].fixed_at_round, 2)  // 保留修好的轮次（diag 用）
+})
+
+test('updateFindingsHistory is immutable (does not mutate input)', () => {
+  const history = [{ title: 'bug A', severity: 'important', fix: '', file: 'a.py', first_seen: 1, last_seen: 1, rounds: [1], status: 'open' }]
+  const current = [{ source: 'spec', title: 'bug A', severity: 'important', file: 'a.py', fix: 'fix' }]
+  const h = updateFindingsHistory(history, current, 2)
+  assert.notEqual(h, history)  // 新数组
+  assert.equal(history[0].status, 'open')  // 原数组未变
+  assert.deepEqual(history[0].rounds, [1])
+})
+
+test('updateFindingsHistory preserves regressed status (idempotent on re-regression)', () => {
+  const history = [{ title: 'bug A', severity: 'important', fix: '', file: 'a', first_seen: 1, last_seen: 3, rounds: [1, 3], status: 'regressed', fixed_at_round: 2 }]
+  const current = [{ source: 'spec', title: 'bug A', severity: 'important', file: 'a', fix: '' }]
+  const h = updateFindingsHistory(history, current, 4)
+  assert.equal(h[0].status, 'regressed')
+  assert.equal(h[0].last_seen, 4)
+  assert.deepEqual(h[0].rounds, [1, 3, 4])
+})
+
+test('updateFindingsHistory matches by title (cross-reviewer dedup)', () => {
+  // round 1 quality 报 "stub URL"，round 2 spec 报同 title → 视为同 finding（不新增）
+  const history = [{ title: 'stub URL', severity: 'important', fix: '', file: 'a', first_seen: 1, last_seen: 1, rounds: [1], status: 'open' }]
+  const current = [{ source: 'spec', title: 'stub URL', severity: 'minor', file: 'a', fix: 'use startsWith' }]
+  const h = updateFindingsHistory(history, current, 2)
+  assert.equal(h.length, 1)
+  assert.equal(h[0].status, 'open')
+  assert.equal(h[0].last_seen, 2)
+})
+
+// —— hasRegressed ——
+
+test('hasRegressed returns true when any finding is regressed', () => {
+  const history = [{ title: 'A', status: 'open' }, { title: 'B', status: 'regressed' }]
+  assert.equal(hasRegressed(history), true)
+})
+
+test('hasRegressed returns false when no regressed', () => {
+  const history = [{ title: 'A', status: 'open' }, { title: 'B', status: 'fixed' }]
+  assert.equal(hasRegressed(history), false)
+})
+
+test('hasRegressed returns false for empty history', () => {
+  assert.equal(hasRegressed([]), false)
+})
+
+// —— formatFindingsHistory（D1 决策：history 主导，本轮新增加 ★ 标记，去重单源）——
+// 签名 formatFindingsHistory(history, currentRound?)：currentRound 用于标 ★本轮新增（last_seen===currentRound）
+
+test('formatFindingsHistory lists [OPEN] findings as must-fix', () => {
+  const history = [
+    { title: 'bug A', severity: 'important', fix: 'fix A', file: 'a.py', first_seen: 1, last_seen: 2, rounds: [1, 2], status: 'open' },
+  ]
+  const out = formatFindingsHistory(history, 2)  // round 2 调用
+  assert.ok(out.includes('[OPEN]'))
+  assert.ok(out.includes('bug A'))
+  assert.ok(out.includes('fix A'))
+})
+
+test('formatFindingsHistory marks last_seen===currentRound with ★ (本轮新增)', () => {
+  // D1: 本轮新发现标 ★ 让 implementor 分辨紧急度（DX finding low 顺势解决）
+  const history = [
+    { title: 'old bug', severity: 'minor', fix: '', file: 'a', first_seen: 1, last_seen: 1, rounds: [1], status: 'open' },
+    { title: 'new bug', severity: 'important', fix: 'fix it', file: 'b', first_seen: 2, last_seen: 2, rounds: [2], status: 'open' },
+  ]
+  const out = formatFindingsHistory(history, 2)  // round 2 调用
+  assert.ok(out.includes('★'))  // new bug 标 ★
+  // old bug 不标 ★（last_seen=1 ≠ currentRound=2）
+  const lines = out.split('\n')
+  const oldLine = lines.find(l => l.includes('old bug'))
+  assert.ok(oldLine, 'old bug line exists')
+  assert.ok(!oldLine.includes('★'), 'old bug not marked ★')
+})
+
+test('formatFindingsHistory lists [FIXED] findings as do-not-touch', () => {
+  const history = [
+    { title: 'bug A', severity: 'minor', fix: 'fix A', file: 'a.py', first_seen: 1, last_seen: 1, rounds: [1], status: 'fixed', fixed_at_round: 2 },
+  ]
+  const out = formatFindingsHistory(history, 3)  // round 3 调用（已 fixed 在 r2）
+  assert.ok(out.includes('[FIXED]'))
+  assert.ok(out.includes('bug A'))
+  assert.ok(out.includes('a.py'))  // 文件路径标注
+  assert.ok(out.includes('r2'))  // fixed_at_round
+})
+
+test('formatFindingsHistory omits [REGRESSED] (triggers halt, not injected)', () => {
+  const history = [
+    { title: 'bug A', severity: 'important', fix: '', file: 'a', first_seen: 1, last_seen: 3, rounds: [1, 3], status: 'regressed', fixed_at_round: 2 },
+  ]
+  const out = formatFindingsHistory(history, 3)
+  // regressed 不注入（触发即 halt，implementor 永远看不到）
+  assert.ok(!out.includes('bug A'))
+  assert.ok(!out.includes('[REGRESSED]'))
+})
+
+test('formatFindingsHistory returns empty string when no open or fixed', () => {
+  const history = [{ title: 'A', status: 'regressed' }]
+  assert.equal(formatFindingsHistory(history, 3), '')
+})
+
+test('formatFindingsHistory empty history returns empty string', () => {
+  assert.equal(formatFindingsHistory([], 1), '')
+})
+
+test('formatFindingsHistory sorts [OPEN] by severity (critical first)', () => {
+  // DX finding medium: 弱模型在长 prompt 下倾向先修容易的 minor，按 severity 排序让 critical 在前
+  const history = [
+    { title: 'minor bug', severity: 'minor', fix: '', file: 'a', first_seen: 1, last_seen: 1, rounds: [1], status: 'open' },
+    { title: 'critical bug', severity: 'critical', fix: 'urgent', file: 'b', first_seen: 1, last_seen: 1, rounds: [1], status: 'open' },
+    { title: 'important bug', severity: 'important', fix: '', file: 'c', first_seen: 1, last_seen: 1, rounds: [1], status: 'open' },
+  ]
+  const out = formatFindingsHistory(history, 1)
+  const criticalPos = out.indexOf('critical bug')
+  const importantPos = out.indexOf('important bug')
+  const minorPos = out.indexOf('minor bug')
+  assert.ok(criticalPos < importantPos, 'critical before important')
+  assert.ok(importantPos < minorPos, 'important before minor')
 })
