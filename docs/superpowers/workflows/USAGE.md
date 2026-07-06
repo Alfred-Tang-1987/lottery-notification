@@ -53,7 +53,8 @@
 | `language` | 否 | `python` / `general`（可扩展 ts/go…）。决定 qualityReviewer 的语言专项清单。未知值 → 通用清单 |
 | `silent_failure_intro` | 否 | **项目特定静默失败风险标题**（hunter 注入段落的 `##` 标题）。不配 → 默认标题 `Project-Specific Silent-Failure Risks (HIGHEST PRIORITY — hunt these first)` |
 | `silent_failure_context` | 否 | **项目特定静默失败纪律数组**（hunter 优先核查）。承载本项目反复踩的领域致命点——如 DB split-commit / savepoint 隔离 / 批量循环兜底 / 更正重置终态 / datetime 时区对齐。hunter 先查这些再查通用 `except:pass` 模式。不配即 hunter 退化为通用清单 |
-| `review_max_rounds` | 否 | **review 最大轮数**（默认 4）。正整数 N → N 轮仍有 ❌ 则 halt；`0`/负数 → 无限模式（永不因轮数 halt，仅靠 `detectOscillation` 同文件 ≥3 round halt）。**最后 1 轮 fix 强制 opus**：有限模式 `round===maxRounds-1`、无限模式 `round>=4`。**OSCILLATING 触发先升级 opus 一搏**（2026-07-05 改进 1）：detectOscillation 触发时若当前非 opus + 未升级过 → 升级 opus 跑一轮（不 halt）；已 opus 仍振荡 → halt。未配/null/非数字 → 默认 4。详见设计文档 §5.3 + §13g |
+| `review_max_rounds` | 否 | **review 最大轮数**（默认 4）。正整数 N → N 轮仍有 ❌ 则 halt；`0`/负数 → 无限模式（永不因轮数 halt，靠 `detectOscillation` + flipFlop 驱动 halt + budget guard）。**最后 1 轮 fix 强制 opus**：有限模式 `round===maxRounds-1`、无限模式 `round>=4`。**v3 OSCILLATING 判定（2026-07-06，§5.5）**：detectOscillation 触发时若 `flipFlop=true` 或 `hasRegressed(findings_history)` → 立即 halt（真振荡/回归循环）；若 `flipFlop=false`（每轮新 findings = 在推进）→ 升 opus 后**继续跑**直到 `review_budget`（默认 8）耗尽。未配/null/非数字 → 默认 4。详见设计文档 §5.3 + §5.5 + §13g |
+| `review_budget` | 否 | **无限模式 review 轮数预算**（默认 8）。仅 `review_max_rounds=0`（无限模式）生效，作为 `flipFlop=false` 持续推进的兜底——防止 reviewer 同义变体（改 title）导致 `[REGRESSED]` 漏报后无限跑。有限模式仍用 `review_max_rounds` 硬上限。耗尽后 halt reason `review budget exhausted`（区别于真振荡 `OSCILLATING`）。详见设计文档 §5.5 |
 | `lessons_auto_distill` | 否 | **halt 时自动提炼 lesson**（默认 true）。halt 时调 `lessonDistiller` agent（opus）从 halt 根因中提炼可复用知识，过滤瞬态事件（review_empty/model_unavailable），语义去重对比现有 lessons 后 append/update/skip。distiller 失败/限额 → best-effort 跳过，不阻塞 manifest。显式 `false` 关闭（旧行为）。详见设计文档 §5.4 |
 
 > **通用性原则**：项目特有内容（彩种规则、domain 纯度纪律）只走 config，不写进 prompt。换一个非彩票 Python 项目，改几个路径即可复用；换 TS 项目加 `language: "typescript"` 清单即可。新字段全部可选——旧 config 无它们照跑（条件渲染：orchestrator 传空串，相关 prompt 段消失）。
@@ -290,7 +291,7 @@ plan frontmatter 的 `model` 字段决定 implementor 用 sonnet 还是 opus：
 |---|---|
 | workflow paused | `/workflows` 看卡在哪个 agent；读 `runs/<ts>/manifest.json` 或 transcript |
 | implementor 反复失败 | 看 `blocked_info.last_error` + `suggested_fix`；可能 plan 顺序错（依赖前序 task） |
-| review 振荡 halt | `blocked_info.reason: OSCILLATING`——同文件多 round 反复改不收敛。**2026-07-05 改进 1+2 后**：OSCILLATING 触发会先升级 opus 跑一轮（改进1），`isFlipFlop` 区分 flip-flop（reviewer 真矛盾，同 finding title 跨轮反复）vs 补充（每轮新 finding，implementor 没修完，更强 model 能解）；只有 opus 也振荡才 halt。halt 时意味 **opus 也修不好**——看 manifest `per_task.<task>.review_history` + `diag.flipFlop`：flip-flop=reviewer 矛盾需人工裁定（如 CLAUDE.md 两规则冲突）；补充=model 能力极限，拆 task（参照 T6b-T6g 模式）。手动 commit `feat(plan-X/T-Y)` → 全新跑续（见 §7.1） |
+| review 振荡 halt | `blocked_info.reason: OSCILLATING`——同文件多 round 反复改不收敛。**v3 改进（2026-07-06，§5.5）后**：halt 由 flipFlop / regressed 驱动（非纯计数）。`isFlipFlop`（本轮 finding title 在前轮出现过）OR `hasRegressed`（findings 状态机检测到曾 fixed 的 finding 再次出现 = `[REGRESSED]`）→ 立即 halt；`flipFlop=false` 且无 regressed → 升 opus 后继续跑直到 `review_budget`（默认 8）耗尽（reason `review budget exhausted`）。halt 时看 manifest `per_task.<task>.review_history` + `diag.flipFlop` + `diag.regressed`：flip-flop/regressed=reviewer 矛盾或 implementor 回归循环需人工裁定；budget 耗尽=model 能力极限，拆 task（参照 T6b-T6g 模式）。手动 commit `feat(plan-X/T-Y)` → 全新跑续（见 §7.1）。**findings 状态机**：fix prompt 注入 `[OPEN]`（必须修）+ `[FIXED]`（勿碰，防回归），`[REGRESSED]` 触发即 halt 不注入 |
 | review 空响应 halt | `blocked_info.reason: review_empty`——某 review agent 静默空返回（thinking-only 空响应，模型瞬态 hiccup；非限额非崩溃）。**全新跑续即可**（见 §7.1，勿用 resumeFromRunId）；频繁复发则换 model 槽 |
 | review 空诊断 halt | `blocked_info.reason: review_failed_no_findings`——某 review agent 明确判 `failed` 但 `issues`/`silent_failures` 为空（无可执行发现）。implementor 无法据空反馈修复，halt 暴露而非跑空循环误报 max rounds。多为 prompt/schema 与 model 不匹配（如 LLM 用错字段名）——看该 review 的 diag，**全新跑续**（见 §7.1） |
 | 限额 halt | `blocked_info.quota_exhausted: true`——等额度恢复后**全新跑**续跑（见 §7.1，勿用 resumeFromRunId） |
@@ -301,7 +302,7 @@ plan frontmatter 的 `model` 字段决定 implementor 用 sonnet 还是 opus：
 | 文件 | 作用 |
 |---|---|
 | `.claude/workflows/run-plans.js` | orchestrator 主体（顶层 await + runTask/halt/编排；inline 复制 lib.js 的 PROMPTS/SCHEMAS/helpers） |
-| `docs/superpowers/workflows/lib.js` | 纯函数真源（leafTasks/detectOscillation/buildPrompt/SCHEMAS/PROMPTS + 条件渲染 helpers + cross-reviewer 重叠检测 `groupFindingsByFile`/`formatCrossReviewerNote` + bootstrap task 识别三层防御 `bareTaskId`/`dropParentTasks`/`extractCompletedFromSubjects` + **OSCILLATING 升级 opus + flip-flop 区分** `shouldEscalateOnOscillation`/`isFlipFlop`，260 测试） |
+| `docs/superpowers/workflows/lib.js` | 纯函数真源（leafTasks/detectOscillation/buildPrompt/SCHEMAS/PROMPTS + 条件渲染 helpers + cross-reviewer 重叠检测 `groupFindingsByFile`/`formatCrossReviewerNote` + bootstrap task 识别三层防御 `bareTaskId`/`dropParentTasks`/`extractCompletedFromSubjects` + **OSCILLATING 升级 opus + flip-flop 区分** `shouldEscalateOnOscillation`/`isFlipFlop` + **v3 findings 状态机** `updateFindingsHistory`/`formatFindingsHistory`/`hasRegressed` + **v3 lessons 两层注入** `formatUniversalLessons`/`formatDomainLessons`，260+ 测试） |
 | `docs/superpowers/workflows/tests/` | node:test 单元测试；含 `sync.test.js` 同步护栏（断言 run-plans.js 的 PROMPTS/SCHEMAS 与 lib.js 一致——改 lib 必须 sync 副本，否则测试红） |
 | `workflow.config.json` | 项目配置（命令 + spec_path） |
 | `docs/superpowers/workflow-design.md` | 设计 spec（§1-14 + cross-reviewer surfacing §13j） |
