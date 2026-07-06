@@ -106,3 +106,30 @@ detail: 当被测代码路径会写配置文件（如 SMTP 配置保存到 .env�
 source: plan-06/T6f@2026-07-06
 category: silent-failure
 status: active
+
+## L-20260706T123500Z
+title: Plan「已知简化（MVP）/follow-up/deferred」段落是排除清单——实现其中条目即 over-build（YAGNI），触发 spec EXTRA findings 驱动振荡
+detail: 当 plan 在 task 描述中含「已知简化（MVP）」「follow-up task」「Phase 优化」「待补」等显式推迟段落时，这些段落是**排除清单**——implementor 不得实现其中条目。实现 deferred 条目 = over-build（YAGNI），spec reviewer 会逐条对照 plan 行号报 EXTRA/YAGNI finding，即使代码本身正确。这驱动 round-to-round 振荡：round N 修质量问题时顺手补了 deferred 功能 → round N+1 spec 报 EXTRA → 又得删 → 文件被多轮触碰 → OSCILLATING halt。
+场景（plan-06/T7 round 2 spec 5 findings 中 2 条 EXTRA）：plan line ~881「已知简化（MVP）」明确「A11y focus trap/ESC/遮罩点击关闭待补（MVP 用按钮关闭，Phase 优化）」+ plan line ~879「建议实现后补 Vitest 组件测试...作为 follow-up task」。implementor 在 round 1 修质量问题时顺手实现了 ESC close（@keydown.esc）+ overlay click-to-close（drawer-overlay @click）+ TrendSelectDrawer.test.ts（98 行 4 cases）→ round 2 spec 报 2 条 EXTRA/YAGNI finding（含行号引用 plan）。同 round 还有 `<transition appear>` 未要求的 appear-on-mount（MINOR EXTRA）。3 条 EXTRA 共同推 round 2 spec failed → 振荡 +1 轮。同源 round 2 还有 confirm() 契约改写（见 L-20260706T123700Z）与 div onclick A11y 违规（见 L-20260706T123600Z），共同致 5 findings。
+修法：(1) implementor 接 task 时先 grep plan 文件的「已知简化|MVP|follow-up|待补|Phase 优化|deferred」段落，把其中条目列入**禁实现清单**；(2) 修质量/spec finding 时只改被指出的点，不顺手补功能（"while I'm here" 是 over-build 的高发诱因）；(3) 若认为 deferred 条目必须实现（如 A11y 不可延后），先在 finding 回复中论证并获得 review 认可，勿擅自加；(4) spec reviewer 对 plan 含显式 deferred 段落的 task，须核对 diff 是否引入了 deferred 条目——命中即报 EXTRA。
+source: plan-06/T7@2026-07-06
+category: convention
+status: active
+
+## L-20260706T123600Z
+title: Plan grep 验收标准是全仓范围——`grep -rn X web/src/` 期望「无结果」= 全仓清零，pre-existing 违规成为本 task 责任
+detail: 当 plan Step 用 `grep -rn "pattern" path/` 命令并标注「无 X ✓」作为验收标准时，这是**全仓范围**的验收——不是「本 task 新增文件无 X 即可」，而是「全仓 grep 无结果」。pre-existing 违规（其他文件历史遗留的 X）必须在本 task 内修，否则 grep 仍有输出 → 验收不通过 → spec reviewer 报 MISSING。implementor 常误解为「只要我新增的文件干净就行」，漏修 pre-existing → round N 通过 own-files 检查、round N+1 spec 全仓 grep 仍报 MISSING → 振荡。
+场景（plan-06/T7 round 3 spec 2 of 3 findings MISSING）：plan T7 Step 3 A11y 扫描显式给 `grep -rn "div.*@click" web/src/` 期望「无 div onclick ✓」（spec §12.4 D9 MVP 强制基线「交互元素一律 <button>/<a>，禁 div onclick」）。implementor round 2 修了自己新增的 TrendSelectDrawer.vue 的 div onclick（round 2 spec finding），但 web/src/pages/MyNumbers.vue:243 的 `<div class="modal-backdrop" @click="showForm = false" />` 是 pre-existing 违规，implementor 在 concerns 中承认但归为「T7 scope 外」→ round 3 spec 报 MISSING「A11y 基线仍差一项未达标」+ MISUNDERSTANDING「Step 3 是全仓扫描非 own-files」。同 round 还有 conftest.py 全局测试基建变更（autouse fixture `_reset_settings_and_env` + db_engine monkeypatch session_mod._engine）被报 EXTRA/YAGNI（非 T7 业务代码，YAGNI 越界）——同根：implementor 把「验收门槛」当「建议」，把「全仓责任」当「own-files 责任」。
+修法：(1) implementor 接到含 grep 验收标准的 task，**立即在全仓跑该 grep**，把所有命中行列入待修清单（含 pre-existing），本 task 内全部修完；(2) 不要把 pre-existing 违规归类「scope 外」——grep 验收标准不分新旧，全仓清零才是 done；(3) plan Step 的 grep 命令是验收门槛不是建议，implementor 须自跑确认「无结果」再交付；(4) spec reviewer 对含 grep 标准的 task，须独立全仓跑 grep 核对，不采信 implementor 的「own-files 已清」自报。
+source: plan-06/T7@2026-07-06
+category: test-strategy
+status: active
+
+## L-20260706T123700Z
+title: Plan 参考代码是权威契约——implementor 不得以「更正确」为由擅自改写参考代码的 documented 行为契约（如 confirm() 后 agreed 持续 true）
+detail: 当 plan 在 task 描述中给出参考代码（reference implementation snippet）时，参考代码定义的**行为契约**是权威的——implementor 不得以「arguably more correct」为由擅自改写契约，即使新行为看起来更合理。改写 = MISUNDERSTANDING finding（未授权偏离 spec）。若认为参考代码有缺陷，须在 finding 回复中论证并获 review 认可，勿静默「修复」。
+场景（plan-06/T7 round 2 spec finding 4 MISUNDERSTANDING）：plan T7 Step 1 参考代码（plan lines ~566-571）定义 confirm() 为 `agreed.value = true; open.value = false; emit('confirmed')`——即 confirm 后 agreed 持续 true（协议状态保留）。implementor 改成 confirm/cancel/start 时 `agreed.value = false`（关闭后重置），偏离了 documented 契约。reviewer 注「While arguably more correct (drawer is closed post-confirm), it deviates from the spec'd reference implementation without authorization」——即新行为可能更对，但未授权改写仍是 spec 违规。同 round 5 个 spec finding 共同推 round 2 failed → 振荡。
+修法：(1) implementor 复制 plan 参考代码时逐字保留其行为契约，不「优化」；(2) 若发现参考代码缺陷（如状态泄漏、边界错），先在 finding/PR 评论中提出，获 spec 作者或 reviewer 认可后再改；(3) review 链对 plan 含参考代码的 task，须逐行核对 diff 与参考代码的行为一致性——契约字段（agreed/open/emitted 值的时序）不一致即报 MISUNDERSTANDING；(4) 「更正确」不是擅自改写的理由——参考代码的正确性由 plan 作者负责，implementor 只负责忠实实现。
+source: plan-06/T7@2026-07-06
+category: convention
+status: active

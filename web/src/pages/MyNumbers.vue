@@ -107,27 +107,45 @@ async function csvImport() {
       const numbersJson = JSON.stringify(
         back ? { front, back } : { front },
       );
-      await apiPost('/tickets', {
-        lottery_code: code,
-        play_type: 'single',
-        numbers_json: numbersJson,
-        multiplier: 2,
-        cost: 200,
-        // plan Step 3 CSV 期号字段：Ticket 模型无 draw_no 列，作为 label 记录（DrawQuery 页才真正用期号查开奖）
-        ...(draw_no ? { label: draw_no } : {}),
-      });
-      imported++;
+      // Per-row isolation: a single API failure (e.g. duplicate, validation
+      // error) must NOT abort the whole batch. Catch, record, and continue so
+      // the user sees which rows succeeded vs failed. Without this, one bad
+      // row silently drops all subsequent rows (silent partial-failure).
+      try {
+        await apiPost('/tickets', {
+          lottery_code: code,
+          play_type: 'single',
+          numbers_json: numbersJson,
+          multiplier: 2,
+          cost: 200,
+          // plan Step 3 CSV 期号字段：Ticket 模型无 draw_no 列，作为 label 记录（DrawQuery 页才真正用期号查开奖）
+          ...(draw_no ? { label: draw_no } : {}),
+        });
+        imported++;
+      } catch (rowErr) {
+        const msg = rowErr instanceof Error ? rowErr.message : '未知错误';
+        errors.push(`行 ${i + 1}: 导入失败 - ${msg}`);
+      }
     }
     csvImported.value = imported;
     if (errors.length > 0) {
       csvError.value = errors.join('\n');
     }
-    csvText.value = '';
+    // Only clear the textarea when every row succeeded. On partial failure,
+    // keep the original input so the user can edit out the succeeded rows and
+    // retry the failed ones (errors are surfaced with line numbers above).
+    if (errors.length === 0) {
+      csvText.value = '';
+    }
     await load();
   } catch (err) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const msg = (err as any)?.message || '未知错误';
-    csvError.value = `导入 ${imported} 条后失败: ${msg}`;
+    // Only catastrophic failures (e.g. parseCsvLine throwing unexpectedly,
+    // load() failing) land here. Per-row API failures are isolated above.
+    // Preserve any per-row errors already collected so a late catastrophic
+    // failure (e.g. load() after the loop) doesn't discard them.
+    const msg = err instanceof Error ? err.message : '未知错误';
+    const catastrophic = `导入 ${imported} 条后失败: ${msg}`;
+    csvError.value = errors.length > 0 ? `${catastrophic}\n${errors.join('\n')}` : catastrophic;
   } finally {
     saving.value = false;
   }
