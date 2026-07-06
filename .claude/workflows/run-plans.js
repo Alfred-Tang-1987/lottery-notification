@@ -45,7 +45,9 @@ function detectOscillation(filesTouchedPerRound) {
   }
   return { oscillating: false }
 }
-// 改进 1 (2026-07-05): OSCILLATING 触发时升级 opus 一搏 —— inline 自 lib.js（sync QC-4 守护）。
+// v3 (2026-07-06, §5.5): shouldEscalateOnOscillation 仅判断「是否升级 opus」。
+// halt 决策上移到 run-plans.js OSC 分支（flipFlop OR hasRegressed → halt；else 继续 + budget guard）。
+// 旧逻辑「已升级→return false→halt」已移除（那是纯计数 halt 的根因，浪费 opus 推进力）。
 function shouldEscalateOnOscillation(currentModel, alreadyEscalated) {
   if (alreadyEscalated) return false  // 已升级过不再重复升级（不影响 halt 决策）
   return currentModel !== 'opus'      // 非 opus → 升级
@@ -67,6 +69,92 @@ function isFlipFlop(reviewHistory) {
     }
   }
   return false
+}
+// —— v3 findings 状态机（inline 自 lib.js，sync.test 字节守护）——
+function updateFindingsHistory(history, currentFindings, round) {
+  if (!Array.isArray(history)) history = []
+  const current = Array.isArray(currentFindings) ? currentFindings : []
+  const currentTitles = new Set(current.map(f => f?.title).filter(Boolean))
+  const result = history.map(h => {
+    const stillPresent = currentTitles.has(h.title)
+    if (stillPresent) {
+      // 仍存在：open→open / fixed→regressed / regressed→regressed
+      const status = h.status === 'open' ? 'open' : 'regressed'
+      return {
+        ...h,
+        last_seen: round,
+        rounds: [...h.rounds, round],
+        status,
+        // fixed→regressed 时保留 fixed_at_round（diag 用）；open/regressed 不变
+        fixed_at_round: h.fixed_at_round,
+      }
+    }
+    // 不存在：open→fixed；fixed/regressed 保持（已修好/已回归的不因缺席改变）
+    if (h.status === 'open') {
+      return { ...h, status: 'fixed', fixed_at_round: round }
+    }
+    return h
+  })
+  // 新 finding（title 在 history 无）：首次出现 → open
+  const existingTitles = new Set(history.map(h => h.title))
+  for (const f of current) {
+    if (f?.title && !existingTitles.has(f.title)) {
+      result.push({
+        title: f.title,
+        severity: f.severity,
+        fix: f.fix,
+        file: f.file,
+        first_seen: round,
+        last_seen: round,
+        rounds: [round],
+        status: 'open',
+      })
+    }
+  }
+  return result
+}
+function hasRegressed(history) {
+  if (!Array.isArray(history)) return false
+  return history.some(h => h?.status === 'regressed')
+}
+function formatFindingsHistory(history, currentRound) {
+  if (!Array.isArray(history) || history.length === 0) return ''
+  const open = history.filter(h => h.status === 'open')
+  const fixed = history.filter(h => h.status === 'fixed')
+  const sections = []
+  if (open.length > 0) {
+    // DX medium: 按 severity 排序（critical > important > minor），防弱模型先修容易的 minor 漏 critical
+    const sevRank = { critical: 0, important: 1, minor: 2 }
+    const sortedOpen = [...open].sort((a, b) => (sevRank[a.severity] ?? 9) - (sevRank[b.severity] ?? 9))
+    const lines = sortedOpen.map(h => {
+      const sev = h.severity ? `[${h.severity}]` : ''
+      // D1: 本轮新增加 ★ 标记（last_seen === currentRound），否则显式 seen 信息
+      const isNew = currentRound !== undefined && h.last_seen === currentRound
+      const seen = isNew ? '★本轮新增' : `(seen: r${h.first_seen}-${h.last_seen}, ${h.rounds.length}轮)`
+      const file = h.file ? `, file: ${h.file}` : ''
+      const fix = h.fix ? ` — fix: ${h.fix}` : ''
+      return `- ${sev} ${h.title} ${seen}${file}${fix}`
+    }).join('\n')
+    sections.push(`### [OPEN] 本轮仍存在 — 必须修完（★ = 本轮新增，优先修）\n${lines}`)
+  }
+  if (fixed.length > 0) {
+    const lines = fixed.map(h => {
+      const sev = h.severity ? `[${h.severity}]` : ''
+      const file = h.file ? `, file: ${h.file}` : ''
+      const fix = h.fix ? ` — fix: ${h.fix}` : ''
+      return `- ${sev} ${h.title} (fixed r${h.fixed_at_round}${file})${fix}`
+    }).join('\n')
+    sections.push(`### [FIXED] 已修好的 — 修新问题时核对这里列出的 fix 仍存在（若 [OPEN] 与 [FIXED] 同文件，只动 [OPEN] 描述的代码，不要回退 [FIXED] 对应的修改）\n${lines}`)
+  }
+  // [REGRESSED] 不注入（触发即 halt，implementor 看不到）
+  if (sections.length === 0) return ''
+  return `## Findings History (全轮累积)\n${sections.join('\n\n')}`
+}
+// —— v3 OSCILLATING budget guard（inline 自 lib.js）——
+function resolveReviewBudget(config) {
+  const v = config?.review_budget
+  if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) return 5
+  return v
 }
 function buildPrompt(role, ctx = {}) {
   const tpl = PROMPTS[role]
@@ -902,7 +990,7 @@ Inputs: mode={{mode}} state={{stateJson}} blockedInfo={{blockedInfo}} runsDir={{
 
 Steps:
 1. mkdir -p {{runsDir}}.
-2. Write {{runsDir}}/manifest.json = {run_ts:{{runTs}}, mode:{{mode}}, plans:[...], per_task:{<taskKey>:{status,model,review_rounds,files_touched_per_round,review_history,commit_sha,simplify_reverted,simplify_review_findings,destructive_review_failed,destructive_review_findings,concerns,blocked_info}}, result}.
+2. Write {{runsDir}}/manifest.json = {run_ts:{{runTs}}, mode:{{mode}}, plans:[...], per_task:{<taskKey>:{status,model,review_rounds,files_touched_per_round,review_history,findings_history,oscillation_escalated_at_round,commit_sha,simplify_reverted,simplify_review_findings,destructive_review_failed,destructive_review_findings,concerns,blocked_info}}, result}. per_task.<task> 还含 v3 字段：findings_history（findings 状态机轨迹 [{title, status, first_seen, last_seen, rounds, fixed_at_round}]）+ oscillation_escalated_at_round（opus 升级轮 round 数或 null）。manifest 序列化时必须保留这两个字段（不要 strip）。
 3. If mode=halted: write .workflow/blocked.md from {{blockedInfo}} (the blocked task's blocked_info JSON — render EACH field human-readably: plan, task, reason, category, last_error, suggested_fix, quota_exhausted, likely_source, failed_approach). For failed_approach, render as: "Failed Approach: <failed_approach.task_id>: <failed_approach.reason> — <failed_approach.error>". Do NOT hunt for these fields in state — they are provided inline in blockedInfo.
    S3（第 4 轮）: blocked.md 路径固定为 .workflow/blocked.md（§8.2），独立于 {{runsDir}}——
    blocked.md 是用户接手入口，路径须稳定可预测（runsDir 会随 runTs 变化，用户难定位）。
@@ -1005,7 +1093,10 @@ async function agentWithFallback(role, ctx, labelPrefix) {
 function ensurePerTaskDefaults(entry) {
   return {
     planId: null, status: 'in_progress', model: 'sonnet', review_rounds: 0,
-    files_touched_per_round: [], review_history: [], commit_sha: null, opus_escalated: false,
+    files_touched_per_round: [], review_history: [],
+    findings_history: [],              // v3: 状态机
+    oscillation_escalated_at_round: null,  // v3 F: 升级轮标记
+    commit_sha: null, opus_escalated: false,
     simplify_reverted: false, simplify_review_findings: [],
     destructive_review_failed: false, destructive_review_findings: [],
     concerns: [], blocked_info: null,
@@ -1169,6 +1260,11 @@ async function runTask(plan, task) {
     //   否则 distiller 看不到 halt 轮 review 状态（如 review_failed_no_findings 的 failed-but-empty 信号）。
     state.perTask[taskKey].files_touched_per_round.push(unionFiles(spec, qual, hunt))
     state.perTask[taskKey].review_history.push(summarizeReviewRound(round, spec, qual, hunt))
+    // v3: findings 状态机更新（在 halt 检查之前，halt 轮也须持久化）
+    const currentFindings = collectReviewFindings(spec, qual, hunt)
+    state.perTask[taskKey].findings_history = updateFindingsHistory(
+      state.perTask[taskKey].findings_history, currentFindings, round
+    )
     if (reviewReason) {
       return { halted: true, reason: reviewReason, diag: { spec: spec?.diagnostics, qual: qual?.diagnostics, hunt: hunt?.diagnostics } }
     }
@@ -1182,28 +1278,70 @@ async function runTask(plan, task) {
     // 自然落进 detectOscillation 正确 halt 让人介入。单轮全绿即 review 共识，足以放行。
     if (allGreen(spec, qual, hunt)) break
     const osc = detectOscillation(state.perTask[taskKey].files_touched_per_round)
+    const flipFlop = isFlipFlop(state.perTask[taskKey].review_history || [])
+    const regressed = hasRegressed(state.perTask[taskKey].findings_history || [])
+
+    // v3 (§5.5): 任一 finding 回归（fixed→regressed）→ 立即 halt（独立于文件振荡）
+    if (regressed) {
+      return {
+        halted: true,
+        reason: 'OSCILLATING',
+        diag: {
+          ...osc,
+          flipFlop,
+          regressed,
+          regressedFindings: state.perTask[taskKey].findings_history.filter(h => h.status === 'regressed'),
+          model,
+        },
+      }
+    }
+
     if (osc.oscillating) {
-      // 改进 1+2 (2026-07-05): OSCILLATING 触发时升级 opus 跑一轮（改进1），区分 flip-flop vs 补充（改进2）。
-      // 防「无限模式 round>=4 才 opus + OSCILLATING 在 round 3 触发」挡住 opus 升级路径（实战 T6e）。
-      // shouldEscalateOnOscillation: 非 opus + 未升级过 → 升级；已 opus / 已升级过 → halt。
-      const flipFlop = isFlipFlop(state.perTask[taskKey].review_history || [])
+      // v3 (§5.5): flipFlop → 真振荡（reviewer 反向分歧）→ halt
+      if (flipFlop) {
+        return {
+          halted: true,
+          reason: 'OSCILLATING',
+          diag: {
+            ...osc,
+            flipFlop,
+            regressed,
+            model,
+          },
+        }
+      }
+      // flipFlop=false 且无 regressed（每轮新 findings = 在推进）
       if (shouldEscalateOnOscillation(model, state.perTask[taskKey].opus_escalated)) {
         state.perTask[taskKey].opus_escalated = true
         model = 'opus'
-        log(`⚠ ${task.id}: r${round} OSCILLATING (${flipFlop ? 'flip-flop 真振荡' : 'new-findings 补充'}) — escalate to opus for one more round (改进1)`)
-        // 不 halt，继续下一轮（model 已升 opus，下一轮 fix dispatch 用 opus）
+        log(`⚠ ${task.id}: r${round} OSCILLATING (new-findings 补充, flipFlop=false) — escalate to opus, continue (v3)`)
       } else {
-        return { halted: true, reason: 'OSCILLATING', diag: { ...osc, flipFlop, model } }
+        // 已升 opus，继续跑（new findings = 在推进），由 budget guard 兜底
+        log(`⚠ ${task.id}: r${round} OSCILLATING (flipFlop=false, opus already escalated) — continue until budget guard (v3)`)
       }
     }
-    // maxRounds=0（无限）永不因轮数上限 halt，只靠 detectOscillation halt
-    if (maxRounds !== 0 && round === maxRounds) return { halted: true, reason: 'review max rounds', diag: { spec: spec.diagnostics, qual: qual.diagnostics, hunt: hunt.diagnostics } }
+    // v3: 无限模式（maxRounds=0）budget guard——flipFlop=false 持续推进的兜底
+    //   防 reviewer 同义变体（改 title）让 [REGRESSED] 漏报后无限跑
+    if (maxRounds === 0) {
+      const budget = resolveReviewBudget(cfg)
+      if (round >= budget) {
+        // D4 决策：halt reason 改可操作——blocked.md 建议拆 task
+        return { halted: true, reason: 'review_not_converging', diag: { round, budget, findings_history: state.perTask[taskKey].findings_history, spec: spec.diagnostics, qual: qual.diagnostics, hunt: hunt.diagnostics } }
+      }
+    } else if (round === maxRounds) {
+      // 有限模式仍用 maxRounds 硬上限
+      return { halted: true, reason: 'review max rounds', diag: { spec: spec.diagnostics, qual: qual.diagnostics, hunt: hunt.diagnostics } }
+    }
     const findings = collectReviewFindings(spec, qual, hunt)
-    const fixIssues = formatFindings(findings) + formatCrossReviewerNote(findings)
+    const crossReviewerNote = formatCrossReviewerNote(findings)
+    // D1: history 主导单源——formatFindingsHistory 已含本轮 [OPEN]（标★本轮新增），
+    // 不再单独注入 formatFindings(本轮) 避免重复。cross-reviewer note 按 file 聚合保留。
+    const findingsHistoryText = formatFindingsHistory(state.perTask[taskKey].findings_history || [], round)
+    const fullFixIssues = findingsHistoryText ? `${findingsHistoryText}\n${crossReviewerNote}` : crossReviewerNote
     // 最后 1 轮 fix 强制 opus（有限模式 round===maxRounds-1 / 无限模式 round>=4）：
     // 难度递增，最后机会用最强 model 降低 halt 概率。maxRounds 未传向后兼容默认 3（round=2 升级）。
     const fixModel = fixModelForRound(round, model, maxRounds)
-    impl = await dispatchImpl(buildPrompt('implementor', implCtx(fixIssues, `修复 review round ${round} 问题（${findings.length} 项发现：spec/quality/hunter）。`)), { schema: SCHEMAS.implementor, model: fixModel, label: `impl:${task.id}:fix${round}` }, fixModel, 'opus')
+    impl = await dispatchImpl(buildPrompt('implementor', implCtx(fullFixIssues, `修复 review round ${round} 问题（${findings.length} 项发现；★ 标本轮新增）。`)), { schema: SCHEMAS.implementor, model: fixModel, label: `impl:${task.id}:fix${round}` }, fixModel, 'opus')
     if (impl.halted) return impl
     // Bug 4: fix-round implementor 返回 blocked/failed/needs_context 时不能静默忽略——
     // 否则 orchestrator 在 stale code 上继续下一轮 review，必然重复发现同样问题 → 浪费轮次。

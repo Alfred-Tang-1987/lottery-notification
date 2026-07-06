@@ -30,7 +30,7 @@ for (const role of ROLES) {
 test('run-plans.js inlines the new conditional-render helpers', () => {
   // QC-3: formatLessonsForDistill / applyLessonDecisions / renderLessonEntry 不再 inline
   // （SH2 后 distiller 自读写盘，orchestrator 不调用这些函数）。lib.js 真源保留。
-  for (const fn of ['formatReferencePaths', 'formatSilentFailureContext', 'formatFailedApproaches', 'formatLessons', 'formatUniversalLessons', 'formatDomainLessons', 'formatWriteFilesScope', 'formatSchemaCheck', 'languageChecklist', 'LANGUAGE_CHECKLISTS', 'gateCommands', 'collectReviewFindings', 'formatFindings', 'matchesPlanFilter', 'classifyThrown', 'reviewHaltReason', 'reviewHaltForEmptyFailed', 'haltLikelySource', 'fixModelForRound', 'resolveMaxRounds', 'resolveLessonsAutoDistill', 'distillLessonInput', 'summarizeReviewRound', 'groupFindingsByFile', 'formatCrossReviewerNote']) {
+  for (const fn of ['formatReferencePaths', 'formatSilentFailureContext', 'formatFailedApproaches', 'formatLessons', 'formatUniversalLessons', 'formatDomainLessons', 'formatWriteFilesScope', 'formatSchemaCheck', 'languageChecklist', 'LANGUAGE_CHECKLISTS', 'gateCommands', 'collectReviewFindings', 'formatFindings', 'matchesPlanFilter', 'classifyThrown', 'reviewHaltReason', 'reviewHaltForEmptyFailed', 'haltLikelySource', 'fixModelForRound', 'resolveMaxRounds', 'resolveLessonsAutoDistill', 'distillLessonInput', 'summarizeReviewRound', 'groupFindingsByFile', 'formatCrossReviewerNote', 'updateFindingsHistory', 'formatFindingsHistory', 'hasRegressed', 'resolveReviewBudget']) {
     assert.match(runSrc, new RegExp(`function ${fn}|const ${fn}`), `missing helper: ${fn}`)
   }
 })
@@ -76,6 +76,8 @@ test('QC-4: 关键 helper 函数体 lib.js ↔ run-plans.js 字节一致', () =>
     'extractCompletedFromSubjects',
     // OSCILLATING opus 升级 + flip-flop 区分 (2026-07-05): 改进 1+2
     'shouldEscalateOnOscillation', 'isFlipFlop',
+    // v3 findings 状态机 + OSC budget (2026-07-06): E'
+    'updateFindingsHistory', 'formatFindingsHistory', 'hasRegressed', 'resolveReviewBudget',
   ]
   for (const fn of fns) {
     const libBody = extractFunctionBody(libSrc, fn)
@@ -222,10 +224,9 @@ test('行尾一致性：lib.js 与 run-plans.js 不得含 bare LF（CRLF 根因�
   }
 })
 
-test('run-plans.js 不得残留 budget 死引用（runtime 未注入此全局，提及会误导维护者）', () => {
-  // budget 在代码中未使用，文件头注释提及会让人误以为 runtime 注入了它。
-  assert.doesNotMatch(runSrc, /\bbudget\b/, 'run-plans.js 残留 budget 死引用——runtime 未注入此全局，应从注释删除')
-})
+// REMOVED: old sync guard that forbid any mention of 'budget' in run-plans.js.
+// v3 legitimately uses review_budget config + resolveReviewBudget + diag.budget.
+// The original guard was a historical artifact from when 'budget' was a misleading comment reference.
 
 test('review_history 存档：每轮 findings 摘要进 manifest（OSCILLATING halt 后可定位振荡点）', () => {
   // T3 OSCILLATING halt 暴露：review_rounds 只存 int 计数，findings 不持久化 →
@@ -947,6 +948,14 @@ test('finalReport prompt 须含 cross-reviewer 分组段落', () => {
     const p = promptBody(src, 'finalReport')
     assert.match(p, /Cross-Reviewer/, 'finalReport 须含 cross-reviewer 分组指引')
     assert.match(p, /grouped by file/, 'cross-reviewer 须按文件分组')
+  }
+})
+
+test('finalReport prompt per_task includes v3 fields', () => {
+  for (const src of [libSrc, runSrc]) {
+    const p = promptBody(src, 'finalReport')
+    assert.match(p, /findings_history/, 'finalReport prompt mentions findings_history')
+    assert.match(p, /oscillation_escalated_at_round/, 'finalReport prompt mentions oscillation_escalated_at_round')
   }
 })
 
