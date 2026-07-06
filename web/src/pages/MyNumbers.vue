@@ -240,7 +240,12 @@ onMounted(() => {
 
     <!-- 添加号码弹窗 -->
     <div v-if="showForm" class="modal" role="dialog" aria-label="添加号码">
-      <div class="modal-backdrop" @click="showForm = false" />
+      <button
+        type="button"
+        class="modal-backdrop"
+        aria-label="关闭弹窗"
+        @click="showForm = false"
+      />
       <div class="modal-card modal-card-wide">
         <h2>添加号码</h2>
         <form @submit.prevent="createTicket">
@@ -455,6 +460,11 @@ onMounted(() => {
   position: absolute;
   inset: 0;
   background: rgba(0, 0, 0, 0.4);
+  /* button reset: backdrop is a <button> for A11y (spec §12.4) */
+  border: none;
+  padding: 0;
+  margin: 0;
+  cursor: default;
 }
 
 .modal-card {
