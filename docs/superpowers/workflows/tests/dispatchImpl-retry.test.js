@@ -134,7 +134,7 @@ test('SH2: distiller 是 halt() 中独立 agent 调用（S5 第 5 轮：单次 a
   assert.match(runSrc, /agent\(buildPrompt\('lessonDistiller'/, "halt() 须调 agent(buildPrompt('lessonDistiller', ...)) 传 distillInput（S5：单次 agent 调用）")
   assert.match(runSrc, /distillInput/, 'halt() 须构造 distillInput 传给 distiller')
   assert.match(runSrc, /lessonsPath/, 'distiller 须收到 lessonsPath 路径（自己读文件）')
-  // finalReport step5 须说明 distiller 已执行（不再自己调 distiller）
-  const finalReportPrompt = runSrc.match(/finalReport: `([\s\S]*?)`/)?.[1] || ''
+  // finalReport step5 须说明 distiller 已执行（不再自己调 distiller）。注意：源码使用 CRLF 行尾，正则 $ 不匹配 \r；用 [\s\S] 安全提取。
+  const finalReportPrompt = runSrc.match(/finalReport: `([\s\S]*?)`,\r?\n\r?\n  lessonDistiller/)?.[1] || ''
   assert.match(finalReportPrompt, /ALREADY been invoked/i, 'finalReport 须说明 distiller 已独立执行')
 })

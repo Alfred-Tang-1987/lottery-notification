@@ -852,6 +852,20 @@ test('formatUniversalLessons tolerates LLM category inference variants', () => {
   assert.ok(out.includes('empty'))
 })
 
+test('updateFindingsHistory allows regressed finding to return to fixed when resolved', () => {
+  // r1 open, r2 fixed, r3 regressed, r4 absent → 二次修好 → fixed
+  let history = updateFindingsHistory([], [{ title: 'A', severity: 'important', file: 'a', fix: '' }], 1)
+  history = updateFindingsHistory(history, [], 2)
+  assert.equal(history[0].status, 'fixed')
+  assert.equal(history[0].fixed_at_round, 2)
+  history = updateFindingsHistory(history, [{ title: 'A', severity: 'important', file: 'a', fix: '' }], 3)
+  assert.equal(history[0].status, 'regressed')
+  assert.equal(history[0].fixed_at_round, 2)
+  history = updateFindingsHistory(history, [], 4)
+  assert.equal(history[0].status, 'fixed')
+  assert.equal(history[0].fixed_at_round, 4)
+})
+
 // —— formatDomainLessons (Tier 2: 按 task category 匹配，cap 5，同 plan 优先) ——
 
 test('formatDomainLessons returns empty string when taskCategories empty', () => {
