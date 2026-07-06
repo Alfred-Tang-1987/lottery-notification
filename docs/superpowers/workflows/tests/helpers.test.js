@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, isQuotaError, errStr, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound, resolveMaxRounds, detectOscillation, distillLessonInput, applyLessonDecisions, formatLessonsForDistill, validateAmendResult, validateCheckoutResult, groupFindingsByFile, formatCrossReviewerNote, bareTaskId, dropParentTasks, extractCompletedFromSubjects, extractTaskKey, shouldEscalateOnOscillation, isFlipFlop, formatLessons, formatUniversalLessons, formatDomainLessons, updateFindingsHistory, formatFindingsHistory, hasRegressed } from '../lib.js'
+import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, isQuotaError, errStr, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound, resolveMaxRounds, detectOscillation, distillLessonInput, applyLessonDecisions, formatLessonsForDistill, validateAmendResult, validateCheckoutResult, groupFindingsByFile, formatCrossReviewerNote, bareTaskId, dropParentTasks, extractCompletedFromSubjects, extractTaskKey, shouldEscalateOnOscillation, resolveReviewBudget, isFlipFlop, formatLessons, formatUniversalLessons, formatDomainLessons, updateFindingsHistory, formatFindingsHistory, hasRegressed } from '../lib.js'
 
 const ok = { status: 'ok', diagnostics: { files_touched: ['a.py'] } }
 const ok2 = { status: 'ok', diagnostics: { files_touched: ['b.py'] } }
@@ -188,17 +188,53 @@ test('extractTaskKey: chore/docs/无 type → null', () => {
   assert.equal(extractTaskKey('plan-06/T1: no type'), null)
 })
 
-// —— shouldEscalateOnOscillation（改进1: OSCILLATING 触发时升级 opus 一搏）——
-test('shouldEscalateOnOscillation: 当前非 opus 且未升级过 → true（升级 opus 一搏）', () => {
+// —— shouldEscalateOnOscillation (v3: 仅判断"是否升级 opus"，halt 决策上移) ——
+
+test('shouldEscalateOnOscillation returns true when non-opus and not yet escalated', () => {
   assert.equal(shouldEscalateOnOscillation('sonnet', false), true)
-  assert.equal(shouldEscalateOnOscillation('haiku', false), true)
 })
-test('shouldEscalateOnOscillation: 已 opus → false（opus 也振荡，真 halt）', () => {
+
+test('shouldEscalateOnOscillation returns false when already escalated', () => {
+  // v3: 已升级 → return false（但 halt 决策已上移到 OSC 分支，不再意味 halt）
+  assert.equal(shouldEscalateOnOscillation('opus', true), false)
+})
+
+test('shouldEscalateOnOscillation returns false when already opus', () => {
   assert.equal(shouldEscalateOnOscillation('opus', false), false)
 })
-test('shouldEscalateOnOscillation: 已升级过 opus 仍振荡 → false（不重复升级）', () => {
-  assert.equal(shouldEscalateOnOscillation('opus', true), false)
+
+test('shouldEscalateOnOscillation returns false when non-opus but already escalated', () => {
+  // 已升过（无论当前模型）不再重复升级
   assert.equal(shouldEscalateOnOscillation('sonnet', true), false)
+})
+
+// —— resolveReviewBudget ——
+
+test('resolveReviewBudget returns 5 default when unconfigured', () => {
+  assert.equal(resolveReviewBudget({}), 5)
+  assert.equal(resolveReviewBudget(undefined), 5)
+  assert.equal(resolveReviewBudget({ review_budget: null }), 5)
+})
+
+test('resolveReviewBudget returns configured positive integer', () => {
+  assert.equal(resolveReviewBudget({ review_budget: 10 }), 10)
+  assert.equal(resolveReviewBudget({ review_budget: 6 }), 6)
+})
+
+test('resolveReviewBudget returns default 5 for non-number', () => {
+  assert.equal(resolveReviewBudget({ review_budget: '8' }), 5)
+  assert.equal(resolveReviewBudget({ review_budget: 'eight' }), 5)
+})
+
+test('resolveReviewBudget returns default 5 for NaN or Infinity', () => {
+  assert.equal(resolveReviewBudget({ review_budget: NaN }), 5)
+  assert.equal(resolveReviewBudget({ review_budget: Infinity }), 5)
+})
+
+test('resolveReviewBudget returns 5 for zero or negative (use default)', () => {
+  // 0/负数无意义（budget 必须正）→ 用默认 5
+  assert.equal(resolveReviewBudget({ review_budget: 0 }), 5)
+  assert.equal(resolveReviewBudget({ review_budget: -1 }), 5)
 })
 
 // —— isFlipFlop（改进2: 区分 flip-flop vs 补充）——

@@ -44,12 +44,22 @@ export function detectOscillation(filesTouchedPerRound) {
   return { oscillating: false }
 }
 
-// 改进 1 (2026-07-05): OSCILLATING 触发时是否先升级 opus 跑一轮（而非直接 halt）。
-// 当前非 opus 且未升级过 → true（升级 opus 一搏）；已升级 / 已 opus → false（真 halt）。
-// 防「无限模式 round>=4 才 opus + OSCILLATING 在 round 3 触发」挡住 opus 升级路径（实战 T6e）。
+// v3 (2026-07-06, §5.5): shouldEscalateOnOscillation 仅判断「是否升级 opus」。
+// halt 决策上移到 run-plans.js OSC 分支（flipFlop OR hasRegressed → halt；else 继续 + budget guard）。
+// 旧逻辑「已升级→return false→halt」已移除（那是纯计数 halt 的根因，浪费 opus 推进力）。
 export function shouldEscalateOnOscillation(currentModel, alreadyEscalated) {
-  if (alreadyEscalated) return false
-  return currentModel !== 'opus'
+  if (alreadyEscalated) return false  // 已升级过不再重复升级（不影响 halt 决策）
+  return currentModel !== 'opus'      // 非 opus → 升级
+}
+
+// v3 (2026-07-06, §5.5): 无限模式（review_max_rounds=0）的 review 轮数预算。
+// flipFlop=false 持续推进时，升 opus 后继续跑直到 budget 耗尽（防 reviewer 同义变体漏报致无限跑）。
+// 默认 5——历史 3 次 OSCILLATING halt 全在 r3，r4 是合理下一档；r5-8 无实证且烧 2x opus 配额。
+// 仅无限模式生效；有限模式用 review_max_rounds 硬上限。
+export function resolveReviewBudget(config) {
+  const v = config?.review_budget
+  if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) return 5
+  return v
 }
 
 // 改进 2 (2026-07-05): 区分 flip-flop（同 finding title 跨轮反复 = 真振荡）vs 补充（每轮新 title）。
