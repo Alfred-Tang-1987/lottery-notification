@@ -1374,11 +1374,20 @@ state.plans = boot.evidence.plans
 // P3-deterministic-completed (2026-07-05): completed 提取从 LLM 拿走交给正则。
 // 优先 args.completed（手动覆盖）；其次 extractCompletedFromSubjects(git_log_subjects)
 // （确定性正则，bootstrap 返回原始 subjects）；最后 boot.evidence.completed（LLM 提取，仅 fallback）。
+// P3-union-fallback (2026-07-06): 正则提取与 boot.evidence.completed 取【并集】而非二选一。
+//   根因：bootstrap agent（kimi-k2.7）复制 git log subjects 时偶漏某条（如 plan-06/T2 的
+//   feat commit 在 git log 第 68 条，bootstrap 返回的 193 条 subjects 里独缺 T2）→ 正则输入缺
+//   → extractCompletedFromSubjects 输出缺 T2 → state.completed 不含 T2 → T2 被当 pending 重跑
+//   → OSCILLATING。boot.evidence.completed（LLM 提取）此时反而含 T2，但旧逻辑因正则成功返回
+//   （非空）就不走 LLM fallback → 漏。并集：任一来源识别到的 task 都视为 completed，互为兜底。
+//   正则仍是主源（确定性），LLM completed 补漏（覆盖 bootstrap 复制 subjects 时的随机漏条）。
+const _regexCompleted = (Array.isArray(boot.evidence.git_log_subjects) && boot.evidence.git_log_subjects.length
+  ? extractCompletedFromSubjects(boot.evidence.git_log_subjects)
+  : [])
+const _llmCompleted = (Array.isArray(boot.evidence.completed) ? boot.evidence.completed : [])
 const _rawCompleted = (Array.isArray(args.completed) && args.completed.length
   ? args.completed
-  : (Array.isArray(boot.evidence.git_log_subjects) && boot.evidence.git_log_subjects.length
-      ? extractCompletedFromSubjects(boot.evidence.git_log_subjects)
-      : boot.evidence.completed)) || []
+  : [...new Set([..._regexCompleted, ..._llmCompleted])]) || []
 state.completed = normalizeCompleted(_rawCompleted)
 // 跨 session 失败方案追踪：按 plan-scoped taskKey 索引存入 state，供 implCtx 注入 implementor prompt
 // P1-2（第 13 轮）: bootstrap 返回的 task_id 可能是裸 T1 或 plan-scoped；统一归一化为 plan-scoped key，防跨 plan 同名 task 查找失败
