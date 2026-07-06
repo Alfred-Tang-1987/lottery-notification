@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue';
+import { ref, onMounted, computed, nextTick } from 'vue';
+import { useRoute } from 'vue-router';
 import { apiGet, apiPost } from '../api/client';
 import { fmtMoney } from '../lib/format';
 import { LOTTERIES } from '../lib/lotteries';
@@ -174,8 +175,53 @@ function needsTaxHint(amount: number | null): boolean {
   return amount != null && amount > 1_000_000;
 }
 
-onMounted(() => {
-  void load();
+// Map backend claim_status to a badge CSS class. 'expired' is a first-class
+// terminal status (set by the 07:30 scheduler) and must render distinctly from
+// the 'unknown' fallback so expired records aren't mislabeled as 无兑奖.
+function badgeClass(status: string | null): string {
+  if (status === 'pending' || status === 'claimed' || status === 'expired') return status;
+  return 'unknown';
+}
+
+function badgeLabel(status: string | null): string {
+  if (status === 'pending') return '待兑奖';
+  if (status === 'claimed') return '已领取';
+  if (status === 'expired') return '已过期';
+  return '无兑奖';
+}
+
+const route = useRoute();
+// claimId from /wins?claim=<id> deep-link (emitted by Dashboard's 待兑奖 CTA).
+// Dashboard pushes PrizeClaim.id (PendingClaimOut.id), so we match against
+// record.claim_id, NOT record.id (which is the Comparison id). Highlighted
+// after load so the user lands on the specific record.
+const highlightId = ref<number | null>(null);
+// Non-blocking notice when a deep-link target can't be located (record filtered
+// out, already claimed, or not in current period). Prevents silent failure of
+// the deep-link scroll/highlight.
+const notFoundNotice = ref('');
+
+onMounted(async () => {
+  const claimParam = route.query.claim;
+  if (typeof claimParam === 'string' && /^\d+$/.test(claimParam)) {
+    highlightId.value = Number(claimParam);
+  }
+  await load();
+  if (highlightId.value !== null) {
+    await nextTick();
+    // Match by claim_id (PrizeClaim.id) since Dashboard pushes that id.
+    const el = document.getElementById(`claim-${highlightId.value}`);
+    if (el && typeof el.scrollIntoView === 'function') {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    } else {
+      // Record not in current filter (e.g. already claimed → moved out of
+      // pending, or excluded by period filter). Surface a non-blocking note so
+      // the user knows the deep-link target wasn't found vs. the page being
+      // broken. Not an error (data is fine); the notice stays visible until
+      // navigation so the user has time to read it.
+      notFoundNotice.value = '未定位到该中奖记录，可能已领取或不在当前筛选范围内。';
+    }
+  }
 });
 </script>
 
@@ -184,6 +230,8 @@ onMounted(() => {
     <header class="page-header">
       <h1>中奖记录</h1>
     </header>
+
+    <div v-if="notFoundNotice" class="notice" role="status">{{ notFoundNotice }}</div>
 
     <State v-if="loadingRecords" type="loading" title="加载中奖记录…" />
     <State v-else-if="error" type="error" :title="error" @action="load" />
@@ -270,8 +318,12 @@ onMounted(() => {
         <li
           v-for="record in filtered"
           :key="record.id"
+          :id="record.claim_id != null ? `claim-${record.claim_id}` : `record-${record.id}`"
           class="record-card"
-          :class="{ urgent: record.claim_status === 'pending' && record._days !== null && record._days <= 15 }"
+          :class="{
+            urgent: record.claim_status === 'pending' && record._days !== null && record._days <= 15,
+            highlight: highlightId !== null && record.claim_id === highlightId,
+          }"
         >
           <div class="record-main">
             <div class="record-title">
@@ -287,8 +339,8 @@ onMounted(() => {
             <div class="record-detail">命中: {{ record.hits_json }}</div>
           </div>
           <div class="record-side">
-            <span class="status-badge" :class="record.claim_status || 'unknown'">
-              {{ record.claim_status === 'pending' ? '待兑奖' : record.claim_status === 'claimed' ? '已领取' : '无兑奖' }}
+            <span class="status-badge" :class="badgeClass(record.claim_status)">
+              {{ badgeLabel(record.claim_status) }}
             </span>
             <div
               v-if="record.claim_status === 'pending' && record._days !== null"
@@ -417,6 +469,23 @@ onMounted(() => {
   background: #fef2f2;
 }
 
+.record-card.highlight {
+  /* Briefly emphasize a deep-linked record (e.g. /wins?claim=<id> from Dashboard)
+     so the user can locate it after the smooth-scroll lands. */
+  outline: 2px solid var(--accent, #2563eb);
+  outline-offset: 2px;
+}
+
+.notice {
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #fef3c7;
+  color: #92400e;
+  border: 1px solid #fcd34d;
+  font-size: var(--text-sm);
+}
+
 .record-title {
   font-weight: 600;
   font-size: var(--text-lg);
@@ -483,6 +552,11 @@ onMounted(() => {
 .status-badge.claimed {
   background: #dcfce7;
   color: #166534;
+}
+
+.status-badge.expired {
+  background: #fee2e2;
+  color: #991b1b;
 }
 
 .status-badge.unknown {

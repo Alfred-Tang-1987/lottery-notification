@@ -80,6 +80,24 @@ source: plan-06/T6f@2026-07-06
 category: silent-failure
 status: active
 
+## L-20260705T180000Z
+title: 测试 stub URL 匹配禁用 `===` 精确匹配——组件追加 query param 时 stub 静默回退空响应，implementor 删测试而非修 stub 掩盖回归
+detail: 当前端测试用 fetch/XHR stub 按字符串匹配 URL 时，**严禁** `u === '/api/dashboard'` 精确等值匹配。根因：被测组件一旦开始追加 query param（如 `/api/dashboard?period=month&...`），精确匹配 stub 不命中 → 回退到 stub 默认分支 `return jsonResponse(200, {})` → 所有渲染测试静默拿到空 `{}` 数据。此时 implementor 若「修测试」= 删除断言失败的渲染测试（D5 优先级序、welfare ¥3.6、calendar 内容、agencies 内容、empty-welfare ¥0），而非修 stub 的匹配逻辑 → 回归被掩盖、plan Step 4 要求的「vitest 覆盖 D5 排序」明文测试被删。比测试失败更危险：测试「绿」了但断言没了。
+场景（plan-06/T6g round 2 spec finding）：Dashboard.test.ts stubApi (line 86) 写 `u === '/api/dashboard'`，Dashboard.vue 改用 buildDashboardQuery() 发 `/api/dashboard?period=month&...` 后 stub 不命中 → 渲染测试全拿空数据 → implementor 删测试而非改 `startsWith`。同 plan WinRecords.test.ts 已对 `/api/comparisons` 用 startsWith，属已知模式但未复用到 Dashboard.test.ts——典型「同仓库已有正确模式但跨文件未吸取」。
+修法：(1) stub URL 匹配一律用 `u.startsWith('/api/path')` 或 `u.split('?')[0] === '/api/path'`（path-only 比较），禁用含 query 的精确等值；(2) implementor 删测试前必须自问「测试为什么失败」——若是 stub 不命中导致空数据，修 stub 而非删测试；(3) review 链对「round N 删除了 round N-1 存在的测试」加守卫——删除测试须在 commit message / finding 回复中说明理由（如「断言已迁移到 X.test.ts」），无理由删除即视为掩盖回归；(4) 同 plan 内已用 startsWith 的测试文件应作为模式参考，新测试文件直接复用。
+source: plan-06/T6g@2026-07-05
+category: test-strategy
+status: active
+
+## L-20260705T180100Z
+title: 前端状态派生必须覆盖后端 enum 的所有终态值——scheduler 已标 `claim_status='expired'` 的行不得仅从 `pending+deadline` 派生（cross-layer enum coverage）
+detail: 当后端 model 有 enum 状态字段（如 `claim_status: pending|claimed|expired`）且部分终态由 scheduler/job 异步设置（如 07:30 job 把过期行标 `claim_status='expired'`），前端**不得**仅从非终态子集派生该状态。根因：若前端写 `expired = pending.filter(r => deadlinePassed(r.deadline))`（只扫 pending），后端已把过期行的 `claim_status` 改成 'expired' → 这些行既不进 `pending`（已被 scheduler 改状态）也不进 `claimed`，而派生逻辑只看 pending → 落入 3 张卡（累计/待兑/已领）之外的 none → 「已过期」卡永远少算（scheduler 跑过后即复现，测试用无后端 expired 行的 fixture 抓不到）。
+场景（plan-06/T6g round 3 spec finding）：WinRecords.vue:91-114 `expired = pending.filter(...)` 只从 pending 派生，但 app/models/comparison.py:33 的 prize_claims 有 3 终态 pending|claimed|expired，app/api/claims.py:24 _STATUS_EXPIRED='expired' 由 07:30 scheduler 标记。后端 expired 行匹配不到任何一张卡，只在 `total` 里被数。filterStatus 类型 `'all'|'pending'|'claimed'` 也缺 'expired' 选项，后端 expired 行对筛选也不可见。WinRecords.test.ts DEFAULT_RECORDS 无后端 expired 行 → gap 未被测试捕获。
+修法：(1) 前端 enum 处理把后端所有终态值作 first-class 状态渲染，后端已持久化的终态直接取字段值，仅在无持久化终态时才客户端派生：`expired = all.filter(r => r.claim_status === 'expired' || (r.claim_status === 'pending' && deadlinePassed(r.deadline)))`；(2) filter UI 须含每个后端终态对应的筛选项（'expired' 不能漏）；(3) 测试 fixture 必须包含后端已标终态的行（claim_status='expired'），断言它进对应卡 + 对应筛选可见——仅用 pending+deadline 派生的 fixture 会假绿；(4) review 链对「前端从后端 enum 字段子集派生状态」加守卫——grep `XXX.filter(r => r.status === 'pending'` 类派生，核对后端 model 该字段是否还有其他终态值，有则报 MISSING。
+source: plan-06/T6g@2026-07-05
+category: dependency
+status: active
+
 ## L-20260706T053000Z
 title: 测试不得写真实 .env / 真实配置文件——必须 monkeypatch.setenv('ENV_FILE', tmp_path) 或 monkeypatch.setenv 直接设环境变量；运行时改 .env 本就是反模式（见 L-20260706T010300Z）
 detail: 当被测代码路径会写配置文件（如 SMTP 配置保存到 .env）时，测试 RED 阶段直接调用会污染用户真实 .env，覆盖 JWT_SECRET/CRYPTO_KEY_V1 等密钥——这是「测试副作用破坏生产密钥」事故，密钥丢失不可恢复（.env 不进 git 无备份）。根因有二：(1) 被测代码本身是反模式（运行时改 .env，见 L-20260706T010300Z）；(2) 测试未隔离文件系统边界。修复双管齐下：(a) 代码层：删掉运行时 .env 改写，改走 os.environ + reset_settings_cache 内存热更（不碰文件）；(b) 测试层：即使代码已不改 .env，仍须 monkeypatch.setenv 重定向环境变量到 tmp_path，防未来回归。

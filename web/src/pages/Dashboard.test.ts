@@ -86,9 +86,11 @@ function stubApi(overrides: Record<string, unknown> = {}) {
     const u = String(url);
     if (u === "/auth/csrf") return jsonResponse(200, { csrf_token: "tok" });
     if (method === "GET" && u.startsWith("/api/dashboard/calendar")) {
+      if (overrides.calendarFail) return jsonResponse(500, { detail: "calendar down" });
       return jsonResponse(200, overrides.calendar ?? DEFAULT_CALENDAR);
     }
     if (method === "GET" && u.startsWith("/api/dashboard/agencies")) {
+      if (overrides.agenciesFail) return jsonResponse(500, { detail: "agencies down" });
       return jsonResponse(200, overrides.agencies ?? DEFAULT_AGENCIES);
     }
     if (method === "GET" && u.startsWith("/api/dashboard")) {
@@ -304,5 +306,22 @@ describe("Dashboard.vue (T6g)", () => {
     expect(mapUrl).toContain(`q=${encodeURIComponent(agencyName)}`);
     // And must NOT be the raw "lat,lng" string.
     expect(mapUrl).not.toMatch(/q=\d/);
+  });
+
+  it("surfaces partial-warn (not blocking error) when calendar fails but dashboard succeeds", async () => {
+    // Round 4 hunter + quality finding: secondary failures (calendar/agency)
+    // must NOT be swallowed, but also must NOT gate the dashboard main body via
+    // the blocking error State (which would hide D5 first-screen 待兑奖).
+    // Solution: a non-blocking partialWarn banner + dashboard data still renders.
+    await mount({ calendarFail: true });
+    // Dashboard main body must render (not replaced by error State).
+    expect(host.textContent).toContain("待兑奖");
+    // Non-blocking warning banner must be visible.
+    const warn = host.querySelector(".partial-warn");
+    expect(warn).toBeTruthy();
+    expect(warn?.textContent).toContain("开奖日历");
+    // Blocking error/empty/loading State must NOT be shown (State.vue uses
+    // class="state"; querying it returns null only when no State rendered).
+    expect(host.querySelector('.state')).toBeNull();
   });
 });
