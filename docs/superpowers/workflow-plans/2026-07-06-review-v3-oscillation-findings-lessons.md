@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 把 OSCILLATING halt 从「纯计数（同文件 ≥3 轮）」改为「flipFlop/regressed 驱动 + budget guard 8」，加 findings 状态机（`[OPEN]`/`[FIXED]`/`[REGRESSED]`）防回归循环，lessons 改两层注入（silent-failure 始终 + 领域按 category），让 flipFlop=false 的 task（历史 3 次 halt 全属此类）能升 opus 后跑到收敛。
+**Goal:** 把 OSCILLATING halt 从「纯计数（同文件 ≥3 轮）」改为「flipFlop/regressed 驱动 + budget guard 5」，加 findings 状态机（`[OPEN]`/`[FIXED]`/`[REGRESSED]`）防回归循环，lessons 改两层注入（silent-failure 始终 + 领域按 category），让 flipFlop=false 的 task（历史 3 次 halt 全属此类）能升 opus 后跑到收敛。
 
 **Architecture:** 5 个改进联动：(A+B) lessons category 匹配 + 两层注入 → (E') findings 状态机纯函数 + 接线 → (OSC) shouldEscalateOnOscillation 改 flipFlop 驱动 + budget 5 + hasRegressed 联动 → (F) opus 升级 prompt 强化。纯函数进 lib.js（node:test 单测），runtime 胶水留 run-plans.js，sync.test 字节守护 inline 副本。
 
@@ -930,14 +930,14 @@ function shouldEscalateOnOscillation(currentModel, alreadyEscalated) {
 ```javascript
 function ensurePerTaskDefaults(entry) {
   return {
-    plan_id: '', status: '', model: '', review_rounds: 0,
+    planId: null, status: 'in_progress', model: 'sonnet', review_rounds: 0,
     files_touched_per_round: [], review_history: [],
     findings_history: [],              // v3: 状态机
     oscillation_escalated_at_round: null,  // v3 F: 升级轮标记
     commit_sha: null, opus_escalated: false,
-    simplify_reverted: false, simplify_review_findings: null,
-    destructive_review_failed: false, destructive_review_findings: null,
-    concerns: null, blocked_info: null,
+    simplify_reverted: false, simplify_review_findings: [],
+    destructive_review_failed: false, destructive_review_findings: [],
+    concerns: [], blocked_info: null,
     ...entry,
   }
 }
@@ -971,11 +971,28 @@ per_task.<task> 还含 v3 字段：findings_history（findings 状态机轨迹 [
 
 ```javascript
     const osc = detectOscillation(state.perTask[taskKey].files_touched_per_round)
+    const flipFlop = isFlipFlop(state.perTask[taskKey].review_history || [])
+    const regressed = hasRegressed(state.perTask[taskKey].findings_history || [])
+
+    // v3 (§5.5): 任一 finding 回归（fixed→regressed）→ 立即 halt（独立于文件振荡）
+    // 回归是比「同文件被改 ≥3 轮」更强的信号；等 detectOscillation 触发会延迟 halt、浪费 opus budget。
+    if (regressed) {
+      return {
+        halted: true,
+        reason: 'OSCILLATING',
+        diag: {
+          ...osc,
+          flipFlop,
+          regressed,
+          regressedFindings: state.perTask[taskKey].findings_history.filter(h => h.status === 'regressed'),
+          model,
+        },
+      }
+    }
+
     if (osc.oscillating) {
-      const flipFlop = isFlipFlop(state.perTask[taskKey].review_history || [])
-      const regressed = hasRegressed(state.perTask[taskKey].findings_history || [])
-      // v3 (§5.5): flipFlop OR regressed → 立即 halt（真振荡/回归循环）
-      if (flipFlop || regressed) {
+      // v3 (§5.5): flipFlop → 真振荡（reviewer 反向分歧）→ halt
+      if (flipFlop) {
         return {
           halted: true,
           reason: 'OSCILLATING',
@@ -983,7 +1000,6 @@ per_task.<task> 还含 v3 字段：findings_history（findings 状态机轨迹 [
             ...osc,
             flipFlop,
             regressed,
-            regressedFindings: state.perTask[taskKey].findings_history.filter(h => h.status === 'regressed'),
             model,
           },
         }
@@ -1000,6 +1016,8 @@ per_task.<task> 还含 v3 字段：findings_history（findings 状态机轨迹 [
       }
     }
 ```
+
+**注意**：regressed 是独立 halt 触发（在 `osc.oscillating` 之前），因为 regression 是已修问题复现的精确信号，不依赖文件振荡检测。flipFlop 仍受 `osc.oscillating` 保护，防止早期 review 标题重叠导致误 halt。
 
 - [ ] **Step 7: Add budget guard for infinite mode**
 
@@ -1094,7 +1112,8 @@ fix round implCtx 拼 formatFindingsHistory（[OPEN]+[FIXED]）。"
     const crossReviewerNote = formatCrossReviewerNote(findings)
     // D1: history 主导单源（同 Task 5 Step 8）
     const findingsHistoryText = formatFindingsHistory(state.perTask[taskKey].findings_history || [], round)
-    const fullFixIssues = findingsHistoryText ? `${findingsHistoryText}\n${crossReviewerNote}` : (formatFindings(findings) + crossReviewerNote)
+    const fullFixIssues = findingsHistoryText ? `${findingsHistoryText}\n${crossReviewerNote}` : crossReviewerNote
+    // 注：历史不可能是空（刚 updateFindingsHistory），无需保留旧 formatFindings(findings) fallback，避免重复注入。
     // v3 F: opus 升级轮强化 retryNote（DX: 移除中英混杂 + 双重否定，正向陈述；文本修正 r{round} 而非 r{round-1}）
     const oscEscRound = state.perTask[taskKey].oscillation_escalated_at_round
     const retryNote = oscEscRound === round

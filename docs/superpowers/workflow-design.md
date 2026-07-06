@@ -384,16 +384,21 @@ commit agent 在 step 2.6 用 `git diff HEAD --numstat` 检测 `deleted_code` / 
 **改进 OSCILLATING halt（flipFlop 驱动 + budget guard）**：旧逻辑 detectOscillation 触发 → 升 opus → 再触发即 halt（纯计数）。新逻辑：
 
 ```
-detectOscillation 触发时：
-├─ flipFlop=true  OR  hasRegressed(history)
-│   → 立即 HALT（reason: OSCILLATING，diag.flipFlop / diag.regressed）
-│   含义：reviewer 真矛盾或 implementor 回归循环，需人介入
+每轮 review 后（allGreen 放行后）：
+├─ hasRegressed(history) = true
+│   → 立即 HALT（reason: OSCILLATING，diag.regressed + regressedFindings）
+│   含义：implementor 回归循环，需人介入
 │
-└─ flipFlop=false 且无 regressed（每轮新 findings = 在推进）
-    ├─ 未升 opus → 升 opus，继续
-    └─ 已升 opus → 继续（new findings = progress，不该 halt）
-        └─ budget guard：round ≥ review_budget（默认 5）→ HALT
-           reason: 'review_not_converging'（blocked.md 建议拆 task，区别于真振荡）
+└─ detectOscillation 触发时：
+    ├─ flipFlop=true
+    │   → 立即 HALT（reason: OSCILLATING，diag.flipFlop）
+    │   含义：reviewer 真矛盾，需人介入
+    │
+    └─ flipFlop=false 且无 regressed（每轮新 findings = 在推进）
+        ├─ 未升 opus → 升 opus，继续
+        └─ 已升 opus → 继续（new findings = progress，不该 halt）
+            └─ budget guard：round ≥ review_budget（默认 5）→ HALT
+               reason: 'review_not_converging'（blocked.md 建议拆 task，区别于真振荡）
 ```
 
 - `isFlipFlop(reviewHistory)`（fast-path，每轮 O(n)，检查本轮 title 在前轮出现过）与 `hasRegressed(findingsHistory)`（精确 diag：哪轮修好、哪轮复现）**同义但互补**，任一触发即 halt。
@@ -406,7 +411,7 @@ detectOscillation 触发时：
 | 注入项 | 范围 | 来源 |
 |--------|------|------|
 | findings_history（`[OPEN]`/`[FIXED]`） | 仅当前 task | `state.perTask[taskKey].findings_history` |
-| lessons（Tier 1 + Tier 2） | 跨 task / 跨 plan | `state.taskLessons[taskKey]`（bootstrap 全局匹配） |
+| lessons（Tier 1 + Tier 2） | 跨 task / 跨 plan | `state.allLessons`（bootstrap 解析 lessons.md 的全量数组，按 task category 或 title 匹配） |
 
 **回归场景覆盖**：A/B 轮流复现（title 同）→ `[REGRESSED]` halt ✅；修 B 无意回归 A（title 同）→ `[FIXED] A` 全注入预防 ✅；A 的变体（reviewer 改 title）→ 精确匹配漏报，budget 5 兜底 ⚠️；全新 finding 每轮出现（真补充）→ 全程 open 不 halt ✅。
 
