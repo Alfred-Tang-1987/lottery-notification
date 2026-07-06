@@ -79,6 +79,11 @@ const calendar = ref<CalendarItem[] | null>(null);
 const agencies = ref<AgencyItem[] | null>(null);
 const loading = ref(false);
 const error = ref('');
+// Non-blocking warning for secondary failures (calendar/agency). Kept separate
+// from `error` so a secondary failure does NOT gate the dashboard main body
+// (v-else-if="error" would hide D5 first-screen 待兑奖 etc). Rendered as an
+// inline banner above the dashboard, leaving partial degradation intact.
+const partialWarn = ref('');
 
 const hasClaims = computed(() => (data.value?.pending_claims?.length ?? 0) > 0);
 const hasDraws = computed(() => (data.value?.latest_draws?.length ?? 0) > 0);
@@ -104,6 +109,10 @@ function buildDashboardQuery(): string {
 async function load() {
   loading.value = true;
   error.value = '';
+  partialWarn.value = '';
+  // Declared outside try so the catch block can append secondary failures to
+  // the primary dashboard error.
+  const secondaryErrors: string[] = [];
   try {
     const [dashResult, calResult, agResult] = await Promise.allSettled([
       apiGet<DashboardData>(buildDashboardQuery()),
@@ -113,20 +122,36 @@ async function load() {
 
     // Always assign independent calendar/agency results before deciding dashboard fate
     // so a dashboard-only failure does not silently drop calendar and agencies.
+    // Rejections are logged + surfaced as a secondary note so silent failures
+    // (e.g. backend 500 on /calendar) don't disappear — primary dashboard error
+    // still wins when both fail.
     if (calResult.status === 'fulfilled') {
       calendar.value = calResult.value;
-    } else if (calendar.value === null) {
-      calendar.value = [];
+    } else {
+      const reason = calResult.reason instanceof Error ? calResult.reason.message : String(calResult.reason);
+      console.warn('[Dashboard] 开奖日历加载失败:', reason, calResult.reason);
+      secondaryErrors.push(`开奖日历: ${reason}`);
+      if (calendar.value === null) calendar.value = [];
     }
 
     if (agResult.status === 'fulfilled') {
       agencies.value = agResult.value;
-    } else if (agencies.value === null) {
-      agencies.value = [];
+    } else {
+      const reason = agResult.reason instanceof Error ? agResult.reason.message : String(agResult.reason);
+      console.warn('[Dashboard] 代销点加载失败:', reason, agResult.reason);
+      secondaryErrors.push(`代销点: ${reason}`);
+      if (agencies.value === null) agencies.value = [];
     }
 
     if (dashResult.status === 'fulfilled') {
       data.value = dashResult.value;
+      // Dashboard succeeded: surface secondary failures as a NON-blocking warning.
+      // Do NOT write to `error` — that would gate the dashboard main body via
+      // v-else-if="error" and hide D5 first-screen content (待兑奖), violating
+      // partial degradation + the silent-failure discipline.
+      if (secondaryErrors.length > 0) {
+        partialWarn.value = `部分数据加载失败：${secondaryErrors.join('；')}`;
+      }
     } else {
       // Surface dashboard failures (including period-change failures when stale
       // data already exists) so the user knows the new period failed instead of
@@ -154,7 +179,12 @@ async function load() {
       throw dashResult.reason;
     }
   } catch (err) {
-    error.value = err instanceof Error ? err.message : String(err || '加载失败');
+    const primary = err instanceof Error ? err.message : String(err || '加载失败');
+    // Dashboard failed: surface primary error. Append secondary failures too so
+    // they aren't swallowed, but the primary error drives the blocking banner.
+    error.value = secondaryErrors.length > 0
+      ? `${primary}（同时：${secondaryErrors.join('；')}）`
+      : primary;
   } finally {
     loading.value = false;
   }
@@ -229,6 +259,13 @@ onMounted(() => {
       <h1>仪表盘</h1>
       <p class="subtitle">开奖自动核对 · 以官方开奖为准</p>
     </header>
+
+    <!-- Non-blocking warning for secondary failures (calendar/agency). Rendered
+         outside the State v-else chain so it never gates the dashboard main body:
+         dashboard data still renders below, only calendar/agencies are missing. -->
+    <div v-if="partialWarn && !error" class="partial-warn" role="alert">
+      {{ partialWarn }}
+    </div>
 
     <State v-if="loading" type="loading" title="加载仪表盘中…" />
     <State
@@ -459,14 +496,14 @@ onMounted(() => {
             class="agency-item"
           >
             <button type="button" class="agency-card" @click="openMap(agency)">
-              <div class="agency-main">
+              <span class="agency-main">
                 <span class="agency-name">{{ agency.name }}</span>
                 <span class="agency-category" :class="agency.category">
                   {{ agency.category === 'welfare' ? '福彩' : '体彩' }}
                 </span>
-              </div>
-              <div class="agency-address">{{ agency.address }}</div>
-              <div v-if="agency.distance_m != null" class="agency-distance">{{ agency.distance_m }} 米</div>
+              </span>
+              <span class="agency-address">{{ agency.address }}</span>
+              <span v-if="agency.distance_m != null" class="agency-distance">{{ agency.distance_m }} 米</span>
             </button>
           </li>
         </ul>
@@ -859,5 +896,18 @@ onMounted(() => {
   font-size: var(--text-xs);
   color: var(--muted);
   margin-top: 2px;
+}
+
+/* Non-blocking warning for secondary failures (calendar/agency). Visually
+   distinct from the blocking error State so users can tell the dashboard body
+   is still usable — only calendar/agencies are degraded. */
+.partial-warn {
+  margin-top: 12px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #fef3c7;
+  color: #92400e;
+  border: 1px solid #fcd34d;
+  font-size: var(--text-sm);
 }
 </style>

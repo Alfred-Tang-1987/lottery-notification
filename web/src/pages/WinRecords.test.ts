@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp, nextTick } from "vue";
+import { createRouter, createMemoryHistory } from "vue-router";
 import WinRecords from "../pages/WinRecords.vue";
+
+// WinRecords reads route.query.claim (Dashboard deep-link). A memory-mode router
+// is installed per-test so useRoute() resolves; the query is set via
+// router.replace AFTER isReady() so it survives router initialization.
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -105,10 +110,21 @@ describe("WinRecords.vue (T6g)", () => {
     vi.restoreAllMocks();
   });
 
-  async function mount(overrides: Record<string, unknown> = {}) {
+  async function mount(overrides: Record<string, unknown> = {}, query: Record<string, string> = {}) {
     fetchMock = stubApi(overrides);
     globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: "/wins", component: { template: "<div/>" } }],
+    });
     app = createApp(WinRecords);
+    app.use(router);
+    await router.isReady();
+    // Replace AFTER ready so the new query is the current route when WinRecords
+    // mounts; replacing before isReady() gets overwritten by router init.
+    if (Object.keys(query).length > 0) {
+      await router.replace({ path: "/wins", query });
+    }
     app.mount(host);
     await nextTick();
     await new Promise((r) => setTimeout(r, 0));
@@ -284,6 +300,54 @@ describe("WinRecords.vue (T6g)", () => {
     await nextTick();
     const cards = host.querySelectorAll(".record-card");
     expect(cards.length).toBe(1);
+  });
+
+  it("renders expired badge label and class for backend-expired records", async () => {
+    // Round 4 quality finding: expired records fell through to '无兑奖' label and
+    // had no .expired CSS class (only pending/claimed/unknown were styled).
+    const expiredRecord = {
+      id: 99,
+      lottery_code: "ssq",
+      lottery_name: "双色球",
+      draw_no: "2024070",
+      draw_date: "2024-06-01",
+      numbers_json: "[1,2,3,4,5,6]",
+      ticket_label: "自选",
+      hits_json: '{"front": [6], "back": [1]}',
+      prize_tier: 6,
+      prize_amount: 500,
+      is_win: true,
+      created_at: "2024-06-01T10:00:00",
+      claim_status: "expired",
+      claim_id: null,
+      deadline: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(),
+    };
+    await mount({ records: [expiredRecord] });
+    const badge = host.querySelector(".status-badge") as HTMLElement;
+    expect(badge).toBeTruthy();
+    expect(badge.textContent).toBe("已过期");
+    expect(badge.classList.contains("expired")).toBe(true);
+    expect(badge.classList.contains("unknown")).toBe(false);
+  });
+
+  it("highlights the record referenced by ?claim=<id> deep-link", async () => {
+    // Round 4 quality finding: Dashboard pushes /wins?claim=<PrizeClaim.id> but
+    // WinRecords never consumed route.query.claim. Now it scrolls to + outlines
+    // the record matching claim_id (fixture record id=2 has claim_id=102).
+    await mount({}, { claim: "102" });
+    const highlighted = host.querySelector(".record-card.highlight") as HTMLElement;
+    expect(highlighted).toBeTruthy();
+    expect(highlighted.id).toBe("claim-102");
+  });
+
+  it("shows a non-blocking notice when ?claim=<id> deep-link target is not found", async () => {
+    // Hunter follow-up: deep-link must not silently fail when the record is
+    // filtered out or absent. A non-blocking notice surfaces the mismatch.
+    await mount({}, { claim: "99999" });
+    const notice = host.querySelector(".notice");
+    expect(notice).toBeTruthy();
+    expect(notice?.textContent).toContain("未定位到该中奖记录");
+    expect(host.querySelector(".record-card.highlight")).toBeNull();
   });
 
   it("does not show tax hint for prize exactly at 1万元 (10000元=1_000_000分)", async () => {
