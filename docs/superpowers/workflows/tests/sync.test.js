@@ -30,7 +30,7 @@ for (const role of ROLES) {
 test('run-plans.js inlines the new conditional-render helpers', () => {
   // QC-3: formatLessonsForDistill / applyLessonDecisions / renderLessonEntry 不再 inline
   // （SH2 后 distiller 自读写盘，orchestrator 不调用这些函数）。lib.js 真源保留。
-  for (const fn of ['formatReferencePaths', 'formatSilentFailureContext', 'formatFailedApproaches', 'formatLessons', 'formatWriteFilesScope', 'formatSchemaCheck', 'languageChecklist', 'LANGUAGE_CHECKLISTS', 'gateCommands', 'collectReviewFindings', 'formatFindings', 'matchesPlanFilter', 'classifyThrown', 'reviewHaltReason', 'reviewHaltForEmptyFailed', 'haltLikelySource', 'fixModelForRound', 'resolveMaxRounds', 'resolveLessonsAutoDistill', 'distillLessonInput', 'summarizeReviewRound', 'groupFindingsByFile', 'formatCrossReviewerNote']) {
+  for (const fn of ['formatReferencePaths', 'formatSilentFailureContext', 'formatFailedApproaches', 'formatLessons', 'formatUniversalLessons', 'formatDomainLessons', 'formatWriteFilesScope', 'formatSchemaCheck', 'languageChecklist', 'LANGUAGE_CHECKLISTS', 'gateCommands', 'collectReviewFindings', 'formatFindings', 'matchesPlanFilter', 'classifyThrown', 'reviewHaltReason', 'reviewHaltForEmptyFailed', 'haltLikelySource', 'fixModelForRound', 'resolveMaxRounds', 'resolveLessonsAutoDistill', 'distillLessonInput', 'summarizeReviewRound', 'groupFindingsByFile', 'formatCrossReviewerNote']) {
     assert.match(runSrc, new RegExp(`function ${fn}|const ${fn}`), `missing helper: ${fn}`)
   }
 })
@@ -60,6 +60,8 @@ test('QC-4: 关键 helper 函数体 lib.js ↔ run-plans.js 字节一致', () =>
     'isQuotaError', 'commitSubject', 'normalizeCompleted', 'matchesPlanFilter',
     'collectReviewFindings', 'summarizeReviewRound', 'formatFindings',
     'resolveLessonsAutoDistill', 'distillLessonInput',
+    // v3 lessons 两层注入 (2026-07-06): universal silent-failure + domain category
+    'formatUniversalLessons', 'formatDomainLessons',
     // Q8 新增：方案 C subagent 返回值校验纯函数（边界条件可 node:test 行为测试）
     'validateAmendResult', 'validateCheckoutResult',
     // Q9 新增：collectReviewFindings / summarizeReviewRound 的内部 helper（inline 复制但未被字节比较守护）
@@ -144,8 +146,9 @@ test('run-plans.js orchestrator wires new placeholders + gate lint loop', () => 
   assert.match(runSrc, /out_of_scope/, 'SCHEMAS.commit 须含 out_of_scope')
   assert.match(runSrc, /destructive_changes/, 'SCHEMAS.commit 须含 destructive_changes')
   assert.match(runSrc, /destructive_review_failed/, 'orchestrator 须检测 destructive_changes 并记录结果')
-  assert.match(runSrc, /lessons: formatLessons/, 'implCtx 须注入 lessons')
+  assert.match(runSrc, /lessons: formatLessons|lessons: lessonsText/, 'implCtx 须注入 lessons')
   assert.match(runSrc, /task_lessons/, 'SCHEMAS.bootstrap 须含 task_lessons')
+  assert.match(runSrc, /all_lessons/, 'SCHEMAS.bootstrap 须含 all_lessons')
   assert.match(runSrc, /lessonsPath: state\.config\?\.lessons_path \|\| ''/, 'finalReportWithFallback 须传 lessonsPath（done + halted 两模式）')
   assert.match(runSrc, /schemaCheck: formatSchemaCheck/, 'gate ctx 须注入 schemaCheck')
   assert.match(runSrc, /migration_missing/, 'SCHEMAS.gate + orchestrator 须含 migration_missing 检查')

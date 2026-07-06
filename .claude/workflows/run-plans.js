@@ -47,8 +47,8 @@ function detectOscillation(filesTouchedPerRound) {
 }
 // 改进 1 (2026-07-05): OSCILLATING 触发时升级 opus 一搏 —— inline 自 lib.js（sync QC-4 守护）。
 function shouldEscalateOnOscillation(currentModel, alreadyEscalated) {
-  if (alreadyEscalated) return false
-  return currentModel !== 'opus'
+  if (alreadyEscalated) return false  // 已升级过不再重复升级（不影响 halt 决策）
+  return currentModel !== 'opus'      // 非 opus → 升级
 }
 // 改进 2 (2026-07-05): 区分 flip-flop（同 title 跨轮反复）vs 补充（新 title）—— inline 自 lib.js。
 function isFlipFlop(reviewHistory) {
@@ -456,6 +456,49 @@ ${lines}
 If your plan is similar to any lesson above, explicitly state why your approach differs.`
 }
 
+// —— v3 lessons 两层注入（inline 自 lib.js，sync.test 字节守护）——
+function formatUniversalLessons(allLessons) {
+  if (!Array.isArray(allLessons) || allLessons.length === 0) return ''
+  const universal = allLessons.filter(l => l && l.category === 'silent-failure')
+  if (universal.length === 0) return ''
+  const lines = universal.map(l => `- [${l.id}] ${l.title} — ${l.detail}`).join('\n')
+  return `## Universal Discipline (silent-failure — always apply)
+${lines}
+These are project-wide silent-failure disciplines. Before reporting done, verify your code does not violate any of them (savepoint isolation, naive-UTC datetime, single-transaction commits, etc.).`
+}
+
+function formatDomainLessons(allLessons, taskCategories, currentPlanSeq, taskTitle) {
+  if (!Array.isArray(allLessons) || allLessons.length === 0) return ''
+  // 排除 silent-failure（Tier 1 已注入）
+  const candidates = allLessons.filter(l => l && l.category !== 'silent-failure')
+  let matched = []
+  if (Array.isArray(taskCategories) && taskCategories.length > 0) {
+    // category 匹配
+    matched = candidates.filter(l => taskCategories.includes(l.category))
+  } else if (taskTitle) {
+    // fallback: title 关键词重叠（旧行为）
+    const tokens = String(taskTitle).toLowerCase().split(/[\s,，、]+/).filter(t => t.length > 1)
+    matched = candidates.filter(l => {
+      const text = `${l.title || ''} ${l.detail || ''}`.toLowerCase()
+      return tokens.some(t => text.includes(t))
+    })
+  }
+  if (matched.length === 0) return ''
+  // 同 plan 优先（source 含 currentPlanSeq 排前）
+  if (currentPlanSeq) {
+    matched.sort((a, b) => {
+      const aSame = a.source && String(a.source).includes(currentPlanSeq) ? 0 : 1
+      const bSame = b.source && String(b.source).includes(currentPlanSeq) ? 0 : 1
+      return aSame - bSame
+    })
+  }
+  const capped = matched.slice(0, 5)
+  const lines = capped.map(l => `- [${l.id}] ${l.title} — ${l.detail}`).join('\n')
+  return `## Domain Lessons (check against these before implementing)
+${lines}
+If your plan is similar to any lesson above, explicitly state why your approach differs.`
+}
+
 // write_files 边界控制：plan frontmatter 可选声明 write_files，
 // commit agent 提交前检查 git diff 是否越界。不声明 → 空串 → 检查跳过。
 function formatWriteFilesScope(files) {
@@ -573,7 +616,7 @@ const SCHEMAS = {
     properties: {
       status: { type: 'string', enum: ['ok', 'failed', 'blocked'] },
       evidence: { type: 'object', required: ['config', 'plans', 'completed', 'git_log_subjects', 'dirty_tree', 'in_progress', 'failed_approaches', 'task_lessons', 'task_write_files'],
-        properties: { config: { type: 'object' }, plans: { type: 'array' }, completed: { type: 'array' }, git_log_subjects: { type: 'array', items: { type: 'string' } }, dirty_tree: { type: 'boolean' }, in_progress: { type: 'boolean' }, failed_approaches: { type: 'array', items: { type: 'object', required: ['task_id', 'plan_seq', 'reason', 'error'], properties: { task_id: { type: 'string' }, plan_seq: { type: 'integer' }, reason: { type: 'string' }, error: { type: 'string' } } } }, task_write_files: { type: 'array' }, task_lessons: { type: 'array' } } },
+        properties: { config: { type: 'object' }, plans: { type: 'array' }, completed: { type: 'array' }, git_log_subjects: { type: 'array', items: { type: 'string' } }, dirty_tree: { type: 'boolean' }, in_progress: { type: 'boolean' }, failed_approaches: { type: 'array', items: { type: 'object', required: ['task_id', 'plan_seq', 'reason', 'error'], properties: { task_id: { type: 'string' }, plan_seq: { type: 'integer' }, reason: { type: 'string' }, error: { type: 'string' } } } }, task_write_files: { type: 'array' }, task_lessons: { type: 'array' }, all_lessons: { type: 'array' } } },
       diagnostics: { type: 'object' }, summary: { type: 'string' },
     },
   },
@@ -638,7 +681,7 @@ const PROMPTS = {
 Inputs: configPath={{configPath}} plansDir={{plansDir}} runTs={{runTs}}
 
 Steps:
-1. Read {{configPath}} → {test_command, full_test_command, build_command, lint_command, extra_lint_commands, spec_path, reference_paths, language, silent_failure_context, silent_failure_intro, lessons_path}. extra_lint_commands / reference_paths / silent_failure_context / silent_failure_intro / lessons_path are OPTIONAL (may be absent → treat as [] / [] / [] / '' / ''). If config contains lessons_path, read that file. Extract entries (each has id, title, detail). For each task in the current plan, match lessons whose title/detail keywords overlap with the task's title. Return matched lessons per task in evidence as task_lessons: [{task_id, plan_seq, lessons:[{id, title, detail}]}] (plan_seq = the plan's seq from step 3). Absent lessons_path → empty array.
+1. Read {{configPath}} → {test_command, full_test_command, build_command, lint_command, extra_lint_commands, spec_path, reference_paths, language, silent_failure_context, silent_failure_intro, lessons_path}. extra_lint_commands / reference_paths / silent_failure_context / silent_failure_intro / lessons_path are OPTIONAL (may be absent → treat as [] / [] / [] / '' / ''). If config contains lessons_path, read that file. Extract all entries as all_lessons: [{id, title, detail, category, source}].   - category inference: if an entry lacks category, infer from title/detail. If it is clearly about silent-failure/savepoint/transaction/datetime/null/empty/etc., set category='silent-failure'; otherwise set category='other' or infer a domain category.   - source: include the source location if known (e.g., 'plan-06/T1' or lessons.md filename), otherwise empty string.   Return matched lessons per task in evidence as task_lessons (backward-compatible keyword matching, same shape as before): [{task_id, plan_seq, lessons:[{id, title, detail}]}].   Additionally, return all_lessons: the full list of all lessons parsed from lessonsPath as [{id, title, detail, category, source}] (include category field even if inferred). This feeds v3 two-tier injection (Tier 1 silent-failure always + Tier 2 domain by category). Absent lessons_path → both arrays empty.
 2. Config smoke: run test_command with --collect-only. 判断：命令本身不存在（command not found / No such file: pytest）→ status=failed（环境/typo）；命令存在但 collect 失败（no module named pytest / pyproject.toml 不存在 / no tests collected / 业务代码未初始化）→ 记录 'project not yet initialized' 到 summary，status 仍 ok（业务代码由后续 task 创建，预期）。
 3. For each {{plansDir}}/*.md: if frontmatter (starts with ---) read task models; else generate — extract LEAF ids — **CRITICAL: 必须返回 frontmatter models: 的每一个 key（含最大的 N，如 T10），一个不漏；body 里 ## Task N 若有 ### Task NX 子 task → 只取子 task（NX），子 task 不可遗漏；## Task N 无子 task → 取 N 本身**（leaf-first: ## Task N with ### Task NX children → only NX; else N), modelHint (title contains 安全|加密|认证|JWT|CSRF|Fernet|算法|比对|策略|边界|集成|接口 → opus, else omit), write frontmatter at file top. Idempotent. Record each plan's file (full path) and seq (last two digits of filename, e.g. 01). Also read write_files from frontmatter if present (format: "write_files:\n  T1:\n    - src/a.py\n    - src/b.py"). Return as task_write_files in evidence: [{task_id, plan_seq, files:[...]}] (plan_seq = this plan's seq). Absent → empty array.
 4. git log → 运行 git log --format=%s -n 200，**原样复制**每个 commit subject 第一行到 git_log_subjects（string[]，最多 200 条）。**不要解析、提取、转换、过滤、去重**——orchestrator 用正则从 subjects 确定性提取 completed，你只负责忠实复制 git log 输出。同时仍返回 completed（你最好的 task-id 提取，作 fallback，但不再作为单一事实源）。
@@ -646,7 +689,7 @@ Steps:
 6. For each leaf task return its model (sonnet|opus|undefined→sonnet) and title (the description text from the Task header).
 7. If runs/ directory exists: scan runs/*/manifest.json files. For each, read per_task object. For each task_id in per_task that has blocked_info, extract {task_id, plan_seq (the plan sequence this task belongs to, from the task_id prefix 'plan-<seq>/T-Y' or from the plan context), reason (from blocked_info.reason), error (from blocked_info.last_error)}. Filter to task_ids that match leaf tasks in the current plans. Return as failed_approaches in evidence. Also check if any task has status='in_progress' → in_progress=true (else false). If runs/ does not exist → failed_approaches=[], in_progress=false.
 
-Return {status, evidence:{config (include ALL fields read in step 1, even optional ones if present), plans:[{id, file, seq, tasks:[{id, model, title}]}], completed:[...], dirty_tree, in_progress, failed_approaches:[{task_id, plan_seq, reason, error}], task_write_files:[{task_id, plan_seq, files:[...]}], task_lessons:[{task_id, plan_seq, lessons:[{id, title, detail}]}]}, summary}.
+Return {status, evidence:{config (include ALL fields read in step 1, even optional ones if present), plans:[{id, file, seq, tasks:[{id, model, title}]}], completed:[...], dirty_tree, in_progress, failed_approaches:[{task_id, plan_seq, reason, error}], task_write_files:[{task_id, plan_seq, files:[...]}], task_lessons:[{task_id, plan_seq, lessons:[{id, title, detail}]}], all_lessons:[{id, title, detail, category, source}]}, summary}.
 RED FLAG: evidence 必须是真实读取结果，绝不编造。`,
 
   implementor: `You are the IMPLEMENTOR for {{taskId}} (plan {{planId}}). TDD strict (RED→GREEN→REFACTOR). {{retryNote}}
@@ -930,6 +973,7 @@ const state = {
   failedApproaches: {},  // {taskKey: [{task_id, reason, error}]}（taskKey plan-scoped）
   taskWriteFiles: {},  // {taskKey: [files]} — write_files 边界控制（taskKey plan-scoped）
   taskLessons: {},  // {taskKey: [{id, title, detail}]} — LESSONS.md 跨任务失败知识库（taskKey plan-scoped）
+  allLessons: [],  // v3: bootstrap 解析的全量 lessons（含 category），供两层注入
 }
 
 // ===== halt（§13a：累积 blocked_info → finalReport halted 模式写盘 + surface）=====
@@ -1058,7 +1102,8 @@ async function runTask(plan, task) {
   //   S3（第 5 轮）: taskLessons 查找同须用 taskKey（存储键已 plan-scoped，防跨 plan 同名 task 覆盖）。
   //   旧代码用裸 task.id → 查找永远 undefined → failedApproaches/lessons 占位符不注入 implementor prompt。
   // P1-11（第 6 轮）: implCtx 传 buildCommand（implementor GREEN 前跑 build 验证可构建性）。
-  const implCtx = (fix, note, ctx = '') => ({ planId: plan.id, taskId: task.id, planFilePath: plan.file, specPath: cfg.spec_path, testCommand: cfg.test_command, buildCommand: cfg.build_command || '', fixIssues: fix, retryNote: note, fetchedContext: ctx, referencePaths: formatReferencePaths(cfg.reference_paths), failedApproaches: formatFailedApproaches(state.failedApproaches?.[taskKey] || []), lessons: formatLessons(state.taskLessons?.[taskKey] || []) })
+  const lessonsText = formatLessons(state.taskLessons?.[taskKey] || []) + formatUniversalLessons(state.allLessons || []) + formatDomainLessons(state.allLessons || [], taskCategories, planIdShort, task.title || '')
+  const implCtx = (fix, note, ctx = '') => ({ planId: plan.id, taskId: task.id, planFilePath: plan.file, specPath: cfg.spec_path, testCommand: cfg.test_command, buildCommand: cfg.build_command || '', fixIssues: fix, retryNote: note, fetchedContext: ctx, referencePaths: formatReferencePaths(cfg.reference_paths), failedApproaches: formatFailedApproaches(state.failedApproaches?.[taskKey] || []), lessons: lessonsText })
   let impl
   impl = await dispatchImpl(buildPrompt('implementor', implCtx('', '')), { schema: SCHEMAS.implementor, model, label: `impl:${task.id}` }, model, 'opus')
   if (impl.halted) return impl
@@ -1413,6 +1458,10 @@ if (Array.isArray(boot.evidence.task_lessons)) {
   for (const tl of boot.evidence.task_lessons) {
     state.taskLessons[`plan-${String(tl.plan_seq).padStart(2, '0')}/${tl.task_id}`] = tl.lessons || []
   }
+}
+// v3: bootstrap 额外返回 all_lessons（全量，含 category），存 state.allLessons
+if (Array.isArray(boot.evidence.all_lessons)) {
+  state.allLessons = boot.evidence.all_lessons
 }
 
 for (const plan of boot.evidence.plans) {
