@@ -838,6 +838,20 @@ test('formatUniversalLessons includes only silent-failure category lessons', () 
   assert.ok(!out.includes('csv format'))
 })
 
+test('formatUniversalLessons tolerates LLM category inference variants', () => {
+  const variants = [
+    { id: 'L1', title: 'savepoint', detail: 'use savepoint', category: 'silent-failure' },
+    { id: 'L2', title: 'transaction', detail: 'single commit', category: 'silent_failure' },
+    { id: 'L3', title: 'datetime', detail: 'naive UTC', category: 'Silent-Failure' },
+    { id: 'L4', title: 'empty', detail: 'guard null', category: '  silent-failure  ' },
+  ]
+  const out = formatUniversalLessons(variants)
+  assert.ok(out.includes('savepoint'))
+  assert.ok(out.includes('transaction'))
+  assert.ok(out.includes('datetime'))
+  assert.ok(out.includes('empty'))
+})
+
 // —— formatDomainLessons (Tier 2: 按 task category 匹配，cap 5，同 plan 优先) ——
 
 test('formatDomainLessons returns empty string when taskCategories empty', () => {

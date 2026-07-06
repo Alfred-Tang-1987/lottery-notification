@@ -156,6 +156,18 @@ test('v3 runtime wiring: findings_history update + taskCategories declared + OSC
 
   // fix-round 必须调用 formatFindingsHistory（D1 history 主导单源）
   assert.match(runSrc, /formatFindingsHistory\(state\.perTask\[taskKey\]\.findings_history \|\| \[\], round\)/, 'fix round 须用 formatFindingsHistory 注入历史')
+
+  // H2: review max rounds halt diag 须含 findings_history（接手判断）
+  assert.match(runSrc, /reason: 'review max rounds'[\s\S]{0,200}findings_history/, 'review max rounds halt diag 须含 findings_history')
+
+  // H3: finalReport prompt per_task 清单须含 opus_escalated（防 manifest strip 导致重复升级）
+  const finalReportPerTaskIdx = libSrc.indexOf('per_task:{<taskKey>:{status,model,review_rounds,files_touched_per_round,review_history,findings_history,oscillation_escalated_at_round,opus_escalated')
+  assert.notEqual(finalReportPerTaskIdx, -1, 'lib.js finalReport prompt per_task 清单须含 opus_escalated')
+
+  // H4: formatUniversalLessons inline 副本须与 lib.js 字节一致（容错 silent-failure 变体）
+  const libUniversalFn = extractFunctionBody(libSrc, 'function formatUniversalLessons')
+  const runUniversalFn = extractFunctionBody(runSrc, 'function formatUniversalLessons')
+  assert.equal(libUniversalFn, runUniversalFn, 'formatUniversalLessons inline 副本与 lib.js 不一致（H4 category 容错）')
 })
 
 test('run-plans.js orchestrator wires new placeholders + gate lint loop', () => {

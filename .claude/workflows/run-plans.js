@@ -547,7 +547,7 @@ If your plan is similar to any lesson above, explicitly state why your approach 
 // —— v3 lessons 两层注入（inline 自 lib.js，sync.test 字节守护）——
 function formatUniversalLessons(allLessons) {
   if (!Array.isArray(allLessons) || allLessons.length === 0) return ''
-  const universal = allLessons.filter(l => l && l.category === 'silent-failure')
+  const universal = allLessons.filter(l => l && /^(silent[-_]?failure)$/i.test(String(l.category).trim()))
   if (universal.length === 0) return ''
   const lines = universal.map(l => `- [${l.id}] ${l.title} — ${l.detail}`).join('\n')
   return `## Universal Discipline (silent-failure — always apply)
@@ -990,7 +990,7 @@ Inputs: mode={{mode}} state={{stateJson}} blockedInfo={{blockedInfo}} runsDir={{
 
 Steps:
 1. mkdir -p {{runsDir}}.
-2. Write {{runsDir}}/manifest.json = {run_ts:{{runTs}}, mode:{{mode}}, plans:[...], per_task:{<taskKey>:{status,model,review_rounds,files_touched_per_round,review_history,findings_history,oscillation_escalated_at_round,commit_sha,simplify_reverted,simplify_review_findings,destructive_review_failed,destructive_review_findings,concerns,blocked_info}}, result}. per_task.<task> 还含 v3 字段：findings_history（findings 状态机轨迹 [{title, status, first_seen, last_seen, rounds, fixed_at_round}]）+ oscillation_escalated_at_round（opus 升级轮 round 数或 null）。manifest 序列化时必须保留这两个字段（不要 strip）。
+2. Write {{runsDir}}/manifest.json = {run_ts:{{runTs}}, mode:{{mode}}, plans:[...], per_task:{<taskKey>:{status,model,review_rounds,files_touched_per_round,review_history,findings_history,oscillation_escalated_at_round,opus_escalated,commit_sha,simplify_reverted,simplify_review_findings,destructive_review_failed,destructive_review_findings,concerns,blocked_info}}, result}. per_task.<task> 必须保留 stateJson 中 per_task 的**全部字段**（含 v3 新增字段 findings_history / oscillation_escalated_at_round / opus_escalated），不得以清单未列为由 strip 任何字段；清单仅作可读说明。findings_history 是 findings 状态机轨迹 [{title, status, first_seen, last_seen, rounds, fixed_at_round}]；oscillation_escalated_at_round 是 opus 升级轮 round 数或 null；opus_escalated 是布尔值。
 3. If mode=halted: write .workflow/blocked.md from {{blockedInfo}} (the blocked task's blocked_info JSON — render EACH field human-readably: plan, task, reason, category, last_error, suggested_fix, quota_exhausted, likely_source, failed_approach). For failed_approach, render as: "Failed Approach: <failed_approach.task_id>: <failed_approach.reason> — <failed_approach.error>". Do NOT hunt for these fields in state — they are provided inline in blockedInfo.
    S3（第 4 轮）: blocked.md 路径固定为 .workflow/blocked.md（§8.2），独立于 {{runsDir}}——
    blocked.md 是用户接手入口，路径须稳定可预测（runsDir 会随 runTs 变化，用户难定位）。
@@ -1332,8 +1332,8 @@ async function runTask(plan, task) {
         return { halted: true, reason: 'review_not_converging', diag: { round, budget, findings_history: state.perTask[taskKey].findings_history, spec: spec.diagnostics, qual: qual.diagnostics, hunt: hunt.diagnostics } }
       }
     } else if (round === maxRounds) {
-      // 有限模式仍用 maxRounds 硬上限
-      return { halted: true, reason: 'review max rounds', diag: { spec: spec.diagnostics, qual: qual.diagnostics, hunt: hunt.diagnostics } }
+      // 有限模式仍用 maxRounds 硬上限；diagnostics 也带 findings_history，便于接手判断是重复问题还是新问题
+      return { halted: true, reason: 'review max rounds', diag: { round, findings_history: state.perTask[taskKey].findings_history, spec: spec.diagnostics, qual: qual.diagnostics, hunt: hunt.diagnostics } }
     }
     const findings = collectReviewFindings(spec, qual, hunt)
     const crossReviewerNote = formatCrossReviewerNote(findings)
