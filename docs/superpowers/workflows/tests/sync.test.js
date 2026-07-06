@@ -170,6 +170,21 @@ test('v3 runtime wiring: findings_history update + taskCategories declared + OSC
   assert.equal(libUniversalFn, runUniversalFn, 'formatUniversalLessons inline 副本与 lib.js 不一致（H4 category 容错）')
 })
 
+test('S3: lessonsText must not call formatLessons (replaced by Tier 1 + Tier 2)', () => {
+  // S3 (2026-07-06): spec §5.5 改进 B 说"formatLessons 拆成 formatUniversalLessons + formatDomainLessons"（替换语义）。
+  //   保留旧 formatLessons 调用会导致 keyword 匹配重复注入——
+  //   ① formatLessons(taskLessons[taskKey]) 用 task title keyword 匹配 lessons.md 子集；
+  //   ③ formatDomainLessons(allLessons, [], ..., task.title) fallback 也用 task title keyword 匹配 allLessons（排除 silent-failure）。
+  //   两者输入同源（lessons.md），匹配逻辑同（task title tokens），仅排除集不同 → 非 silent-failure 且 keyword 重叠的 lesson 被注入两次。
+  //   移除 ① formatLessons 调用，只保留 Tier 1 + Tier 2（Tier 2 的 title keyword fallback 已覆盖 legacy 无 category 场景）。
+  const lessonsTextIdx = runSrc.indexOf('const lessonsText =')
+  assert.notEqual(lessonsTextIdx, -1, 'run-plans.js 须有 lessonsText 构造')
+  // 截取 lessonsText 构造行（到行尾），断言不含 formatLessons( 调用
+  const lineEnd = runSrc.indexOf('\n', lessonsTextIdx)
+  const lessonsTextLine = runSrc.slice(lessonsTextIdx, lineEnd === -1 ? undefined : lineEnd)
+  assert.doesNotMatch(lessonsTextLine, /formatLessons\(/, 'lessonsText 不得调用 formatLessons（S3: 替换为 Tier 1 + Tier 2，防 keyword 重复注入）')
+})
+
 test('run-plans.js orchestrator wires new placeholders + gate lint loop', () => {
   assert.match(runSrc, /referencePaths: formatReferencePaths/)
   assert.match(runSrc, /languageChecklist: languageChecklist\(cfg\.language\)/)
@@ -511,7 +526,8 @@ test('S3（第 5 轮）: taskWriteFiles / taskLessons 须用 plan-scoped key（�
   assert.doesNotMatch(runSrc, /state\.taskWriteFiles\?\.\[task\.id\]/, 'taskWriteFiles 查找不得用裸 task.id（S3：跨 plan 覆盖）')
   assert.doesNotMatch(runSrc, /state\.taskLessons\?\.\[task\.id\]/, 'taskLessons 查找不得用裸 task.id（S3：跨 plan 覆盖）')
   assert.match(runSrc, /state\.taskWriteFiles\?\.\[taskKey\]/, 'taskWriteFiles 须用 taskKey 查找（S3）')
-  assert.match(runSrc, /state\.taskLessons\?\.\[taskKey\]/, 'taskLessons 须用 taskKey 查找（S3）')
+  // S3 修复（2026-07-06）：taskLessons 不再被 implCtx 查找（formatLessons 调用已移除，由 Tier 1+Tier 2 替代）。
+  //   存储仍用 plan-scoped key（bootstrap 填充 state.taskLessons，向后兼容 + 无害）。
   // 存储时也须用 plan-scoped key（bootstrap 返回的 task_id 须归一化为 plan-{seq}/T{id}）
   assert.match(runSrc, /taskWriteFiles\[`plan-\$\{[^}]+\}\/\$\{twf\.task_id\}`\]/, 'taskWriteFiles 存储须用 plan-scoped key（S3）')
   assert.match(runSrc, /taskLessons\[`plan-\$\{[^}]+\}\/\$\{tl\.task_id\}`\]/, 'taskLessons 存储须用 plan-scoped key（S3）')

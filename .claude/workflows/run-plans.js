@@ -557,8 +557,9 @@ These are project-wide silent-failure disciplines. Before reporting done, verify
 
 function formatDomainLessons(allLessons, taskCategories, currentPlanSeq, taskTitle) {
   if (!Array.isArray(allLessons) || allLessons.length === 0) return ''
-  // 排除 silent-failure（Tier 1 已注入）
-  const candidates = allLessons.filter(l => l && l.category !== 'silent-failure')
+  // 排除 silent-failure（Tier 1 已注入）。Q1 修复（2026-07-06）：须与 formatUniversalLessons
+  //   的正则容错对称——否则变体（silent_failure/Silent-Failure/带空格）会被 Tier 2 重复匹配注入。
+  const candidates = allLessons.filter(l => l && !/^(silent[-_]?failure)$/i.test(String(l.category).trim()))
   let matched = []
   if (Array.isArray(taskCategories) && taskCategories.length > 0) {
     // category 匹配
@@ -1194,8 +1195,11 @@ async function runTask(plan, task) {
   //   旧代码用裸 task.id → 查找永远 undefined → failedApproaches/lessons 占位符不注入 implementor prompt。
   // P1-11（第 6 轮）: implCtx 传 buildCommand（implementor GREEN 前跑 build 验证可构建性）。
   // v3: lesson_categories 来自 plan frontmatter（可选）；未声明则 domain lessons 回退到 title 关键词匹配。
+  // S3 修复（2026-07-06）：移除旧 formatLessons 调用——它与 formatDomainLessons 的 title keyword fallback
+  //   匹配逻辑同源（task title tokens vs lessons.md），保留会导致非 silent-failure 且 keyword 重叠的 lesson 被注入两次。
+  //   Tier 2 的 title keyword fallback 已覆盖 legacy 无 category 场景（helpers.test 有测试）。
   const taskCategories = task.lesson_categories || []
-  const lessonsText = formatLessons(state.taskLessons?.[taskKey] || []) + formatUniversalLessons(state.allLessons || []) + formatDomainLessons(state.allLessons || [], taskCategories, planIdShort, task.title || '')
+  const lessonsText = formatUniversalLessons(state.allLessons || []) + formatDomainLessons(state.allLessons || [], taskCategories, planIdShort, task.title || '')
   const implCtx = (fix, note, ctx = '') => ({ planId: plan.id, taskId: task.id, planFilePath: plan.file, specPath: cfg.spec_path, testCommand: cfg.test_command, buildCommand: cfg.build_command || '', fixIssues: fix, retryNote: note, fetchedContext: ctx, referencePaths: formatReferencePaths(cfg.reference_paths), failedApproaches: formatFailedApproaches(state.failedApproaches?.[taskKey] || []), lessons: lessonsText })
   let impl
   impl = await dispatchImpl(buildPrompt('implementor', implCtx('', '')), { schema: SCHEMAS.implementor, model, label: `impl:${task.id}` }, model, 'opus')

@@ -373,11 +373,15 @@ commit agent 在 step 2.6 用 `git diff HEAD --numstat` 检测 `deleted_code` / 
 |------|-------------|---------|--------|
 | 出现 | 是（曾 fixed） | fixed | **regressed** ⚠ → halt |
 | 出现 | 是（仍 open） | open | open（last_seen 更新） |
+| 出现 | 是（曾 regressed） | regressed | regressed（last_seen 更新，保留 fixed_at_round） |
 | 出现 | 否 | — | open（首次） |
 | 不出现 | 是 | open | fixed（fixed_at_round=当前轮） |
+| 不出现 | 是 | regressed | fixed（二次修好，fixed_at_round=当前轮；S1 追认 2026-07-06）|
 
-纯函数 `updateFindingsHistory(history, currentRoundFindings, round)` 每轮 review 后更新；`formatFindingsHistory(history)` 分层注入 fix prompt：
-- `[OPEN]` 全注入（必须修）+ `[FIXED]` 全注入（标注 file + fix 描述，implementor `git diff` 工作树定位已修复区域，避免碰它）+ `[REGRESSED]` **不注入**（触发即 halt，implementor 看不到）。
+> **S1 追认（2026-07-06）**：`regressed→fixed` 转换是状态机闭环的必要条件——若 regressed 是终态，once-regressed 的 finding 即使二次修好也永远卡在 regressed → `hasRegressed` 永真 → 后续每轮 review 都 halt，task 无法继续。实现允许二次修好后恢复 fixed，`fixed_at_round` 覆盖为当前轮（diag 价值：最新修好轮次比首次更有意义）；如需保留首次修好轮次可后续加 `first_fixed_at_round` 字段。
+
+纯函数 `updateFindingsHistory(history, currentRoundFindings, round)` 每轮 review 后更新；`formatFindingsHistory(history, currentRound)` 分层注入 fix prompt（S2 追认 2026-07-06：`currentRound` 参数是 D1 去重单源的必要补充——D1 要求不再单独注入 `formatFindings(本轮)`，只注入 history；`currentRound` 让单源注入同时携带紧急度信息，标 ★本轮新增 `last_seen===currentRound`，implementor 据此分辨哪些是本轮新发现需优先修 vs 前几轮遗留）：
+- `[OPEN]` 全注入（必须修，★ 标本轮新增）+ `[FIXED]` 全注入（标注 file + fix 描述，implementor `git diff` 工作树定位已修复区域，避免碰它）+ `[REGRESSED]` **不注入**（触发即 halt，implementor 看不到）。
 - task 内 fix 不 commit（无 commit SHA），用文件路径标注。
 - findings_history **仅当前 task**（perTask 索引），不跨 task——findings 是 task 内 review 闭环产物。
 

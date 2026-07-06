@@ -897,6 +897,24 @@ test('formatDomainLessons excludes silent-failure (Tier 1 已注入，防重复)
   assert.ok(out.includes('csv'))
 })
 
+test('formatDomainLessons excludes silent-failure variants symmetric with formatUniversalLessons (Q1)', () => {
+  // Q1 (2026-07-06): formatUniversalLessons 用正则容错 silent_failure/Silent-Failure 变体，
+  //   formatDomainLessons 排除时也须对称容错，否则变体 lesson 会被 Tier 2 重复注入
+  //   （Tier 1 已注入 + Tier 2 未排除 → 同一 lesson 在 prompt 中出现两次）。
+  const all = [
+    { id: 'L1', title: 'savepoint', detail: 'use savepoint', category: 'silent_failure' },      // 下划线变体
+    { id: 'L2', title: 'transaction', detail: 'single commit', category: 'Silent-Failure' },    // 大写变体
+    { id: 'L3', title: '  silent-failure  ', detail: 'guard', category: '  silent-failure  ' },  // 带空格变体
+    { id: 'L4', title: 'csv', detail: 'use comma', category: 'test-strategy' },
+  ]
+  // 即使 task 声明这些变体，Tier 2 也不重复注入（Tier 1 正则已兜底）
+  const out = formatDomainLessons(all, ['silent_failure', 'Silent-Failure', '  silent-failure  ', 'test-strategy'])
+  assert.ok(!out.includes('savepoint'), 'silent_failure variant must be excluded (Tier 1 already injected via regex)')
+  assert.ok(!out.includes('transaction'), 'Silent-Failure variant must be excluded')
+  assert.ok(!out.includes('guard'), 'whitespace-padded silent-failure variant must be excluded')
+  assert.ok(out.includes('csv'), 'test-strategy lesson should match')
+})
+
 test('formatDomainLessons caps at 5 lessons, same-plan source first', () => {
   const all = []
   for (let i = 1; i <= 8; i++) {

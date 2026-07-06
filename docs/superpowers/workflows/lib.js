@@ -547,8 +547,9 @@ These are project-wide silent-failure disciplines. Before reporting done, verify
 // taskTitle: fallback 关键词匹配用（task 标题）
 export function formatDomainLessons(allLessons, taskCategories, currentPlanSeq, taskTitle) {
   if (!Array.isArray(allLessons) || allLessons.length === 0) return ''
-  // 排除 silent-failure（Tier 1 已注入）
-  const candidates = allLessons.filter(l => l && l.category !== 'silent-failure')
+  // 排除 silent-failure（Tier 1 已注入）。Q1 修复（2026-07-06）：须与 formatUniversalLessons
+  //   的正则容错对称——否则变体（silent_failure/Silent-Failure/带空格）会被 Tier 2 重复匹配注入。
+  const candidates = allLessons.filter(l => l && !/^(silent[-_]?failure)$/i.test(String(l.category).trim()))
   let matched = []
   if (Array.isArray(taskCategories) && taskCategories.length > 0) {
     // category 匹配
