@@ -113,12 +113,18 @@ get-ts（取时间戳）
               → failed → 重试一次 → halt
               → done_with_concerns → 记疑虑，继续进 review（不 halt）
             review rounds (max N，默认 4，可配 0=无限): spec ‖ quality ‖ hunter 并行
-              → 全绿 break / 任一❌→ implementor 修复 → 下轮 / maxN → halt（0=无限仅靠振荡检测）
+              → 每轮 review 后更新 findings_history（状态机：open/fixed/regressed）
+              → 全绿 break / 任一❌→ implementor 修复 → 下轮 / maxN → halt（0=无限仅靠振荡检测+budget）
               → **cross-reviewer 标记**：≥2 reviewer 标记同文件时，fixIssues 末尾追加文件分组 + `⚠ CROSS-REVIEWER` 标记
               → 最后 1 轮 fix 强制 opus（有限 round===maxRounds-1 / 无限 round>=4）
               → 任一 review 空响应/异常（agent_error|model_unavailable|review_empty）→ halt
               → 任一 review failed 但 0 findings（review_failed_no_findings）→ halt
-              → 振荡检测（同文件≥3 round）→ **升级 opus 跑一轮**（改进1，2026-07-05）；isFlipFlop 区分 flip-flop（真矛盾）/补充（新 finding，改进2）；已 opus 仍振荡 → halt
+              → 振荡检测（v3 2026-07-06，§5.5）：
+                - hasRegressed(findings_history) → 立即 halt（reason: OSCILLATING，回归循环）
+                - detectOscillation 触发 + isFlipFlop=true → 立即 halt（reviewer 真矛盾）
+                - detectOscillation 触发 + flipFlop=false 且无 regressed → 升 opus 后继续跑（new findings = 在推进）
+                - 已升 opus 仍继续 → budget guard（默认 5）耗尽 halt（reason: review_not_converging，建议拆 task）
+              → fix prompt 注入 `[OPEN]`（必须修，★ 标本轮新增）+ `[FIXED]`（标注 file + fix，勿碰防回归）+ `[REGRESSED]` 触发即 halt 不注入
             commit → git commit feat(plan-X/T-Y)（方案 C：commit 提前到 simplify 前）
             simplify (max 1) → git status --porcelain subagent 独立验证是否动代码（staged+unstaged，不信任自报）
               → 有改动 → re-review（spec‖qual‖hunt，runReviewRound helper）
