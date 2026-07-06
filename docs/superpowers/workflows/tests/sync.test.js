@@ -129,6 +129,35 @@ test('REGRESSION: allGreen break 在 detectOscillation 之前（防收敛误报 
   assert.ok(allGreenIdx < oscIdx, 'allGreen break 必须在 detectOscillation 之前（收敛误报根治）')
 })
 
+test('v3 runtime wiring: findings_history update + taskCategories declared + OSC regressed branch', () => {
+  // findings_history 在 review loop 内更新，且必须在 halt 检查之前（同 Q15 review_history 顺序）
+  const reviewHistoryPushIdx = runSrc.indexOf('state.perTask[taskKey].review_history.push')
+  const findingsHistoryUpdateIdx = runSrc.indexOf('state.perTask[taskKey].findings_history = updateFindingsHistory')
+  const reviewReasonIdx = runSrc.indexOf('if (reviewReason)')
+  assert.notEqual(reviewHistoryPushIdx, -1, 'run-plans.js 须有 review_history.push')
+  assert.notEqual(findingsHistoryUpdateIdx, -1, 'run-plans.js 须更新 findings_history')
+  assert.notEqual(reviewReasonIdx, -1, 'run-plans.js 须有 reviewReason halt 检查')
+  assert.ok(reviewHistoryPushIdx < findingsHistoryUpdateIdx, 'findings_history 更新须在 review_history.push 之后')
+  assert.ok(findingsHistoryUpdateIdx < reviewReasonIdx, 'findings_history 更新须在 halt 检查之前')
+
+  // taskCategories 必须在 formatDomainLessons 调用前定义（C1 级阻断：未定义 → ReferenceError）
+  const taskCategoriesDeclIdx = runSrc.indexOf("const taskCategories = task.lesson_categories")
+  const formatDomainLessonsCallIdx = runSrc.indexOf('formatDomainLessons(state.allLessons || [], taskCategories')
+  assert.notEqual(taskCategoriesDeclIdx, -1, 'run-plans.js 必须声明 taskCategories 变量')
+  assert.notEqual(formatDomainLessonsCallIdx, -1, 'run-plans.js 必须用 taskCategories 调 formatDomainLessons')
+  assert.ok(taskCategoriesDeclIdx < formatDomainLessonsCallIdx, 'taskCategories 声明必须在 formatDomainLessons 调用之前')
+
+  // 独立 regressed halt 分支必须存在
+  assert.match(runSrc, /if \(regressed\)/, 'run-plans.js 须有独立的 hasRegressed halt 分支')
+  assert.match(runSrc, /regressedFindings/, 'run-plans.js halt diag 须含 regressedFindings')
+
+  // review_not_converging halt reason（budget guard）必须存在
+  assert.match(runSrc, /reason: 'review_not_converging'/, 'run-plans.js 须有 review_not_converging halt reason')
+
+  // fix-round 必须调用 formatFindingsHistory（D1 history 主导单源）
+  assert.match(runSrc, /formatFindingsHistory\(state\.perTask\[taskKey\]\.findings_history \|\| \[\], round\)/, 'fix round 须用 formatFindingsHistory 注入历史')
+})
+
 test('run-plans.js orchestrator wires new placeholders + gate lint loop', () => {
   assert.match(runSrc, /referencePaths: formatReferencePaths/)
   assert.match(runSrc, /languageChecklist: languageChecklist\(cfg\.language\)/)

@@ -1193,6 +1193,8 @@ async function runTask(plan, task) {
   //   S3（第 5 轮）: taskLessons 查找同须用 taskKey（存储键已 plan-scoped，防跨 plan 同名 task 覆盖）。
   //   旧代码用裸 task.id → 查找永远 undefined → failedApproaches/lessons 占位符不注入 implementor prompt。
   // P1-11（第 6 轮）: implCtx 传 buildCommand（implementor GREEN 前跑 build 验证可构建性）。
+  // v3: lesson_categories 来自 plan frontmatter（可选）；未声明则 domain lessons 回退到 title 关键词匹配。
+  const taskCategories = task.lesson_categories || []
   const lessonsText = formatLessons(state.taskLessons?.[taskKey] || []) + formatUniversalLessons(state.allLessons || []) + formatDomainLessons(state.allLessons || [], taskCategories, planIdShort, task.title || '')
   const implCtx = (fix, note, ctx = '') => ({ planId: plan.id, taskId: task.id, planFilePath: plan.file, specPath: cfg.spec_path, testCommand: cfg.test_command, buildCommand: cfg.build_command || '', fixIssues: fix, retryNote: note, fetchedContext: ctx, referencePaths: formatReferencePaths(cfg.reference_paths), failedApproaches: formatFailedApproaches(state.failedApproaches?.[taskKey] || []), lessons: lessonsText })
   let impl
