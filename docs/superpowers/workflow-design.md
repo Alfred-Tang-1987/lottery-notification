@@ -392,12 +392,12 @@ detectOscillation 触发时：
 └─ flipFlop=false 且无 regressed（每轮新 findings = 在推进）
     ├─ 未升 opus → 升 opus，继续
     └─ 已升 opus → 继续（new findings = progress，不该 halt）
-        └─ budget guard：round ≥ review_budget（默认 8）→ HALT
-           reason: 'review budget exhausted'（区别于真振荡）
+        └─ budget guard：round ≥ review_budget（默认 5）→ HALT
+           reason: 'review_not_converging'（blocked.md 建议拆 task，区别于真振荡）
 ```
 
 - `isFlipFlop(reviewHistory)`（fast-path，每轮 O(n)，检查本轮 title 在前轮出现过）与 `hasRegressed(findingsHistory)`（精确 diag：哪轮修好、哪轮复现）**同义但互补**，任一触发即 halt。
-- budget 可配（`review_budget`，默认 8，仅无限模式 `review_max_rounds=0` 生效）；有限模式仍用 `review_max_rounds` 硬上限。
+- budget 可配（`review_budget`，默认 5，仅无限模式 `review_max_rounds=0` 生效）；有限模式仍用 `review_max_rounds` 硬上限。
 - 取消 budget guard 不可行——reviewer 同义变体（改 title）会让 `[REGRESSED]` 漏报，需 budget 兜底。
 
 **改进 F（opus 升级 prompt 强化）**：升 opus 时 `implCtx` 的 `retryNote` 强化为「本轮一次性修完全部 [OPEN] findings，禁止增量补一个留下一个；[FIXED] 勿碰这些文件区域，修新问题时主动 git diff 检查不重新引入已修好的问题」。
@@ -408,9 +408,9 @@ detectOscillation 触发时：
 | findings_history（`[OPEN]`/`[FIXED]`） | 仅当前 task | `state.perTask[taskKey].findings_history` |
 | lessons（Tier 1 + Tier 2） | 跨 task / 跨 plan | `state.taskLessons[taskKey]`（bootstrap 全局匹配） |
 
-**回归场景覆盖**：A/B 轮流复现（title 同）→ `[REGRESSED]` halt ✅；修 B 无意回归 A（title 同）→ `[FIXED] A` 全注入预防 ✅；A 的变体（reviewer 改 title）→ 精确匹配漏报，budget 8 兜底 ⚠️；全新 finding 每轮出现（真补充）→ 全程 open 不 halt ✅。
+**回归场景覆盖**：A/B 轮流复现（title 同）→ `[REGRESSED]` halt ✅；修 B 无意回归 A（title 同）→ `[FIXED] A` 全注入预防 ✅；A 的变体（reviewer 改 title）→ 精确匹配漏报，budget 5 兜底 ⚠️；全新 finding 每轮出现（真补充）→ 全程 open 不 halt ✅。
 
-**局限**：reviewer 改 title 的同义变体仍抓不到（精确 title 匹配）。结合 budget 8 + `[REGRESSED]` halt 覆盖绝大多数；语义匹配作为后续 isFlipFlop 增强项。
+**局限**：reviewer 改 title 的同义变体仍抓不到（精确 title 匹配）。结合 budget 5 + `[REGRESSED]` halt 覆盖绝大多数；语义匹配作为后续 isFlipFlop 增强项。
 
 **实施 plan**：`docs/superpowers/workflow-plans/2026-07-06-review-v3-oscillation-findings-lessons.md`。
 
@@ -887,7 +887,7 @@ function detectOscillation(filesTouchedPerRound) {
 
 halt 含义（2026-07-05 后）：**opus 也修不好**。看 `diag.flipFlop`：true = reviewer 矛盾需人工裁定（如 CLAUDE.md 两规则冲突、T7 claims 时区）；false = model 能力极限，拆 task（参照 T6b-T6g 模式，把大 task 拆成功能域子 task）。原「直接 halt」语义被前移到「opus 升级后仍振荡」——把 opus 升级路径从 OSCILLATING 手里抢回来。
 
-**⚠️ v3 改进（2026-07-06，§5.5）**：上述「升 opus 后再触发即 halt」改为 **flipFlop 驱动 + budget guard 8**：detectOscillation 触发时若 `flipFlop=true` 或 `hasRegressed(findings_history)` → 立即 halt（真振荡/回归）；若 `flipFlop=false`（每轮新 findings = 在推进）→ 升 opus 后**继续跑**直到 budget 8 耗尽（reason: `review budget exhausted`）。`shouldEscalateOnOscillation` 的「已升级 → return false → halt」分支被替换为「已升级 → 检查 budget → 继续或 budget halt」。`[REGRESSED]` 由 findings 状态机（§5.5 E'）检测：曾 fixed 的 finding 再次出现即 regressed → halt，diag 含 fixed_at_round + 复现轮次。历史 3 次 OSCILLATING halt 全为 flipFlop=false，v3 下都会继续跑到收敛或 budget 8。
+**⚠️ v3 改进（2026-07-06，§5.5）**：上述「升 opus 后再触发即 halt」改为 **flipFlop 驱动 + budget guard 5**：detectOscillation 触发时若 `flipFlop=true` 或 `hasRegressed(findings_history)` → 立即 halt（真振荡/回归）；若 `flipFlop=false`（每轮新 findings = 在推进）→ 升 opus 后**继续跑**直到 budget 5 耗尽（reason: `review_not_converging`）。`shouldEscalateOnOscillation` 的「已升级 → return false → halt」分支被替换为「已升级 → 检查 budget → 继续或 budget halt」。`[REGRESSED]` 由 findings 状态机（§5.5 E'）检测：曾 fixed 的 finding 再次出现即 regressed → halt，diag 含 fixed_at_round + 复现轮次。历史 3 次 OSCILLATING halt 全为 flipFlop=false，v3 下都会继续跑到收敛或 budget 5。
 
 **⚠️ allGreen 必须在 detectOscillation 之前**（收敛误报根治，2026-07-01）：run-plans.js review rounds 循环里 `if (allGreen(spec, qual, hunt)) break` 在 `detectOscillation` 检查之前调用。否则 r3 三 reviewer 全 ok 时，先被「核心文件被审 ≥3 轮」OSCILLATING 截胡、allGreen break 永远轮不到 → 收敛误报。Plan 05 跑 T2/T5 时反复踩此（r3 全 ok 仍 halt）。提前后：
 - **收敛**（r3 全 ok）→ allGreen break 放行，不进 OSCILLATING；

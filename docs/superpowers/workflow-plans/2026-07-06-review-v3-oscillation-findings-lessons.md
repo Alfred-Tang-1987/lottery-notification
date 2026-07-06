@@ -4,7 +4,7 @@
 
 **Goal:** 把 OSCILLATING halt 从「纯计数（同文件 ≥3 轮）」改为「flipFlop/regressed 驱动 + budget guard 8」，加 findings 状态机（`[OPEN]`/`[FIXED]`/`[REGRESSED]`）防回归循环，lessons 改两层注入（silent-failure 始终 + 领域按 category），让 flipFlop=false 的 task（历史 3 次 halt 全属此类）能升 opus 后跑到收敛。
 
-**Architecture:** 5 个改进联动：(A+B) lessons category 匹配 + 两层注入 → (E') findings 状态机纯函数 + 接线 → (OSC) shouldEscalateOnOscillation 改 flipFlop 驱动 + budget 8 + hasRegressed 联动 → (F) opus 升级 prompt 强化。纯函数进 lib.js（node:test 单测），runtime 胶水留 run-plans.js，sync.test 字节守护 inline 副本。
+**Architecture:** 5 个改进联动：(A+B) lessons category 匹配 + 两层注入 → (E') findings 状态机纯函数 + 接线 → (OSC) shouldEscalateOnOscillation 改 flipFlop 驱动 + budget 5 + hasRegressed 联动 → (F) opus 升级 prompt 强化。纯函数进 lib.js（node:test 单测），runtime 胶水留 run-plans.js，sync.test 字节守护 inline 副本。
 
 **Tech Stack:** JavaScript (Workflow runtime sandbox), node:test, Claude Code Workflow agent dispatch
 
@@ -29,7 +29,7 @@
 - findings 状态机：`open`（本轮仍存在）→ 不出现即 `fixed`（标注 `fixed_at_round`）→ 再次出现即 `regressed`（触发 halt，**不注入 fix prompt**）
 - `[FIXED]` 全注入（标注 `file` 路径，无 commit SHA 因 task 内 fix 不 commit），implementor `git diff` 工作树定位已修复区域避免碰它
 - `[REGRESSED]` 触发即 halt（与 `isFlipFlop=true` 同义但 diag 更精确：哪轮修好、哪轮复现）
-- OSCILLATING halt：`flipFlop=true` OR `hasRegressed(history)` → halt；`flipFlop=false` 升 opus 后继续跑直到 `review_budget`（默认 8）
+- OSCILLATING halt：`flipFlop=true` OR `hasRegressed(history)` → halt；`flipFlop=false` 升 opus 后继续跑直到 `review_budget`（默认 5）。budget 耗尽 halt reason `review_not_converging`（blocked.md 建议拆 task）
 - 无 cap（用户确认接受 token 爆炸）
 
 ---
@@ -240,7 +240,7 @@ lib.js 新增 2 个 export 函数 + helpers.test.js 7 个测试块。TDD RED→G
 
 **设计：** findings_history 状态机。每条 finding 形态：`{title, severity, fix, file, first_seen, last_seen, rounds: [], status: 'open|fixed|regressed', fixed_at_round?}`。三个纯函数：
 - `updateFindingsHistory(history, currentFindings, round)` → 新 history（不可变，返回新数组）
-- `formatFindingsHistory(history)` → 分层字符串（`[OPEN]` 全注入 + `[FIXED]` 全注入，`[REGRESSED]` 不注入）
+- `formatFindingsHistory(history, currentRound?)` → 分层字符串（`[OPEN]` 全注入含 ★ 本轮新增标记 + severity 排序，`[FIXED]` 全注入，`[REGRESSED]` 不注入）。D1：history 主导单源，配合 Task 5 Step 8 不再单独注入 formatFindings(本轮)
 - `hasRegressed(history)` → boolean（任一 finding status==='regressed'）
 
 currentFindings 形态复用 `collectReviewFindings` 输出：`{source, severity, title, file, fix}`。
@@ -340,23 +340,39 @@ test('hasRegressed returns false for empty history', () => {
   assert.equal(hasRegressed([]), false)
 })
 
-// —— formatFindingsHistory ——
+// —— formatFindingsHistory（D1 决策：history 主导，本轮新增加 ★ 标记，去重单源）——
+// 签名 formatFindingsHistory(history, currentRound?)：currentRound 用于标 ★本轮新增（last_seen===currentRound）
 
 test('formatFindingsHistory lists [OPEN] findings as must-fix', () => {
   const history = [
     { title: 'bug A', severity: 'important', fix: 'fix A', file: 'a.py', first_seen: 1, last_seen: 2, rounds: [1, 2], status: 'open' },
   ]
-  const out = formatFindingsHistory(history)
+  const out = formatFindingsHistory(history, 2)  // round 2 调用
   assert.ok(out.includes('[OPEN]'))
   assert.ok(out.includes('bug A'))
   assert.ok(out.includes('fix A'))
+})
+
+test('formatFindingsHistory marks last_seen===currentRound with ★ (本轮新增)', () => {
+  // D1: 本轮新发现标 ★ 让 implementor 分辨紧急度（DX finding low 顺势解决）
+  const history = [
+    { title: 'old bug', severity: 'minor', fix: '', file: 'a', first_seen: 1, last_seen: 1, rounds: [1], status: 'open' },
+    { title: 'new bug', severity: 'important', fix: 'fix it', file: 'b', first_seen: 2, last_seen: 2, rounds: [2], status: 'open' },
+  ]
+  const out = formatFindingsHistory(history, 2)  // round 2 调用
+  assert.ok(out.includes('★'))  // new bug 标 ★
+  // old bug 不标 ★（last_seen=1 ≠ currentRound=2）
+  const lines = out.split('\n')
+  const oldLine = lines.find(l => l.includes('old bug'))
+  assert.ok(oldLine, 'old bug line exists')
+  assert.ok(!oldLine.includes('★'), 'old bug not marked ★')
 })
 
 test('formatFindingsHistory lists [FIXED] findings as do-not-touch', () => {
   const history = [
     { title: 'bug A', severity: 'minor', fix: 'fix A', file: 'a.py', first_seen: 1, last_seen: 1, rounds: [1], status: 'fixed', fixed_at_round: 2 },
   ]
-  const out = formatFindingsHistory(history)
+  const out = formatFindingsHistory(history, 3)  // round 3 调用（已 fixed 在 r2）
   assert.ok(out.includes('[FIXED]'))
   assert.ok(out.includes('bug A'))
   assert.ok(out.includes('a.py'))  // 文件路径标注
@@ -367,7 +383,7 @@ test('formatFindingsHistory omits [REGRESSED] (triggers halt, not injected)', ()
   const history = [
     { title: 'bug A', severity: 'important', fix: '', file: 'a', first_seen: 1, last_seen: 3, rounds: [1, 3], status: 'regressed', fixed_at_round: 2 },
   ]
-  const out = formatFindingsHistory(history)
+  const out = formatFindingsHistory(history, 3)
   // regressed 不注入（触发即 halt，implementor 永远看不到）
   assert.ok(!out.includes('bug A'))
   assert.ok(!out.includes('[REGRESSED]'))
@@ -375,11 +391,26 @@ test('formatFindingsHistory omits [REGRESSED] (triggers halt, not injected)', ()
 
 test('formatFindingsHistory returns empty string when no open or fixed', () => {
   const history = [{ title: 'A', status: 'regressed' }]
-  assert.equal(formatFindingsHistory(history), '')
+  assert.equal(formatFindingsHistory(history, 3), '')
 })
 
 test('formatFindingsHistory empty history returns empty string', () => {
-  assert.equal(formatFindingsHistory([]), '')
+  assert.equal(formatFindingsHistory([], 1), '')
+})
+
+test('formatFindingsHistory sorts [OPEN] by severity (critical first)', () => {
+  // DX finding medium: 弱模型在长 prompt 下倾向先修容易的 minor，按 severity 排序让 critical 在前
+  const history = [
+    { title: 'minor bug', severity: 'minor', fix: '', file: 'a', first_seen: 1, last_seen: 1, rounds: [1], status: 'open' },
+    { title: 'critical bug', severity: 'critical', fix: 'urgent', file: 'b', first_seen: 1, last_seen: 1, rounds: [1], status: 'open' },
+    { title: 'important bug', severity: 'important', fix: '', file: 'c', first_seen: 1, last_seen: 1, rounds: [1], status: 'open' },
+  ]
+  const out = formatFindingsHistory(history, 1)
+  const criticalPos = out.indexOf('critical bug')
+  const importantPos = out.indexOf('important bug')
+  const minorPos = out.indexOf('minor bug')
+  assert.ok(criticalPos < importantPos, 'critical before important')
+  assert.ok(importantPos < minorPos, 'important before minor')
 })
 ```
 
@@ -448,20 +479,28 @@ export function hasRegressed(history) {
   return history.some(h => h?.status === 'regressed')
 }
 
-export function formatFindingsHistory(history) {
+// D1 (2026-07-06): formatFindingsHistory(history, currentRound) — history 主导单源注入。
+// currentRound 用于标 ★本轮新增（last_seen===currentRound），让 implementor 分辨紧急度。
+// 配合 Task 5 Step 8：fix prompt 不再单独注入 formatFindings(本轮)，避免重复。
+export function formatFindingsHistory(history, currentRound) {
   if (!Array.isArray(history) || history.length === 0) return ''
   const open = history.filter(h => h.status === 'open')
   const fixed = history.filter(h => h.status === 'fixed')
   const sections = []
   if (open.length > 0) {
-    const lines = open.map(h => {
+    // DX medium: 按 severity 排序（critical > important > minor），防弱模型先修容易的 minor 漏 critical
+    const sevRank = { critical: 0, important: 1, minor: 2 }
+    const sortedOpen = [...open].sort((a, b) => (sevRank[a.severity] ?? 9) - (sevRank[b.severity] ?? 9))
+    const lines = sortedOpen.map(h => {
       const sev = h.severity ? `[${h.severity}]` : ''
-      const seen = `(seen: r${h.rounds.join(',')})`
+      // D1: 本轮新增加 ★ 标记（last_seen === currentRound），否则显式 seen 信息
+      const isNew = currentRound !== undefined && h.last_seen === currentRound
+      const seen = isNew ? '★本轮新增' : `(seen: r${h.first_seen}-${h.last_seen}, ${h.rounds.length}轮)`
       const file = h.file ? `, file: ${h.file}` : ''
       const fix = h.fix ? ` — fix: ${h.fix}` : ''
       return `- ${sev} ${h.title} ${seen}${file}${fix}`
     }).join('\n')
-    sections.push(`### [OPEN] 本轮仍存在 — 必须修完\n${lines}`)
+    sections.push(`### [OPEN] 本轮仍存在 — 必须修完（★ = 本轮新增，优先修）\n${lines}`)
   }
   if (fixed.length > 0) {
     const lines = fixed.map(h => {
@@ -470,7 +509,7 @@ export function formatFindingsHistory(history) {
       const fix = h.fix ? ` — fix: ${h.fix}` : ''
       return `- ${sev} ${h.title} (fixed r${h.fixed_at_round}${file})${fix}`
     }).join('\n')
-    sections.push(`### [FIXED] 已修好的 — 修新问题时勿碰这些文件区域，勿重新引入已修问题\n${lines}`)
+    sections.push(`### [FIXED] 已修好的 — 修新问题时核对这里列出的 fix 仍存在（若 [OPEN] 与 [FIXED] 同文件，只动 [OPEN] 描述的代码，不要回退 [FIXED] 对应的修改）\n${lines}`)
   }
   // [REGRESSED] 不注入（触发即 halt，implementor 看不到）
   if (sections.length === 0) return ''
@@ -501,7 +540,7 @@ lib.js 新增 3 个 export 函数 + helpers.test.js 14 个测试块。TDD RED→
 - Modify: `docs/superpowers/workflows/lib.js`（改 `shouldEscalateOnOscillation` + 新增 `resolveReviewBudget`）
 - Modify: `docs/superpowers/workflows/tests/helpers.test.js`（更新 + 追加测试）
 
-**设计：** `shouldEscalateOnOscillation(currentModel, alreadyEscalated)` 旧逻辑：已升级 → return false（halt）。新逻辑：移除「已升级→halt」语义（改由 flipFlop + budget 驱动），`shouldEscalateOnOscillation` 仅保留「未升 opus → 升级」判断，halt 决策上移到 run-plans.js 的 OSC 分支（用 `isFlipFlop` + `hasRegressed` + budget）。新增 `resolveReviewBudget(config)` 解析 budget（默认 8，仅无限模式生效）。
+**设计：** `shouldEscalateOnOscillation(currentModel, alreadyEscalated)` 旧逻辑：已升级 → return false（halt）。新逻辑：移除「已升级→halt」语义（改由 flipFlop + budget 驱动），`shouldEscalateOnOscillation` 仅保留「未升 opus → 升级」判断，halt 决策上移到 run-plans.js 的 OSC 分支（用 `isFlipFlop` + `hasRegressed` + budget）。新增 `resolveReviewBudget(config)` 解析 budget（默认 5——历史 3 次 OSCILLATING halt 全在 r3，r4 是合理下一档；r5-8 无实证且烧 2x opus 配额，性价比低。仅无限模式生效）。budget 耗尽 halt reason `review_not_converging`（区别于真振荡 `OSCILLATING`），blocked.md 建议拆 task。
 
 ⚠️ `shouldEscalateOnOscillation` 签名/语义改了，run-plans.js OSC 分支必须同步改（Task 5），不能只改 lib.js。sync.test 字节守护会强制 run-plans.js inline 副本一致。
 
@@ -533,10 +572,10 @@ test('shouldEscalateOnOscillation returns false when already opus', () => {
 
 // —— resolveReviewBudget ——
 
-test('resolveReviewBudget returns 8 default when unconfigured', () => {
-  assert.equal(resolveReviewBudget({}), 8)
-  assert.equal(resolveReviewBudget(undefined), 8)
-  assert.equal(resolveReviewBudget({ review_budget: null }), 8)
+test('resolveReviewBudget returns 5 default when unconfigured', () => {
+  assert.equal(resolveReviewBudget({}), 5)
+  assert.equal(resolveReviewBudget(undefined), 5)
+  assert.equal(resolveReviewBudget({ review_budget: null }), 5)
 })
 
 test('resolveReviewBudget returns configured positive integer', () => {
@@ -544,15 +583,15 @@ test('resolveReviewBudget returns configured positive integer', () => {
   assert.equal(resolveReviewBudget({ review_budget: 6 }), 6)
 })
 
-test('resolveReviewBudget returns default 8 for non-number', () => {
-  assert.equal(resolveReviewBudget({ review_budget: '8' }), 8)
-  assert.equal(resolveReviewBudget({ review_budget: 'eight' }), 8)
+test('resolveReviewBudget returns default 5 for non-number', () => {
+  assert.equal(resolveReviewBudget({ review_budget: '8' }), 5)
+  assert.equal(resolveReviewBudget({ review_budget: 'eight' }), 5)
 })
 
-test('resolveReviewBudget returns 8 for zero or negative (use default)', () => {
-  // 0/负数无意义（budget 必须正）→ 用默认 8
-  assert.equal(resolveReviewBudget({ review_budget: 0 }), 8)
-  assert.equal(resolveReviewBudget({ review_budget: -1 }), 8)
+test('resolveReviewBudget returns 5 for zero or negative (use default)', () => {
+  // 0/负数无意义（budget 必须正）→ 用默认 5
+  assert.equal(resolveReviewBudget({ review_budget: 0 }), 5)
+  assert.equal(resolveReviewBudget({ review_budget: -1 }), 5)
 })
 ```
 
@@ -576,10 +615,11 @@ export function shouldEscalateOnOscillation(currentModel, alreadyEscalated) {
 
 // v3 (2026-07-06, §5.5): 无限模式（review_max_rounds=0）的 review 轮数预算。
 // flipFlop=false 持续推进时，升 opus 后继续跑直到 budget 耗尽（防 reviewer 同义变体漏报致无限跑）。
-// 默认 8。仅无限模式生效；有限模式用 review_max_rounds 硬上限。
+// 默认 5——历史 3 次 OSCILLATING halt 全在 r3，r4 是合理下一档；r5-8 无实证且烧 2x opus 配额。
+// 仅无限模式生效；有限模式用 review_max_rounds 硬上限。
 export function resolveReviewBudget(config) {
   const v = config?.review_budget
-  if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) return 8
+  if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) return 5
   return v
 }
 ```
@@ -595,7 +635,7 @@ Expected: PASS — 全部测试通过。
 git add docs/superpowers/workflows/lib.js docs/superpowers/workflows/tests/helpers.test.js
 git commit -m "feat(workflow-v3/T3): OSCILLATING halt 改 flipFlop 驱动 — shouldEscalateOnOscillation 语义化 + resolveReviewBudget
 
-OSC: shouldEscalateOnOscillation 仅判断升级，halt 决策上移；resolveReviewBudget 默认 8。
+OSC: shouldEscalateOnOscillation 仅判断升级，halt 决策上移；resolveReviewBudget 默认 5。
 ⚠️ lib.js 改了，run-plans.js inline 副本须 Task 5 同步（sync.test 守护）。
 TDD RED→GREEN。"
 ```
@@ -814,20 +854,23 @@ function hasRegressed(history) {
   return history.some(h => h?.status === 'regressed')
 }
 
-function formatFindingsHistory(history) {
+function formatFindingsHistory(history, currentRound) {
   if (!Array.isArray(history) || history.length === 0) return ''
   const open = history.filter(h => h.status === 'open')
   const fixed = history.filter(h => h.status === 'fixed')
   const sections = []
   if (open.length > 0) {
-    const lines = open.map(h => {
+    const sevRank = { critical: 0, important: 1, minor: 2 }
+    const sortedOpen = [...open].sort((a, b) => (sevRank[a.severity] ?? 9) - (sevRank[b.severity] ?? 9))
+    const lines = sortedOpen.map(h => {
       const sev = h.severity ? `[${h.severity}]` : ''
-      const seen = `(seen: r${h.rounds.join(',')})`
+      const isNew = currentRound !== undefined && h.last_seen === currentRound
+      const seen = isNew ? '★本轮新增' : `(seen: r${h.first_seen}-${h.last_seen}, ${h.rounds.length}轮)`
       const file = h.file ? `, file: ${h.file}` : ''
       const fix = h.fix ? ` — fix: ${h.fix}` : ''
       return `- ${sev} ${h.title} ${seen}${file}${fix}`
     }).join('\n')
-    sections.push(`### [OPEN] 本轮仍存在 — 必须修完\n${lines}`)
+    sections.push(`### [OPEN] 本轮仍存在 — 必须修完（★ = 本轮新增，优先修）\n${lines}`)
   }
   if (fixed.length > 0) {
     const lines = fixed.map(h => {
@@ -836,7 +879,7 @@ function formatFindingsHistory(history) {
       const fix = h.fix ? ` — fix: ${h.fix}` : ''
       return `- ${sev} ${h.title} (fixed r${h.fixed_at_round}${file})${fix}`
     }).join('\n')
-    sections.push(`### [FIXED] 已修好的 — 修新问题时勿碰这些文件区域，勿重新引入已修问题\n${lines}`)
+    sections.push(`### [FIXED] 已修好的 — 修新问题时核对这里列出的 fix 仍存在（若 [OPEN] 与 [FIXED] 同文件，只动 [OPEN] 描述的代码，不要回退 [FIXED] 对应的修改）\n${lines}`)
   }
   if (sections.length === 0) return ''
   return `## Findings History (全轮累积)\n${sections.join('\n\n')}`
@@ -845,7 +888,7 @@ function formatFindingsHistory(history) {
 // —— v3 OSCILLATING budget（inline 自 lib.js）——
 function resolveReviewBudget(config) {
   const v = config?.review_budget
-  if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) return 8
+  if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) return 5
   return v
 }
 ```
@@ -862,7 +905,7 @@ function shouldEscalateOnOscillation(currentModel, alreadyEscalated) {
 
 - [ ] **Step 4: Add findings_history to perTask init**
 
-找到 `state.perTask[taskKey] = { ... }` 初始化（约 line 964，含 `files_touched_per_round: [], review_history: []`），追加 `findings_history: []`：
+找到 `state.perTask[taskKey] = { ... }` 初始化（约 line 964，含 `files_touched_per_round: [], review_history: []`），追加 `findings_history: []` + `oscillation_escalated_at_round: null`：
 
 ```javascript
   state.perTask[taskKey] = {
@@ -873,10 +916,40 @@ function shouldEscalateOnOscillation(currentModel, alreadyEscalated) {
     files_touched_per_round: [],
     review_history: [],
     findings_history: [],  // v3: findings 状态机（open/fixed/regressed）
+    oscillation_escalated_at_round: null,  // v3 F: opus 升级轮标记
     commit_sha: null,
     opus_escalated: false,
     // ... 其余字段保持
   }
+```
+
+- [ ] **Step 4b: 同步 ensurePerTaskDefaults（D2 决策，DX high — 防 halt/resume 数据丢失）**
+
+`ensurePerTaskDefaults`（line 961，halt/resume 路径用）必须同步加这两个字段，否则 halt 后 perTask 续跑/halt() 调用时 findings_history 变 undefined，状态机失效。读 `ensurePerTaskDefaults` 函数体（约 line 961-964），在字段列表追加：
+
+```javascript
+function ensurePerTaskDefaults(entry) {
+  return {
+    plan_id: '', status: '', model: '', review_rounds: 0,
+    files_touched_per_round: [], review_history: [],
+    findings_history: [],              // v3: 状态机
+    oscillation_escalated_at_round: null,  // v3 F: 升级轮标记
+    commit_sha: null, opus_escalated: false,
+    simplify_reverted: false, simplify_review_findings: null,
+    destructive_review_failed: false, destructive_review_findings: null,
+    concerns: null, blocked_info: null,
+    ...entry,
+  }
+}
+```
+
+- [ ] **Step 4c: 同步 finalReport prompt per_task 字段（D2 决策，防 manifest 序列化丢字段）**
+
+finalReport prompt（约 line 862）描述 per_task 对象字段时，须列出新字段让 finalReport agent 在 manifest 持久化时包含它们。找到 finalReport prompt 里 per_task 字段列表段（搜 `per_task` 在 PROMPTS.finalReport 内），追加 `findings_history` + `oscillation_escalated_at_round`：
+
+```
+（在 finalReport prompt 的 per_task 字段描述段追加）
+per_task.<task> 还含 v3 字段：findings_history（findings 状态机轨迹 [{title, status, first_seen, last_seen, rounds, fixed_at_round}]）+ oscillation_escalated_at_round（opus 升级轮 round 数或 null）。manifest 序列化时必须保留这两个字段（不要 strip）。
 ```
 
 - [ ] **Step 5: Wire updateFindingsHistory into review loop**
@@ -938,7 +1011,8 @@ function shouldEscalateOnOscillation(currentModel, alreadyEscalated) {
     if (maxRounds === 0) {
       const budget = resolveReviewBudget(cfg)
       if (round >= budget) {
-        return { halted: true, reason: 'review budget exhausted', diag: { round, budget, spec: spec.diagnostics, qual: qual.diagnostics, hunt: hunt.diagnostics } }
+        // D4 决策：halt reason 改可操作——blocked.md 建议拆 task
+        return { halted: true, reason: 'review_not_converging', diag: { round, budget, findings_history: state.perTask[taskKey].findings_history, spec: spec.diagnostics, qual: qual.diagnostics, hunt: hunt.diagnostics } }
       }
     } else if (round === maxRounds) {
       // 有限模式仍用 maxRounds 硬上限
@@ -946,18 +1020,21 @@ function shouldEscalateOnOscillation(currentModel, alreadyEscalated) {
     }
 ```
 
-- [ ] **Step 8: Update fix round implCtx to use formatFindingsHistory**
+- [ ] **Step 8: Update fix round implCtx to use formatFindingsHistory (D1: history 主导单源，去重)**
 
-找到 fix round 的 `fixIssues` 构造（约 line 1156，`const findings = collectReviewFindings(...)`）+ implCtx 调用。改为：当前轮 findings 仍作 `fixIssues`（implementor 看到本轮新发现），但 `implCtx` 的 `fixIssues` 拼上 `formatFindingsHistory`（全量 [OPEN]+[FIXED]）：
+找到 fix round 的 `fixIssues` 构造（约 line 1156，`const findings = collectReviewFindings(...)`）+ implCtx 调用。
+
+**D1 决策（autoplan 审阅 Eng+DX 共识 high）**：本轮 findings 与 findings_history [OPEN] 重复注入会让 implementor 把同一 finding 看成两个问题。改为 **history 主导单源**——fix prompt 只注入 `formatFindingsHistory(含 currentRound)`，[OPEN] 段标 ★ 区分本轮新增；**不再单独注入 formatFindings(本轮)**。cross-reviewer note 仍保留（按 file 聚合，与 [OPEN] 按 finding 聚合互补）。
 
 ```javascript
     const findings = collectReviewFindings(spec, qual, hunt)
-    const fixIssues = formatFindings(findings) + formatCrossReviewerNote(findings)
-    // v3: 拼上 findings history（[OPEN] 全量 + [FIXED] 全量，防回归）
-    const findingsHistoryText = formatFindingsHistory(state.perTask[taskKey].findings_history || [])
-    const fullFixIssues = findingsHistoryText ? `${fixIssues}\n${findingsHistoryText}` : fixIssues
+    const crossReviewerNote = formatCrossReviewerNote(findings)
+    // D1: history 主导单源——formatFindingsHistory 已含本轮 [OPEN]（标★本轮新增），
+    // 不再单独注入 formatFindings(本轮) 避免重复。cross-reviewer note 按 file 聚合保留。
+    const findingsHistoryText = formatFindingsHistory(state.perTask[taskKey].findings_history || [], round)
+    const fullFixIssues = findingsHistoryText ? `${findingsHistoryText}\n${crossReviewerNote}` : (formatFindings(findings) + crossReviewerNote)
     const fixModel = fixModelForRound(round, model, maxRounds)
-    impl = await dispatchImpl(buildPrompt('implementor', implCtx(fullFixIssues, `修复 review round ${round} 问题（${findings.length} 项新发现 + findings history）.`)), { schema: SCHEMAS.implementor, model: fixModel, label: `impl:${task.id}:fix${round}` }, fixModel, 'opus')
+    impl = await dispatchImpl(buildPrompt('implementor', implCtx(fullFixIssues, `修复 review round ${round} 问题（${findings.length} 项发现；★ 标本轮新增）.`)), { schema: SCHEMAS.implementor, model: fixModel, label: `impl:${task.id}:fix${round}` }, fixModel, 'opus')
 ```
 
 - [ ] **Step 9: Run sync test (all inline copies match lib.js)**
@@ -979,10 +1056,10 @@ Expected: PASS — 全部测试绿（helpers + sync + 其他）。
 
 ```bash
 git add .claude/workflows/run-plans.js docs/superpowers/workflows/tests/sync.test.js
-git commit -m "feat(workflow-v3/T5): findings 状态机接线 + OSC 分支重写 — flipFlop/regressed 驱动 + budget 8
+git commit -m "feat(workflow-v3/T5): findings 状态机接线 + OSC 分支重写 — flipFlop/regressed 驱动 + budget 5
 
 E' 接线 + OSC：run-plans.js inline 4 helper（字节守护），perTask 加 findings_history，
-review loop 每轮 update，OSC 分支改 flipFlop||regressed→halt else 升 opus 继续 + budget 8。
+review loop 每轮 update，OSC 分支改 flipFlop||regressed→halt else 升 opus 继续 + budget 5。
 fix round implCtx 拼 formatFindingsHistory（[OPEN]+[FIXED]）。"
 ```
 
@@ -1014,15 +1091,19 @@ fix round implCtx 拼 formatFindingsHistory（[OPEN]+[FIXED]）。"
 
 ```javascript
     const findings = collectReviewFindings(spec, qual, hunt)
-    const fixIssues = formatFindings(findings) + formatCrossReviewerNote(findings)
-    const findingsHistoryText = formatFindingsHistory(state.perTask[taskKey].findings_history || [])
-    const fullFixIssues = findingsHistoryText ? `${fixIssues}\n${findingsHistoryText}` : fixIssues
-    // v3 F: opus 升级轮强化 retryNote
+    const crossReviewerNote = formatCrossReviewerNote(findings)
+    // D1: history 主导单源（同 Task 5 Step 8）
+    const findingsHistoryText = formatFindingsHistory(state.perTask[taskKey].findings_history || [], round)
+    const fullFixIssues = findingsHistoryText ? `${findingsHistoryText}\n${crossReviewerNote}` : (formatFindings(findings) + crossReviewerNote)
+    // v3 F: opus 升级轮强化 retryNote（DX: 移除中英混杂 + 双重否定，正向陈述；文本修正 r{round} 而非 r{round-1}）
     const oscEscRound = state.perTask[taskKey].oscillation_escalated_at_round
     const retryNote = oscEscRound === round
-      ? `## ⚠ OSCILLATING ESCALATION (model: opus)
-前 ${round - 1} 轮 review 已累计未修 findings（见 [OPEN] below）。你必须在【本轮一次性修完全部】——禁止增量补一个留下一个等下轮。逐条核对 findings history：[OPEN] 每个都要修或显式说明为何不修；[FIXED] 勿碰这些文件区域，修新问题时主动 \`git diff\` 检查不重新引入已修好的问题。`
-      : `修复 review round ${round} 问题（${findings.length} 项新发现 + findings history）.`
+      ? `## 升级到 opus，本轮必须修完所有 [OPEN]
+- 逐条核对 [OPEN]，每条要么修完，要么说明不修的原因（★ 标本轮新增的优先修）
+- 修完后，核对 [FIXED] 列表的 fix 在你的改动后仍然存在；若 [OPEN] 与 [FIXED] 同文件，只动 [OPEN] 描述的代码，不要回退 [FIXED] 对应的修改
+- 不要留到下一轮，下一轮不再有升级空间
+- 截至 r${round} review 累计未修 findings 如上`
+      : `修复 review round ${round} 问题（${findings.length} 项发现；★ 标本轮新增）.`
     const fixModel = fixModelForRound(round, model, maxRounds)
     impl = await dispatchImpl(buildPrompt('implementor', implCtx(fullFixIssues, retryNote)), { schema: SCHEMAS.implementor, model: fixModel, label: `impl:${task.id}:fix${round}` }, fixModel, 'opus')
 ```
@@ -1073,7 +1154,7 @@ grep -c "formatFindingsHistory\|hasRegressed" docs/superpowers/workflows/USAGE.m
 
 ```bash
 grep -A 3 "flipFlop || regressed" .claude/workflows/run-plans.js  # 应有 halt 分支
-grep "review budget exhausted" .claude/workflows/run-plans.js  # 应有 budget halt
+grep "review_not_converging" .claude/workflows/run-plans.js  # 应有 budget halt
 grep "formatFindingsHistory" .claude/workflows/run-plans.js  # 应在 fix round 注入
 ```
 
@@ -1090,29 +1171,42 @@ git commit -m "docs(workflow-v3): 同步 §5.5 + §13g + USAGE review_budget/fin
 
 ---
 
+## Decision Audit Trail（autoplan 审阅 4 个 taste 决策）
+
+| # | Phase | Decision | Classification | Rationale |
+|---|-------|----------|---------------|-----------|
+| D1 | Eng+DX | fix prompt 本轮 findings 与 [OPEN] 重复注入 → **history 主导单源，标★本轮新增** | taste | Eng+DX 共识 high：消除重复根因 + 顺手解决 DX「缺本轮新增标记」low finding |
+| D2 | DX | ensurePerTaskDefaults + finalReport 字段同步漏 → **plan 内补全（Task 5 Step 4b/4c）** | taste | 完整性闭环，防 halt/resume findings_history 丢失 |
+| D3 | CEO | 5 改进耦合发布 vs 拆独立 plan → **单 plan 一起发** | user override | 用户选择 B（单 plan），接受回滚风险换速度 |
+| D4 | CEO | review_budget 默认 8 → **默认 5 + halt reason review_not_converging + blocked.md 建议拆 task** | taste | CEO 数据论据：历史 halt 全在 r3，r5-8 无实证且烧 2x opus；halt reason 可操作 |
+
 ## Self-Review
 
-**1. Spec coverage（对照 v3 方案 5 改进）：**
+**1. Spec coverage（对照 v3 方案 5 改进 + autoplan 4 决策）：**
 - A（category 匹配）→ Task 1（lib.js）+ Task 4（bootstrap prompt + plan frontmatter）✅
 - B（两层注入）→ Task 1（formatUniversalLessons + formatDomainLessons）+ Task 4（implCtx 拼接 + state.allLessons）✅
-- E'（findings 状态机）→ Task 2（纯函数）+ Task 5（接线 + perTask + review loop）✅
-- OSCILLATING（flipFlop 驱动 + budget 8 + hasRegressed）→ Task 3（lib.js）+ Task 5（OSC 分支重写 + budget guard）✅
-- F（opus 升级 prompt 强化）→ Task 6 ✅
+- E'（findings 状态机）→ Task 2（纯函数）+ Task 5（接线 + perTask + Step 4b ensurePerTaskDefaults + Step 4c finalReport）✅
+- OSCILLATING（flipFlop 驱动 + budget 5 + hasRegressed + review_not_converging）→ Task 3（lib.js）+ Task 5（OSC 分支重写 + budget guard）✅
+- F（opus 升级 prompt 强化）→ Task 6（D1 联动：retryNote 改正向陈述 + r{round} 修正）✅
 - 注入边界（findings 仅当前 task，lessons 跨 task）→ Task 5（perTask[taskKey].findings_history）+ Task 4（state.allLessons）✅
 - [REGRESSED] 不注入 → Task 2 formatFindingsHistory 测试覆盖 ✅
 - [FIXED] 全注入（无 cap）→ Task 2 formatFindingsHistory 实现（无 slice）✅
 - task 内 fix 不 commit，[FIXED] 标 file 路径 → Task 2 实现（`file: ${h.file}`）✅
+- **D1（去重 + ★ 标记）**：formatFindingsHistory 加 currentRound 参数标 ★本轮新增 + severity 排序 → Task 2 测试 + Task 5 Step 8 不再 formatFindings(本轮) ✅
+- **D2（字段同步）**：ensurePerTaskDefaults + finalReport 同步 → Task 5 Step 4b/4c ✅
+- **D4（budget 5 + 可操作 halt）**：resolveReviewBudget 默认 5 + halt reason review_not_converging + diag 含 findings_history → Task 3 测试 + Task 5 Step 7 ✅
 
 **2. Placeholder scan：** 全部代码块完整，无 TBD/TODO。每步含可执行命令 + 预期输出。
 
 **3. Type consistency：**
 - `formatUniversalLessons(allLessons)` / `formatDomainLessons(allLessons, taskCategories, currentPlanSeq, taskTitle)` — Task 1 定义，Task 4 implCtx 调用签名一致 ✅
 - `updateFindingsHistory(history, currentFindings, round)` — Task 2 定义，Task 5 review loop 调用一致 ✅
-- `formatFindingsHistory(history)` — Task 2 定义，Task 5 fix round 调用一致 ✅
+- `formatFindingsHistory(history, currentRound?)` — Task 2 定义（D1 加 currentRound），Task 5 fix round + Task 6 retryNote 调用一致 ✅
 - `hasRegressed(history)` — Task 2 定义，Task 5 OSC 分支调用一致 ✅
 - `shouldEscalateOnOscillation(currentModel, alreadyEscalated)` — Task 3 改签名（语义化），Task 5 OSC 分支调用一致 ✅
-- `resolveReviewBudget(config)` — Task 3 定义，Task 5 budget guard 调用一致 ✅
+- `resolveReviewBudget(config)` — Task 3 定义（默认 5），Task 5 budget guard 调用一致 ✅
 - finding 形态 `{title, severity, fix, file, first_seen, last_seen, rounds, status, fixed_at_round?}` — Task 2 定义，Task 5 currentFindings 用 `collectReviewFindings` 输出（`{source, severity, title, file, fix}`），`updateFindingsHistory` 内部转换一致 ✅
+- `findings_history` + `oscillation_escalated_at_round` — Task 5 Step 4 字面量 + Step 4b ensurePerTaskDefaults + Step 4c finalReport 三处一致 ✅
 
 ---
 
