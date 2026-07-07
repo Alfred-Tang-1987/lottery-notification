@@ -22,3 +22,6 @@ graphify-out/
 
 # workflow halt 临时输出（OSCILLATING/blocked.md，halt 后过时）
 .workflow/
+
+# AUDIT 阶段报告（refactor 类 task Pre-RED 核查，每次重跑覆盖写，不入版本控制）
+.audit/
