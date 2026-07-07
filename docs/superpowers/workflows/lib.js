@@ -761,6 +761,38 @@ export function recordReviewRound(state, taskKey, round, spec, qual, hunt) {
   return { currentFindings }
 }
 
+// decideReviewOutcome（S2, 2026-07-07）：review 循环决策抽取，10 个 action 分支。
+// 6 halt 子类（reason 区分）+ 4 非 halt（break/escalate/continue/fix）。
+// 函数内不 mutate state（escalate 时 opus_escalated/oscillation_escalated_at_round 由调用方做）。
+// 控制流修正：osc.oscillating 的 escalate/continue 不早 return——须 fall through 到 budget guard
+// （无限模式兜底，resolveReviewBudget 注释「升 opus 后继续跑直到 budget 耗尽」）。
+export function decideReviewOutcome(state, taskKey, round, spec, qual, hunt, model, maxRounds, cfg, reviewReason, emptyFailedReason) {
+  if (reviewReason) return { action: 'halt', reason: reviewReason, diag: { spec: spec?.diagnostics, qual: qual?.diagnostics, hunt: hunt?.diagnostics } }
+  if (emptyFailedReason) return { action: 'halt', reason: emptyFailedReason, diag: { spec: spec?.diagnostics, qual: qual?.diagnostics, hunt: hunt?.diagnostics } }
+  if (allGreen(spec, qual, hunt)) return { action: 'break' }
+  const osc = detectOscillation(state.perTask[taskKey].files_touched_per_round)
+  const flipFlop = isFlipFlop(state.perTask[taskKey].review_history || [])
+  const regressed = hasRegressed(state.perTask[taskKey].findings_history || [])
+  if (regressed) return { action: 'halt', reason: 'OSCILLATING', diag: { ...osc, flipFlop, regressed, regressedFindings: state.perTask[taskKey].findings_history.filter(h => h.status === 'regressed'), model } }
+  let action = 'fix'
+  if (osc.oscillating) {
+    if (flipFlop) return { action: 'halt', reason: 'OSCILLATING', diag: { ...osc, flipFlop, regressed, model } }
+    if (shouldEscalateOnOscillation(model, state.perTask[taskKey].opus_escalated)) {
+      action = 'escalate'
+    } else {
+      action = 'continue'
+    }
+    // 不 return——fall through 到 budget guard（无限模式兜底）
+  }
+  if (maxRounds === 0) {
+    const budget = resolveReviewBudget(cfg)
+    if (round >= budget) return { action: 'halt', reason: 'review_not_converging', diag: { round, budget, findings_history: state.perTask[taskKey].findings_history, spec: spec.diagnostics, qual: qual.diagnostics, hunt: hunt.diagnostics } }
+  } else if (round === maxRounds) {
+    return { action: 'halt', reason: 'review max rounds', diag: { round, findings_history: state.perTask[taskKey].findings_history, spec: spec.diagnostics, qual: qual.diagnostics, hunt: hunt.diagnostics } }
+  }
+  return action === 'escalate' ? { action, model: 'opus' } : { action }  // 'fix' / 'escalate'(含 model) / 'continue'
+}
+
 // write_files 边界控制：plan frontmatter 可选声明 write_files，
 // commit agent 提交前检查 git diff 是否越界。不声明 → 空串 → 检查跳过。
 export function formatWriteFilesScope(files) {

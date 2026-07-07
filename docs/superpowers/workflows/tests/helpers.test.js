@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, formatFindingItem, isQuotaError, errStr, makeHalt, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound, resolveMaxRounds, detectOscillation, distillLessonInput, applyLessonDecisions, formatLessonsForDistill, validateAmendResult, validateCheckoutResult, groupFindingsByFile, formatCrossReviewerNote, bareTaskId, taskKey, dropParentTasks, extractCompletedFromSubjects, extractTaskKey, shouldEscalateOnOscillation, resolveReviewBudget, isFlipFlop, formatLessons, formatUniversalLessons, formatDomainLessons, updateFindingsHistory, formatFindingsHistory, hasRegressed, normalizeFilePath, REVIEW_SOURCES, checkImplStatus, formatBulletSection, buildPrompt, QUOTA_HALT_NOTE, STATIC_READONLY_NOTE, recordReviewRound } from '../lib.js'
+import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, formatFindingItem, isQuotaError, errStr, makeHalt, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound, resolveMaxRounds, detectOscillation, distillLessonInput, applyLessonDecisions, formatLessonsForDistill, validateAmendResult, validateCheckoutResult, groupFindingsByFile, formatCrossReviewerNote, bareTaskId, taskKey, dropParentTasks, extractCompletedFromSubjects, extractTaskKey, shouldEscalateOnOscillation, resolveReviewBudget, isFlipFlop, formatLessons, formatUniversalLessons, formatDomainLessons, updateFindingsHistory, formatFindingsHistory, hasRegressed, normalizeFilePath, REVIEW_SOURCES, checkImplStatus, formatBulletSection, buildPrompt, QUOTA_HALT_NOTE, STATIC_READONLY_NOTE, recordReviewRound, decideReviewOutcome } from '../lib.js'
 
 const ok = { status: 'ok', diagnostics: { files_touched: ['a.py'] } }
 const ok2 = { status: 'ok', diagnostics: { files_touched: ['b.py'] } }
@@ -1340,4 +1340,139 @@ test('S2 recordReviewRound: 返回 currentFindings', () => {
   const result = recordReviewRound(state, 'plan-01/T1', 1, spec, null, null)
   assert.ok(Array.isArray(result.currentFindings))
   assert.equal(result.currentFindings.length, 1)
+})
+
+// —— S2 decideReviewOutcome（review 循环 10-action 决策抽取, 2026-07-07）——
+// run-plans.js review loop 内 ~70 行决策块（6 halt 子类 + break/escalate/continue/fix）抽成纯决策函数。
+// lib.js 真源 + run-plans.js inline 副本。控制流修正：osc.oscillating 的 escalate/continue 不早 return，
+// 须 fall through 到 budget guard（无限模式兜底，防已升 opus + 新 findings 不收敛无限跑）。
+//
+// mkState: 构造 review loop 用的 perTask state slice。参数覆盖 10 个分支所需的 history 状态。
+//   - filesTouched: files_touched_per_round（detectOscillation 输入）
+//   - reviewHistory: review_history（isFlipFlop 输入）
+//   - findingsHistory: findings_history（hasRegressed 输入）
+//   - opusEscalated: opus_escalated（shouldEscalateOnOscillation 输入）
+function mkState({ filesTouched = [], reviewHistory = [], findingsHistory = [], opusEscalated = false } = {}) {
+  return { perTask: { 'plan-01/T1': { files_touched_per_round: filesTouched, review_history: reviewHistory, findings_history: findingsHistory, opus_escalated: opusEscalated } } }
+}
+
+// 失败 review（触发非 break/非 halt-reviewReason 路径）：status='failed' + 有 findings
+const failedSpec = { status: 'failed', diagnostics: { files_touched: ['a.ts'], issues: [{ title: 'bug', severity: 'critical' }] } }
+
+// 6 halt 子类
+test('S2 decideReviewOutcome: reviewReason → halt (reason=reviewReason)', () => {
+  const state = mkState()
+  const out = decideReviewOutcome(state, 'plan-01/T1', 1, { status: 'failed' }, null, null, 'sonnet', 4, {}, 'review_failed', null)
+  assert.equal(out.action, 'halt')
+  assert.equal(out.reason, 'review_failed')
+  assert.deepEqual(out.diag, { spec: undefined, qual: undefined, hunt: undefined })
+})
+
+test('S2 decideReviewOutcome: emptyFailedReason → halt (reason=emptyFailedReason)', () => {
+  const state = mkState()
+  const out = decideReviewOutcome(state, 'plan-01/T1', 1, failedSpec, null, null, 'sonnet', 4, {}, null, 'review_failed_no_findings')
+  assert.equal(out.action, 'halt')
+  assert.equal(out.reason, 'review_failed_no_findings')
+})
+
+test('S2 decideReviewOutcome: regressed → halt OSCILLATING (hasRegressed=true)', () => {
+  // findings_history 含 status='regressed' 条目 → hasRegressed=true → 立即 halt（独立于文件振荡）
+  const state = mkState({
+    filesTouched: [['a.ts'], ['a.ts'], ['a.ts']],
+    findingsHistory: [{ title: 'bug', status: 'regressed', first_seen: 1, last_seen: 3, rounds: [1, 2, 3] }],
+  })
+  const out = decideReviewOutcome(state, 'plan-01/T1', 3, failedSpec, null, null, 'sonnet', 4, {}, null, null)
+  assert.equal(out.action, 'halt')
+  assert.equal(out.reason, 'OSCILLATING')
+  assert.deepEqual(out.diag.regressedFindings, [{ title: 'bug', status: 'regressed', first_seen: 1, last_seen: 3, rounds: [1, 2, 3] }])
+  assert.equal(out.diag.model, 'sonnet')
+})
+
+test('S2 decideReviewOutcome: osc + flipFlop → halt OSCILLATING', () => {
+  // osc.oscillating=true（同文件 a.ts 在 3 round）+ flipFlop=true（last 轮 finding title 在前轮出现过）
+  const state = mkState({
+    filesTouched: [['a.ts'], ['a.ts'], ['a.ts']],
+    reviewHistory: [
+      { round: 1, spec: { status: 'failed', findings: [{ title: 'same-bug' }] } },
+      { round: 2, spec: { status: 'failed', findings: [{ title: 'other' }] } },
+      { round: 3, spec: { status: 'failed', findings: [{ title: 'same-bug' }] } },
+    ],
+  })
+  const out = decideReviewOutcome(state, 'plan-01/T1', 3, failedSpec, null, null, 'sonnet', 4, {}, null, null)
+  assert.equal(out.action, 'halt')
+  assert.equal(out.reason, 'OSCILLATING')
+  assert.equal(out.diag.flipFlop, true)
+  assert.equal(out.diag.model, 'sonnet')
+})
+
+test('S2 decideReviewOutcome: maxRounds=0 budget guard → halt review_not_converging', () => {
+  // 无限模式 maxRounds=0 + round>=budget(默认 5) → halt review_not_converging
+  // 注：budget/maxRounds halt 分支用 qual.diagnostics/hunt.diagnostics（非 ?.），须传真实 review 对象（与 run-plans.js 原代码一致）
+  const state = mkState({ filesTouched: [['a.ts']] })
+  const out = decideReviewOutcome(state, 'plan-01/T1', 5, failedSpec, failedSpec, failedSpec, 'opus', 0, {}, null, null)
+  assert.equal(out.action, 'halt')
+  assert.equal(out.reason, 'review_not_converging')
+  assert.equal(out.diag.round, 5)
+  assert.equal(out.diag.budget, 5)
+})
+
+test('S2 decideReviewOutcome: round===maxRounds (finite) → halt review max rounds', () => {
+  // 有限模式 round===maxRounds → halt review max rounds
+  // 注：budget/maxRounds halt 分支用 qual.diagnostics/hunt.diagnostics（非 ?.），须传真实 review 对象（与 run-plans.js 原代码一致）
+  const state = mkState({ filesTouched: [['a.ts']] })
+  const out = decideReviewOutcome(state, 'plan-01/T1', 4, failedSpec, failedSpec, failedSpec, 'sonnet', 4, {}, null, null)
+  assert.equal(out.action, 'halt')
+  assert.equal(out.reason, 'review max rounds')
+  assert.equal(out.diag.round, 4)
+})
+
+// 4 非 halt
+test('S2 decideReviewOutcome: allGreen → break', () => {
+  // spec/qual/hunt 全 ok → break（须在 detectOscillation 之前，防收敛误报）
+  const state = mkState({ filesTouched: [['a.ts'], ['a.ts'], ['a.ts']] })
+  const okReview = { status: 'ok', diagnostics: { files_touched: ['a.ts'] } }
+  const out = decideReviewOutcome(state, 'plan-01/T1', 3, okReview, okReview, okReview, 'sonnet', 4, {}, null, null)
+  assert.equal(out.action, 'break')
+})
+
+test('S2 decideReviewOutcome: osc + flipFlop=false + shouldEscalate → escalate (model=opus)', () => {
+  // osc.oscillating=true + flipFlop=false + 非 opus + 未升级 → escalate
+  // round<maxRounds 防 budget guard 触发（fall-through 到 budget guard 不 halt 才返回 escalate）
+  const state = mkState({
+    filesTouched: [['a.ts'], ['a.ts'], ['a.ts']],
+    reviewHistory: [
+      { round: 1, spec: { status: 'failed', findings: [{ title: 'X' }] } },
+      { round: 2, spec: { status: 'failed', findings: [{ title: 'Y' }] } },
+      { round: 3, spec: { status: 'failed', findings: [{ title: 'Z' }] } },
+    ],
+    opusEscalated: false,
+  })
+  const out = decideReviewOutcome(state, 'plan-01/T1', 3, failedSpec, null, null, 'sonnet', 4, {}, null, null)
+  assert.equal(out.action, 'escalate')
+  assert.equal(out.model, 'opus')
+})
+
+test('S2 decideReviewOutcome: osc + flipFlop=false + alreadyEscalated → continue', () => {
+  // osc.oscillating=true + flipFlop=false + 已升 opus → continue（budget guard 不触发：round<maxRounds）
+  const state = mkState({
+    filesTouched: [['a.ts'], ['a.ts'], ['a.ts']],
+    reviewHistory: [
+      { round: 1, spec: { status: 'failed', findings: [{ title: 'X' }] } },
+      { round: 2, spec: { status: 'failed', findings: [{ title: 'Y' }] } },
+      { round: 3, spec: { status: 'failed', findings: [{ title: 'Z' }] } },
+    ],
+    opusEscalated: true,
+  })
+  const out = decideReviewOutcome(state, 'plan-01/T1', 3, failedSpec, null, null, 'opus', 4, {}, null, null)
+  assert.equal(out.action, 'continue')
+  // continue 不带 model 字段（调用方不重设 model）
+  assert.equal(out.model, undefined)
+})
+
+test('S2 decideReviewOutcome: else (正常未收敛, 无 osc) → fix', () => {
+  // 非 allGreen + 无 osc（files_touched_per_round 不足以触发振荡）+ round<maxRounds → fix
+  const state = mkState({ filesTouched: [['a.ts']] })
+  const out = decideReviewOutcome(state, 'plan-01/T1', 1, failedSpec, null, null, 'sonnet', 4, {}, null, null)
+  assert.equal(out.action, 'fix')
+  assert.equal(out.model, undefined)
 })

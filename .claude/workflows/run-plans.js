@@ -162,6 +162,37 @@ function recordReviewRound(state, taskKey, round, spec, qual, hunt) {
   )
   return { currentFindings }
 }
+// decideReviewOutcome（S2, 2026-07-07）：review 循环决策抽取，10 个 action 分支。—— inline 自 lib.js
+// 6 halt 子类（reason 区分）+ 4 非 halt（break/escalate/continue/fix）。
+// 函数内不 mutate state（escalate 时 opus_escalated/oscillation_escalated_at_round 由调用方做）。
+// 控制流修正：osc.oscillating 的 escalate/continue 不早 return——须 fall through 到 budget guard
+// （无限模式兜底，resolveReviewBudget 注释「升 opus 后继续跑直到 budget 耗尽」）。
+function decideReviewOutcome(state, taskKey, round, spec, qual, hunt, model, maxRounds, cfg, reviewReason, emptyFailedReason) {
+  if (reviewReason) return { action: 'halt', reason: reviewReason, diag: { spec: spec?.diagnostics, qual: qual?.diagnostics, hunt: hunt?.diagnostics } }
+  if (emptyFailedReason) return { action: 'halt', reason: emptyFailedReason, diag: { spec: spec?.diagnostics, qual: qual?.diagnostics, hunt: hunt?.diagnostics } }
+  if (allGreen(spec, qual, hunt)) return { action: 'break' }
+  const osc = detectOscillation(state.perTask[taskKey].files_touched_per_round)
+  const flipFlop = isFlipFlop(state.perTask[taskKey].review_history || [])
+  const regressed = hasRegressed(state.perTask[taskKey].findings_history || [])
+  if (regressed) return { action: 'halt', reason: 'OSCILLATING', diag: { ...osc, flipFlop, regressed, regressedFindings: state.perTask[taskKey].findings_history.filter(h => h.status === 'regressed'), model } }
+  let action = 'fix'
+  if (osc.oscillating) {
+    if (flipFlop) return { action: 'halt', reason: 'OSCILLATING', diag: { ...osc, flipFlop, regressed, model } }
+    if (shouldEscalateOnOscillation(model, state.perTask[taskKey].opus_escalated)) {
+      action = 'escalate'
+    } else {
+      action = 'continue'
+    }
+    // 不 return——fall through 到 budget guard（无限模式兜底）
+  }
+  if (maxRounds === 0) {
+    const budget = resolveReviewBudget(cfg)
+    if (round >= budget) return { action: 'halt', reason: 'review_not_converging', diag: { round, budget, findings_history: state.perTask[taskKey].findings_history, spec: spec.diagnostics, qual: qual.diagnostics, hunt: hunt.diagnostics } }
+  } else if (round === maxRounds) {
+    return { action: 'halt', reason: 'review max rounds', diag: { round, findings_history: state.perTask[taskKey].findings_history, spec: spec.diagnostics, qual: qual.diagnostics, hunt: hunt.diagnostics } }
+  }
+  return action === 'escalate' ? { action, model: 'opus' } : { action }  // 'fix' / 'escalate'(含 model) / 'continue'
+}
 // —— v3 OSCILLATING budget guard（inline 自 lib.js）——
 function resolveReviewBudget(config) {
   const v = config?.review_budget
@@ -1413,76 +1444,29 @@ async function runTask(plan, task) {
     //   四件 state 更新抽进 recordReviewRound（review_rounds 在 review 调用后才赋：runReviewRound
     //   签名不含 state，不读取该字段 → 行为保持）。currentFindings 仍返回供后续使用（此处未使用，保留解构）。
     const { currentFindings } = recordReviewRound(state, tk, round, spec, qual, hunt)
-    if (reviewReason) {
-      return { halted: true, reason: reviewReason, diag: { spec: spec?.diagnostics, qual: qual?.diagnostics, hunt: hunt?.diagnostics } }
-    }
-    // 第二道守卫：failed 但 0 findings（防「合法 failed + 空 diagnostics」跑空修复循环 → max rounds 误 halt）
-    if (emptyFailedReason) {
-      return { halted: true, reason: emptyFailedReason, diag: { spec: spec?.diagnostics, qual: qual?.diagnostics, hunt: hunt?.diagnostics } }
-    }
-    // allGreen 必须在 detectOscillation 之前：否则 r3 三 reviewer 全 ok 时，先被
-    // OSCILLATING（核心文件被审 ≥3 轮）截胡 halt，allGreen break 永远轮不到 → 收敛误报
-    // （T2 invite / T5 channels）。真矛盾（reviewer 持续分歧，如 T7 claims 时区）不会全绿，
-    // 自然落进 detectOscillation 正确 halt 让人介入。单轮全绿即 review 共识，足以放行。
-    if (allGreen(spec, qual, hunt)) break
-    const osc = detectOscillation(state.perTask[tk].files_touched_per_round)
-    const flipFlop = isFlipFlop(state.perTask[tk].review_history || [])
-    const regressed = hasRegressed(state.perTask[tk].findings_history || [])
-
-    // v3 (§5.5): 任一 finding 回归（fixed→regressed）→ 立即 halt（独立于文件振荡）
-    if (regressed) {
-      log(`⚠ ${task.id}: r${round} OSCILLATING halt — regressed finding(s) reappeared after being fixed (v3)`)
-      return {
-        halted: true,
-        reason: 'OSCILLATING',
-        diag: {
-          ...osc,
-          flipFlop,
-          regressed,
-          regressedFindings: state.perTask[tk].findings_history.filter(h => h.status === 'regressed'),
-          model,
-        },
+    // S2 (2026-07-07): review 循环 10-action 决策（6 halt 子类 + break/escalate/continue/fix）
+    //   抽进 decideReviewOutcome 纯函数。控制流修正：escalate/continue 不早 return，须 fall through
+    //   到 budget guard（无限模式兜底）——已在函数体内保证。调用方据 outcome.action 路由。
+    //   halt 日志按 diag 区分 regressed vs flipFlop（原 ~70 行决策块的诊断 log 保留）。
+    const outcome = decideReviewOutcome(state, tk, round, spec, qual, hunt, model, maxRounds, cfg, reviewReason, emptyFailedReason)
+    if (outcome.action === 'halt') {
+      if (outcome.reason === 'OSCILLATING') {
+        if (Array.isArray(outcome.diag.regressedFindings)) log(`⚠ ${task.id}: r${round} OSCILLATING halt — regressed finding(s) reappeared after being fixed (v3)`)
+        else log(`⚠ ${task.id}: r${round} OSCILLATING halt — reviewer flip-flop detected (same finding title reappears across rounds) (v3)`)
       }
+      return { halted: true, reason: outcome.reason, diag: outcome.diag }
     }
-
-    if (osc.oscillating) {
-      // v3 (§5.5): flipFlop → 真振荡（reviewer 反向分歧）→ halt
-      if (flipFlop) {
-        log(`⚠ ${task.id}: r${round} OSCILLATING halt — reviewer flip-flop detected (same finding title reappears across rounds) (v3)`)
-        return {
-          halted: true,
-          reason: 'OSCILLATING',
-          diag: {
-            ...osc,
-            flipFlop,
-            regressed,
-            model,
-          },
-        }
-      }
-      // flipFlop=false 且无 regressed（每轮新 findings = 在推进）
-      if (shouldEscalateOnOscillation(model, state.perTask[tk].opus_escalated)) {
-        state.perTask[tk].opus_escalated = true
-        state.perTask[tk].oscillation_escalated_at_round = round  // v3 F: 升级轮次
-        model = 'opus'
-        log(`⚠ ${task.id}: r${round} OSCILLATING (new-findings 补充, flipFlop=false) — escalate to opus, continue (v3)`)
-      } else {
-        // 已升 opus，继续跑（new findings = 在推进），由 budget guard 兜底
-        log(`⚠ ${task.id}: r${round} OSCILLATING (flipFlop=false, opus already escalated) — continue until budget guard (v3)`)
-      }
+    if (outcome.action === 'break') break
+    if (outcome.action === 'escalate') {
+      state.perTask[tk].opus_escalated = true
+      state.perTask[tk].oscillation_escalated_at_round = round  // v3 F: 升级轮次
+      model = outcome.model
+      log(`⚠ ${task.id}: r${round} OSCILLATING (new-findings 补充, flipFlop=false) — escalate to opus, continue (v3)`)
+    } else if (outcome.action === 'continue') {
+      // 已升 opus，继续跑（new findings = 在推进），由 budget guard 兜底
+      log(`⚠ ${task.id}: r${round} OSCILLATING (flipFlop=false, opus already escalated) — continue until budget guard (v3)`)
     }
-    // v3: 无限模式（maxRounds=0）budget guard——flipFlop=false 持续推进的兜底
-    //   防 reviewer 同义变体（改 title）让 [REGRESSED] 漏报后无限跑
-    if (maxRounds === 0) {
-      const budget = resolveReviewBudget(cfg)
-      if (round >= budget) {
-        // D4 决策：halt reason 改可操作——blocked.md 建议拆 task
-        return { halted: true, reason: 'review_not_converging', diag: { round, budget, findings_history: state.perTask[tk].findings_history, spec: spec.diagnostics, qual: qual.diagnostics, hunt: hunt.diagnostics } }
-      }
-    } else if (round === maxRounds) {
-      // 有限模式仍用 maxRounds 硬上限；diagnostics 也带 findings_history，便于接手判断是重复问题还是新问题
-      return { halted: true, reason: 'review max rounds', diag: { round, findings_history: state.perTask[tk].findings_history, spec: spec.diagnostics, qual: qual.diagnostics, hunt: hunt.diagnostics } }
-    }
+    // action === 'fix' → 走 fix-round（runFixRound，Task 14 抽取）
     const findings = collectReviewFindings(spec, qual, hunt)
     const crossReviewerNote = formatCrossReviewerNote(findings)
     // D1: history 主导单源——formatFindingsHistory 已含本轮 [OPEN]（标★本轮新增），
