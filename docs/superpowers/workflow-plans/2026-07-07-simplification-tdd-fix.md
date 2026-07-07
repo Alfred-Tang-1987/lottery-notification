@@ -478,9 +478,13 @@ export function formatFindingItem(f, { withFile = true, prefix = '' } = {}) {
 
 ## Task 8: Batch 2 Commit 5 — B2-4 S1 checkImplStatus 纯决策函数
 
-**目标:** 抽 checkImplStatus 纯决策函数，消除 implementor dispatch 点 4 处可替换重复。
+**目标:** 抽 checkImplStatus 纯决策函数，消除 implementor dispatch 点可替换重复。
 
 **依据:** 审计报告 S1；设计文档 §5.4 / D10。**依赖**：Task 4-7 全绿后做。
+
+**复核修正（2026-07-07，实施前）**：原 plan 假设 4 处可替换，但当前代码核查实际只有 **3 处**匹配 `impl.status !== 'ok' && impl.status !== 'done_with_concerns'` 模式（见 Step 8.2 实际位置）。原"初始 dispatch 后"site（spec 旧 line 1261）在当前代码只有 `if (impl.halted) return impl` + `if (impl.status === 'blocked')` 分支，无 `status !== ok` 检查——故不可替换，已在保留集合内。fix-round site（`implementor ${impl.status} in fix-round ${round}`）按 D16 不用 checkImplStatus（条件不同：`blocked || failed || needs_context`）。故 Task 8 实际替换 3 处。测试用例数不变（4 个：halted 透传 / status 不在 allowed / status 在 allowed / 默认 allowed）。
+
+**签名修正（2026-07-07，实施前）**：原 spec/plan 用 3-arg `reasonPrefix`，函数形 `${reasonPrefix} ${impl.status}` 把 status 放尾部。但当前 3 处 reason 都把 status 放**中间**（如 `implementor ${impl.status} after retry`）→ `reasonPrefix` 形无法逐字对齐（D10 决策）。改 `reasonTemplate`（含 `{status}` 占位符），函数内 `reasonTemplate.replace('{status}', impl.status)`。spec §5.4 / D10 已同步修正。
 
 ### Step 8.1 — RED：写失败测试
 
@@ -494,7 +498,7 @@ test('S1 checkImplStatus: halted 透传', () => {
 
 test('S1 checkImplStatus: status 不在 allowed 返回 halt', () => {
   const impl = { status: 'failed', diagnostics: { e: 1 } }
-  const h = checkImplStatus(impl, ['ok'], 'implementor')
+  const h = checkImplStatus(impl, ['ok'], 'implementor {status}')
   assert.equal(h.halted, true)
   assert.equal(h.reason, 'implementor failed')
   assert.equal(h.diag.e, 1)
@@ -520,37 +524,41 @@ test('S1 checkImplStatus: 默认 allowed 含 done_with_concerns', () => {
 ```javascript
 // checkImplStatus（S1, 2026-07-07）：implementor dispatch 后的状态检查 helper。
 // halted → 透传；status 不在 allowed → halt；否则返回 null（继续往下）。
-// reason 逐字对齐原实现（D10）：`${reasonPrefix} ${impl.status}`。
-export function checkImplStatus(impl, allowed = ['ok', 'done_with_concerns'], reasonPrefix = 'implementor') {
+// reason 逐字对齐原实现（D10）：reasonTemplate 含 {status} 占位符，函数内 replace。
+// 复核修正（2026-07-07）：原 reasonPrefix 形把 status 放尾部，但原实现把 status 放中间
+// （如 'implementor failed after retry'）→ 用 {status} 占位符模板保留原 reason 形。
+export function checkImplStatus(impl, allowed = ['ok', 'done_with_concerns'], reasonTemplate = 'implementor {status}') {
   if (impl.halted) return impl
   if (!allowed.includes(impl.status)) {
-    return { halted: true, reason: `${reasonPrefix} ${impl.status}`, diag: impl.diagnostics }
+    return { halted: true, reason: reasonTemplate.replace('{status}', impl.status), diag: impl.diagnostics }
   }
   return null
 }
 ```
 
-- [ ] `.claude/workflows/run-plans.js` inline 副本 + 替换 4 处（line 1261, 1294, 1296, 1302 附近）。**实施时逐处读取当前代码，确认 reason 字符串逐字对齐**。例如 line 1261 当前若是：
-```javascript
-if (impl.halted) return impl
-if (impl.status !== 'ok' && impl.status !== 'done_with_concerns') {
-  return { halted: true, reason: `implementor ${impl.status}`, diag: impl.diagnostics }
-}
-```
-替换为：
-```javascript
-const h1 = checkImplStatus(impl)
-if (h1) return h1
-```
-其他 3 处同理，reasonPrefix 逐字对齐原 reason（如 `'implementor after context-fetch retry'`）。
+- [ ] `.claude/workflows/run-plans.js` inline 副本 + 替换 **3 处**（实际行号实施时核查，当前约 1299/1301/1307）。**实施时逐处读取当前代码，确认 reason 字符串逐字对齐**。3 处替换为：
 
-- [ ] **保留** line 1268（blocked 升级后单一 blocked 判断）和 line 1281（context-fetch 后允许 blocked/failed 继续走分支）原样不动——这两处逻辑特殊，不是 checkImplStatus 的模式。
+```javascript
+// site 1（context-fetch retry 后，原 reason: `implementor ${impl.status} after context-fetch retry`）：
+const h1 = checkImplStatus(impl, undefined, 'implementor {status} after context-fetch retry')
+if (h1) return h1
+// site 2（context-fetch 最终，原 reason: `implementor ${impl.status} after context-fetch`）：
+const h2 = checkImplStatus(impl, undefined, 'implementor {status} after context-fetch')
+if (h2) return h2
+// site 3（failed retry 后，原 reason: `implementor ${impl.status} after retry`）：
+const h3 = checkImplStatus(impl, undefined, 'implementor {status} after retry')
+if (h3) return h3
+```
+
+注：变量名 `h1/h2/h3` 仅为示意，实施时避免与同作用域已有变量名冲突（参照 Task 4 的 `tk` 命名纪律）。
+
+- [ ] **保留**原样不动（非 checkImplStatus 模式）：初始 dispatch 后的 `if (impl.status === 'blocked')` 升级链、context-fetch 后的 `if (impl.status === 'blocked')` / `if (impl.status === 'failed')` 分支、fix-round 的 `if (blocked || failed || needs_context)` 判断（D16）。
 
 ### Step 8.3 — SYNC + FULL
 
-- [ ] sync.test 加 checkImplStatus 字节断言
-- [ ] 运行 `node --test docs/superpowers/workflows/tests/*.test.js` → 325 tests green（321 + 4）
-- [ ] CRLF 修复 + git commit: `refactor(workflow): B2-4 S1 checkImplStatus 纯决策 helper (消除 4 处 dispatch 重复)`
+- [ ] sync.test 加 checkImplStatus 字节断言（QC-4 fns 数组 + QC-3 existence）
+- [ ] 运行 `node --test docs/superpowers/workflows/tests/*.test.js` → 326 tests green（322 + 4）
+- [ ] CRLF 修复 + git commit: `refactor(workflow): B2-4 S1 checkImplStatus 纯决策 helper (消除 3 处 dispatch 重复, reasonTemplate 保留原 reason)`
 
 ---
 

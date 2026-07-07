@@ -48,7 +48,7 @@
 | D7 | S14 处理 | 标 @deprecated | 有 helpers.test 覆盖说明曾为公共 API，软过渡 |
 | D8 | 实施策略 | 方案 C 按风险递增 | 低风险建安全网 → 中风险纯函数 → 高风险 runtime 重构 |
 | D9 | B2-3 errStr | 提升到 lib.js | makeHalt 内部调 errStr，调用方更简洁 |
-| D10 | B2-4 checkImplStatus reason | 逐字对齐原实现 | 防止 reason 字符串变化破坏现有日志/诊断 |
+| D10 | B2-4 checkImplStatus reason | 逐字对齐原实现 | 防止 reason 字符串变化破坏现有日志/诊断。复核修正（2026-07-07）：原实现的 reason 把 `${impl.status}` 放在中间（如 `implementor ${impl.status} after retry`），3-arg `reasonPrefix` 函数形只能把 status 放尾部 → 逐字对齐不可能。改签名为 `reasonTemplate='implementor {status}'`，函数内 `reasonTemplate.replace('{status}', impl.status)`，调用方传 `'implementor {status} after retry'` 等。保留 helper 抽取 + D10 + 调用简洁。 |
 | D11 | B2-5 formatBulletSection outro | 支持多行 string | 原 6 个 format* 的 outro 有单行也有多行 |
 | D12 | B2-7 buildPrompt 默认注入 | 内置 quotaHaltNote 默认值 | 调用方不需显式传（opt-out 见 buildPrompt defaults 语义注） |
 | D13 | B2-8 LESSONS_EXEMPTION_NOTE | 函数，调用方传参 | applicableDimensions 随 reviewer 变化 |
@@ -399,13 +399,13 @@ export function makeHalt(reason, model, error) {
 
 ### 5.4 B2-4: S1 checkImplStatus 纯决策函数
 
-**签名**：
+**签名**（复核修正 2026-07-07：`reasonTemplate` 替代 `reasonPrefix`，详见 D10 修正说明）：
 ```js
 // lib.js
-export function checkImplStatus(impl, allowed = ['ok', 'done_with_concerns'], reasonPrefix = 'implementor') {
+export function checkImplStatus(impl, allowed = ['ok', 'done_with_concerns'], reasonTemplate = 'implementor {status}') {
   if (impl.halted) return impl
   if (!allowed.includes(impl.status)) {
-    return { halted: true, reason: `${reasonPrefix} ${impl.status}`, diag: impl.diagnostics }
+    return { halted: true, reason: reasonTemplate.replace('{status}', impl.status), diag: impl.diagnostics }
   }
   return null  // null 表示通过，继续往下
 }
@@ -419,7 +419,7 @@ export function checkImplStatus(impl, allowed = ['ok', 'done_with_concerns'], re
 - line 1296（context 最终）→ 可替换
 - line 1302（failed retry 后）→ 可替换
 
-reason 逐字对齐原实现（D10 决策），如 `'implementor failed after retry'`。
+reason 逐字对齐原实现（D10 决策），如 `'implementor failed after retry'`。调用方传 reasonTemplate：`'implementor {status} after retry'`、`'implementor {status} after context-fetch'`、`'implementor {status} after context-fetch retry'`。
 
 **TDD 流程**：
 1. RED：helpers.test 加 4 个用例（halted 透传 / status 不在 allowed / status 在 allowed / 默认 allowed）
