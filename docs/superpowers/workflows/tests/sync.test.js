@@ -30,7 +30,7 @@ for (const role of ROLES) {
 test('run-plans.js inlines the new conditional-render helpers', () => {
   // QC-3: formatLessonsForDistill / applyLessonDecisions / renderLessonEntry 不再 inline
   // （SH2 后 distiller 自读写盘，orchestrator 不调用这些函数）。lib.js 真源保留。
-  for (const fn of ['formatReferencePaths', 'formatSilentFailureContext', 'formatFailedApproaches', 'formatLessons', 'formatUniversalLessons', 'formatDomainLessons', 'formatWriteFilesScope', 'formatSchemaCheck', 'languageChecklist', 'LANGUAGE_CHECKLISTS', 'gateCommands', 'collectReviewFindings', 'formatFindings', 'matchesPlanFilter', 'classifyThrown', 'makeHalt', 'reviewHaltReason', 'reviewHaltForEmptyFailed', 'haltLikelySource', 'fixModelForRound', 'resolveMaxRounds', 'resolveLessonsAutoDistill', 'distillLessonInput', 'summarizeReviewRound', 'groupFindingsByFile', 'formatCrossReviewerNote', 'updateFindingsHistory', 'formatFindingsHistory', 'hasRegressed', 'resolveReviewBudget']) {
+  for (const fn of ['formatReferencePaths', 'formatSilentFailureContext', 'formatFailedApproaches', 'formatLessons', 'formatUniversalLessons', 'formatDomainLessons', 'formatWriteFilesScope', 'formatSchemaCheck', 'languageChecklist', 'LANGUAGE_CHECKLISTS', 'gateCommands', 'collectReviewFindings', 'formatFindings', 'formatFindingItem', 'matchesPlanFilter', 'classifyThrown', 'makeHalt', 'reviewHaltReason', 'reviewHaltForEmptyFailed', 'haltLikelySource', 'fixModelForRound', 'resolveMaxRounds', 'resolveLessonsAutoDistill', 'distillLessonInput', 'summarizeReviewRound', 'groupFindingsByFile', 'formatCrossReviewerNote', 'updateFindingsHistory', 'formatFindingsHistory', 'hasRegressed', 'resolveReviewBudget']) {
     assert.match(runSrc, new RegExp(`function ${fn}|const ${fn}`), `missing helper: ${fn}`)
   }
 })
@@ -58,7 +58,7 @@ test('QC-4: 关键 helper 函数体 lib.js ↔ run-plans.js 字节一致', () =>
     'reviewHaltForEmptyFailed', 'detectOscillation', 'classifyThrown', 'makeHalt',
     // Q7 新增：影响 halt 路由 / commit 识别 / plan 过滤 / 反馈聚合 / distiller 输入
     'isQuotaError', 'commitSubject', 'normalizeCompleted', 'matchesPlanFilter',
-    'collectReviewFindings', 'summarizeReviewRound', 'formatFindings',
+    'collectReviewFindings', 'summarizeReviewRound', 'formatFindings', 'formatFindingItem',
     'resolveLessonsAutoDistill', 'distillLessonInput',
     // v3 lessons 两层注入 (2026-07-06): universal silent-failure + domain category
     'formatUniversalLessons', 'formatDomainLessons',

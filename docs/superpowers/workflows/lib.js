@@ -181,17 +181,20 @@ export function reviewHaltForEmptyFailed(spec, qual, hunt) {
   return null
 }
 
+// formatFindingItem（S6, 2026-07-07）：统一 finding 格式化，消除 formatFindings/formatCrossReviewerNote 重复。
+export function formatFindingItem(f, { withFile = true, prefix = '' } = {}) {
+  const tag = f.severity ? `[${f.source}|${f.severity}]` : `[${f.source}]`
+  const fix = f.fix ? ` — fix: ${f.fix}` : ''
+  const file = (withFile && f.file) ? ` (${f.file})` : ''
+  return `${prefix}${tag} ${f.title}${fix}${file}`
+}
+
 // 把 collectReviewFindings 的结构化数组序列化为 implementor 可读的多行字符串。
 // 自描述格式：[source|severity] title — fix: ... (file)。空数组 → 空串（implCtx 约定）。
 // 替代旧的 lossy .join('; ')（对象 toString → [object Object]，Bug 1）。
 export function formatFindings(findings) {
   if (!Array.isArray(findings) || findings.length === 0) return ''
-  return findings.map(f => {
-    const tag = f.severity ? `[${f.source}|${f.severity}]` : `[${f.source}]`
-    const fix = f.fix ? ` — fix: ${f.fix}` : ''
-    const file = f.file ? ` (${f.file})` : ''
-    return `${tag} ${f.title}${fix}${file}`
-  }).join('\n')
+  return findings.map(f => formatFindingItem(f)).join('\n')
 }
 
 // review_history 存档：单轮 review 的 findings 归一化为 manifest 摘要（只留 title+severity）。
@@ -784,7 +787,7 @@ export function formatCrossReviewerNote(findings) {
     const srcs = [...g.sources].sort().join('/')
     out += `\n### ${g.file} (flagged by: ${srcs})\n`
     for (const f of g.findings) {
-      out += `- [${f.source}${f.severity ? '|' + f.severity : ''}] ${f.title}${f.fix ? ' — fix: ' + f.fix : ''}\n`
+      out += formatFindingItem(f, { withFile: false, prefix: '- ' }) + '\n'
     }
   }
   return out

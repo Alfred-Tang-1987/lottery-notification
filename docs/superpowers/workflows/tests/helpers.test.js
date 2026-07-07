@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, isQuotaError, errStr, makeHalt, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound, resolveMaxRounds, detectOscillation, distillLessonInput, applyLessonDecisions, formatLessonsForDistill, validateAmendResult, validateCheckoutResult, groupFindingsByFile, formatCrossReviewerNote, bareTaskId, taskKey, dropParentTasks, extractCompletedFromSubjects, extractTaskKey, shouldEscalateOnOscillation, resolveReviewBudget, isFlipFlop, formatLessons, formatUniversalLessons, formatDomainLessons, updateFindingsHistory, formatFindingsHistory, hasRegressed, normalizeFilePath, REVIEW_SOURCES } from '../lib.js'
+import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, formatFindingItem, isQuotaError, errStr, makeHalt, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound, resolveMaxRounds, detectOscillation, distillLessonInput, applyLessonDecisions, formatLessonsForDistill, validateAmendResult, validateCheckoutResult, groupFindingsByFile, formatCrossReviewerNote, bareTaskId, taskKey, dropParentTasks, extractCompletedFromSubjects, extractTaskKey, shouldEscalateOnOscillation, resolveReviewBudget, isFlipFlop, formatLessons, formatUniversalLessons, formatDomainLessons, updateFindingsHistory, formatFindingsHistory, hasRegressed, normalizeFilePath, REVIEW_SOURCES } from '../lib.js'
 
 const ok = { status: 'ok', diagnostics: { files_touched: ['a.py'] } }
 const ok2 = { status: 'ok', diagnostics: { files_touched: ['b.py'] } }
@@ -48,6 +48,22 @@ test('formatFindings never emits [object Object] and is readable', () => {
 
 test('formatFindings empty → empty string', () => {
   assert.equal(formatFindings([]), '')
+})
+
+// —— formatFindingItem（S6, 2026-07-07）：统一 finding 格式化 ——
+test('S6 formatFindingItem: 有 severity + fix + file', () => {
+  const f = { source: 'spec', severity: 'critical', title: 'bug', fix: 'patch', file: 'a.ts' }
+  assert.equal(formatFindingItem(f), '[spec|critical] bug — fix: patch (a.ts)')
+})
+
+test('S6 formatFindingItem: 无 severity 无 file', () => {
+  const f = { source: 'quality', title: 'issue' }
+  assert.equal(formatFindingItem(f), '[quality] issue')
+})
+
+test('S6 formatFindingItem: withFile=false prefix', () => {
+  const f = { source: 'spec', severity: 'high', title: 't', file: 'b.ts' }
+  assert.equal(formatFindingItem(f, { withFile: false, prefix: '- ' }), '- [spec|high] t')
 })
 
 test('isQuotaError detects quota/rate-limit/429 keywords', () => {
