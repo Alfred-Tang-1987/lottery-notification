@@ -532,45 +532,64 @@ export function matchesPlanFilter(plan, planArg) {
 // ===== 条件渲染 helpers（通用性：项目特有内容靠 config 驱动，prompt 保持单一模板）=====
 // orchestrator 显式传空串（非 undefined），buildPrompt 才会把占位符替换为空而非残留 {{k}}。
 
+// formatBulletSection（S5, 2026-07-07）：通用 bullet section 渲染，6 个 format* 复用。
+// outro 支持多行 string（D11）。
+export function formatBulletSection(heading, intro, items, renderItem, outro = '') {
+  if (!Array.isArray(items) || items.length === 0) return ''
+  const lines = items.map(renderItem).join('\n')
+  let out = `## ${heading}\n`
+  if (intro) out += `${intro}\n`
+  out += lines
+  if (outro) out += `\n${outro}`
+  return out
+}
+
 // reference_paths → prompt 段落；无则空串（该段消失，通用项目不受约束）。
 export function formatReferencePaths(paths) {
-  if (!Array.isArray(paths) || paths.length === 0) return ''
-  const lines = paths.map(p => `- ${p}`).join('\n')
-  return `## Reference Documents (authoritative — match these exactly)
-${lines}
-Read the relevant section(s) BEFORE implementing/reviewing domain-specific logic or rules. Deviations from these authoritative rules are bugs.`
+  return formatBulletSection(
+    'Reference Documents (authoritative — match these exactly)',
+    '',
+    paths,
+    p => `- ${p}`,
+    'Read the relevant section(s) BEFORE implementing/reviewing domain-specific logic or rules. Deviations from these authoritative rules are bugs.',
+  )
 }
 
 // 项目特定静默失败纪律（可选 config 注入）——通用 hunter 清单之上，注入本项目反复踩的领域致命点。
 // 不填 → 空串 → hunter 退化为通用清单（通用性不破坏）。填了 → hunter 重点核查这些项目特定条款。
 export function formatSilentFailureContext(items, intro) {
-  if (!Array.isArray(items) || items.length === 0) return ''
-  const lines = items.map(it => `- ${it}`).join('\n')
   const heading = intro || 'Project-Specific Silent-Failure Risks (HIGHEST PRIORITY — hunt these first)'
-  return `## ${heading}
-Beyond the generic silent-failure patterns below, the following project-specific traps have caused real misses and MUST be checked explicitly:
-${lines}
-For each, verify the changed code does not fall into the trap. Report a silent_failure with the specific trap name + file:line + why it violates.`
+  return formatBulletSection(
+    heading,
+    'Beyond the generic silent-failure patterns below, the following project-specific traps have caused real misses and MUST be checked explicitly:',
+    items,
+    it => `- ${it}`,
+    'For each, verify the changed code does not fall into the trap. Report a silent_failure with the specific trap name + file:line + why it violates.',
+  )
 }
 
 // 跨 session 失败方案追踪：bootstrap 扫 runs/*/manifest.json 提取历史失败方案，
 // 注入 implementor prompt 防止重复相同失败路径。不填 → 空串 → prompt 段消失。
 export function formatFailedApproaches(items) {
-  if (!Array.isArray(items) || items.length === 0) return ''
-  const lines = items.map(it => `- ${it.task_id}: ${it.reason} — ${it.error}`).join('\n')
-  return `## Prior Failed Approaches (do not repeat)
-${lines}
-If your plan is similar to any above, explicitly state the difference.`
+  return formatBulletSection(
+    'Prior Failed Approaches (do not repeat)',
+    '',
+    items,
+    it => `- ${it.task_id}: ${it.reason} — ${it.error}`,
+    'If your plan is similar to any above, explicitly state the difference.',
+  )
 }
 
 // LESSONS.md 跨任务失败知识库：config 可选声明 lessons_path，
 // bootstrap 读取并匹配 task 关键词注入 implementor。不填 → 空串 → prompt 段消失。
 export function formatLessons(items) {
-  if (!Array.isArray(items) || items.length === 0) return ''
-  const lines = items.map(it => `- [${it.id}] ${it.title} — ${it.detail}`).join('\n')
-  return `## Lessons Learned (check against these before implementing)
-${lines}
-If your plan is similar to any lesson above, explicitly state why your approach differs.`
+  return formatBulletSection(
+    'Lessons Learned (check against these before implementing)',
+    '',
+    items,
+    it => `- [${it.id}] ${it.title} — ${it.detail}`,
+    'If your plan is similar to any lesson above, explicitly state why your approach differs.',
+  )
 }
 
 // —— v3 lessons 两层注入（2026-07-06，§5.5 A+B）——
@@ -584,10 +603,13 @@ export function formatUniversalLessons(allLessons) {
   if (!Array.isArray(allLessons) || allLessons.length === 0) return ''
   const universal = allLessons.filter(l => l && /^(silent[-_]?failure)$/i.test(String(l.category).trim()))
   if (universal.length === 0) return ''
-  const lines = universal.map(l => `- [${l.id}] ${l.title} — ${l.detail}`).join('\n')
-  return `## Universal Discipline (silent-failure — always apply)
-${lines}
-These are project-wide silent-failure disciplines. Before reporting done, verify your code does not violate any of them (savepoint isolation, naive-UTC datetime, single-transaction commits, etc.).`
+  return formatBulletSection(
+    'Universal Discipline (silent-failure — always apply)',
+    '',
+    universal,
+    l => `- [${l.id}] ${l.title} — ${l.detail}`,
+    'These are project-wide silent-failure disciplines. Before reporting done, verify your code does not violate any of them (savepoint isolation, naive-UTC datetime, single-transaction commits, etc.).',
+  )
 }
 
 // taskCategories: task 声明的 lesson_categories（数组），null/空 → fallback title 关键词
@@ -620,10 +642,13 @@ export function formatDomainLessons(allLessons, taskCategories, currentPlanSeq, 
     })
   }
   const capped = matched.slice(0, 5)
-  const lines = capped.map(l => `- [${l.id}] ${l.title} — ${l.detail}`).join('\n')
-  return `## Domain Lessons (check against these before implementing)
-${lines}
-If your plan is similar to any lesson above, explicitly state why your approach differs.`
+  return formatBulletSection(
+    'Domain Lessons (check against these before implementing)',
+    '',
+    capped,
+    l => `- [${l.id}] ${l.title} — ${l.detail}`,
+    'If your plan is similar to any lesson above, explicitly state why your approach differs.',
+  )
 }
 
 // —— v3 findings 状态机（2026-07-06，§5.5 E'）——
