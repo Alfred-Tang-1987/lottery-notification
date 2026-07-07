@@ -138,6 +138,8 @@ Batch 3 (高风险) — runtime 循环拆分
 | Batch 3 | +14 | +5 | 346 |
 
 > **复核修正说明（二轮，2026-07-07）**：初稿 Batch 1 +5（MEDIUM-1 +3）/ Batch 2 +17 / Batch 3 +12（decideReviewOutcome 9 用例）。一轮复核后 Batch 1 +6（MEDIUM-1 删 trip-wire 1 → +2，新增 B1-10 通用性守护 +1）/ Batch 3 +13（decideReviewOutcome halt 子类 6 个 → 10 用例，+1）。二轮复核（对照 plan 实际 test() 块计数）进一步修正：Batch 2 +19（B2-1 taskKey=2, B2-2 REVIEW_SOURCES=1, B2-3 makeHalt=2, B2-4 checkImplStatus=4, B2-5 formatBulletSection=3, B2-6 formatFindingItem=3, B2-7 QUOTA_HALT_NOTE=2[默认注入+opt-out], B2-8 STATIC_READONLY=2[默认注入+LESSONS_EXEMPTION_NOTE 传参]）/ Batch 3 +14（recordReviewRound=3, decideReviewOutcome=10, runFixRound=0, S3 simplify helper sync.test=1）。累计终点 307+6+19+14 = 346。**plan 为权威计数**，spec §3.3 表格同步对齐。
+>
+> **三轮修正（2026-07-07，Task 10 实施前）**：B2-7 QUOTA_HALT_NOTE 范围从"7 prompt 去重"修正为"5 prompt 去重 + implementor/lessonDistiller 保留变体"（implementor 含 `（非 failed/blocked）` 防 agent 误返 blocked 触发升级链；lessonDistiller 用 `decisions:[{action:'skip'}]` 非 model_unavailable status）。RED 测试从 implementor target 改 specReview target（implementor 非替换目标）。B2-7 测试 +2→+3（常量内容 + 默认注入 + opt-out）。Batch 2 累计 +19→+20，终点 346→347。各实际 commit 后的全量回归数为准（307→313→332→...→347，每 task 累加该 task 实际新增 test() 块数）。
 
 ---
 
@@ -506,10 +508,16 @@ export function buildPrompt(role, ctx = {}) {
 > **buildPrompt defaults opt-out 语义（D12/D14 统一注，复核补充）**：`{ ...defaults, ...ctx }` 合并意味着调用方可传 `quotaHaltNote: ''`（或 B2-8 的 `staticReadonlyNote: ''`）**显式关闭默认注入**（覆盖默认值，注入空串）。这是通用性的关键——默认开（多数 reviewer 需要）、可 opt-out（未来某 reviewer 不需要限额 halt 说明时可关）。spec 此处点明 opt-out 路径，避免未来读者误以为默认注入是不可关闭的硬约束。
 
 **TDD 流程**：
-1. RED：helpers.test 加 `buildPrompt('implementor', {})` 输出含限额说明文本
-2. GREEN：lib.js 加常量 + buildPrompt 默认 + 7 prompt 替换占位符；run-plans.js inline
-3. SYNC：sync.test prompt 字节断言更新（7 个 prompt 体变了）
-4. FULL：307 + 1 测试 + 所有现有 prompt 字节断言更新基线
+1. RED：helpers.test 加 QUOTA_HALT_NOTE 常量断言 + buildPrompt 注入/opt-out 断言（specReview target，非 implementor——见下范围修正）
+2. GREEN：lib.js 加常量 + buildPrompt 默认 + **5** prompt 替换占位符；run-plans.js inline
+3. SYNC：sync.test prompt 字节断言更新（5 个替换 prompt 体变了）
+4. FULL：307 + 3 测试 + 所有现有 prompt 字节断言更新基线
+
+> **替换范围修正（2026-07-07，实施前复核）**：原 spec/audit 称 7 个 prompt 共享相同重复文本。核查当前代码实际 3 类：
+> - **5 个完全匹配常量**（`（非 failed），让 orchestrator halt 并保存进度。`）：specReview/qualityReviewer/hunter/commit/gate → 替换为 `{{quotaHaltNote}}` 占位符。
+> - **implementor 变体**（`（非 failed/blocked）`）：implementor schema enum 含 `blocked` 状态，限额说明须区分 model_unavailable 与 failed/blocked（防 agent 误返 blocked 触发升级链而非 halt）。**保留原文**。
+> - **lessonDistiller 完全不同**（用 `decisions: [{action:'skip'}]`，非 model_unavailable status）：**保留原文**。
+> 故实际替换 **5 处**（非 7）。常量仍统一限额话术，但尊重各 prompt 的 schema 语义差异。
 
 ### 5.8 B2-8: S8 STATIC_READONLY_NOTE + LESSONS_EXEMPTION_NOTE
 
