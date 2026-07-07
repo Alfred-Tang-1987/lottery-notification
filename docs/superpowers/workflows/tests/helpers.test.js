@@ -1524,3 +1524,21 @@ test('AUDIT_REFACTOR_KEYWORDS: 命中 refactor 词 + 不命中 feature 词', () 
 test('AUDIT_DIRECTIVE: haltLikelySource audit fix needed → unknown', () => {
   assert.equal(haltLikelySource('audit fix needed'), 'unknown')
 })
+
+// ===== Task 3 (2026-07-08): implementor PROMPTS {{auditDirective}} 占位 + buildPrompt defaults 空串 =====
+// PROMPTS.implementor 加 {{auditDirective}} 占位（retryNote 后、## Discipline 前）；
+// buildPrompt defaults 加 auditDirective: ''（非 refactor task opt-out，零影响）。
+// 调用方传 AUDIT_DIRECTIVE 常量启用（refactor 类 task）。不测 `{}` 占位符保留——与 defaults 冲突，
+// 见 spec §6.1 修正说明：auditDirective 进 defaults 后永远被替换（空串或常量），无第三态。
+
+test('AUDIT: buildPrompt implementor 传 auditDirective 注入', () => {
+  const out = buildPrompt('implementor', { taskId: 'T1', planId: '01', retryNote: '', fixIssues: '', auditDirective: 'MARKER_AUDIT_TEST' })
+  assert.ok(out.includes('MARKER_AUDIT_TEST'), '传 auditDirective 应注入占位')
+})
+
+test('AUDIT: buildPrompt implementor auditDirective 默认空串（非 refactor 无残留）', () => {
+  // auditDirective 进 defaults 为空串 → {auditDirective:''} 或 {} 都渲染为空串，无 {{auditDirective}} 残留
+  const out = buildPrompt('implementor', { taskId: 'T1', planId: '01', retryNote: '', fixIssues: '' })
+  assert.ok(!out.includes('Pre-RED Audit'), '默认不应含 AUDIT 指令')
+  assert.ok(!out.includes('{{auditDirective}}'), '默认无占位符残留（prompt 清洁）')
+})

@@ -91,7 +91,9 @@ export function buildPrompt(role, ctx = {}) {
   // S7（2026-07-07）: defaults 合并 — quotaHaltNote 默认注入 QUOTA_HALT_NOTE（5 个 prompt 占位符），
   //   调用方可传 quotaHaltNote: '' 显式 opt-out（空串替换占位符 → 无注入）。implementor/lessonDistiller
   //   无占位符 → 不受影响。
-  const defaults = { quotaHaltNote: QUOTA_HALT_NOTE }
+  // Task 3（2026-07-08）: auditDirective 默认空串——非 refactor task opt-out（零影响）；
+  //   refactor 类 task 调用方传 AUDIT_DIRECTIVE 常量启用 Pre-RED Audit 阶段。
+  const defaults = { quotaHaltNote: QUOTA_HALT_NOTE, auditDirective: '' }
   const merged = { ...defaults, ...ctx }
   return tpl.replace(/\{\{(\w+)\}\}/g, (_, k) => {
     if (!(k in merged)) return `{{${k}}}`
@@ -1041,7 +1043,7 @@ Return {status, evidence:{config (include ALL fields read in step 1, even option
 RED FLAG: evidence 必须是真实读取结果，绝不编造。`,
 
   implementor: `You are the IMPLEMENTOR for {{taskId}} (plan {{planId}}). TDD strict (RED→GREEN→REFACTOR). {{retryNote}}
-
+{{auditDirective}}
 ## Discipline (HARD REQUIREMENTS — 违反会导致 workflow 状态混乱)
 - DO NOT run \`git commit\` or \`git add\`. Committing is handled by a separate COMMIT agent after review passes.
 - Your job is to write code + tests only. Leave changes in the working tree uncommitted.
