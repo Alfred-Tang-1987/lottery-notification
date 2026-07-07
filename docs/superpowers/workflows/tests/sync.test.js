@@ -78,6 +78,8 @@ test('QC-4: 关键 helper 函数体 lib.js ↔ run-plans.js 字节一致', () =>
     'shouldEscalateOnOscillation', 'isFlipFlop',
     // v3 findings 状态机 + OSC budget (2026-07-06): E'
     'updateFindingsHistory', 'formatFindingsHistory', 'hasRegressed', 'resolveReviewBudget',
+    // W1-5b 路径归一 (2026-07-07): 防 reviewer 返回不同路径格式致 cross-reviewer 重叠检测漏报
+    'normalizeFilePath', 'unionFiles',
   ]
   for (const fn of fns) {
     const libBody = extractFunctionBody(libSrc, fn)
@@ -168,6 +170,45 @@ test('v3 runtime wiring: findings_history update + taskCategories declared + OSC
   const libUniversalFn = extractFunctionBody(libSrc, 'function formatUniversalLessons')
   const runUniversalFn = extractFunctionBody(runSrc, 'function formatUniversalLessons')
   assert.equal(libUniversalFn, runUniversalFn, 'formatUniversalLessons inline 副本与 lib.js 不一致（H4 category 容错）')
+})
+
+test('W1 移植: implementor Discipline + Task Scope Boundary + Lessons Learned Exemption + 分类 dirty_tree', () => {
+  // W1-2 (2026-07-07): implementor prompt 须有 Discipline 段落禁 git commit/add
+  assert.match(runSrc, /## Discipline \(HARD REQUIREMENTS/, 'implementor prompt 须有 Discipline 段落（W1-2）')
+  assert.match(runSrc, /DO NOT run \\`git commit\\` or \\`git add\\`/, 'implementor Discipline 须禁 git commit/add（W1-2）')
+
+  // W1-5a (2026-07-07): specReview prompt 须有 Task Scope Boundary 段落
+  assert.match(runSrc, /## Task Scope Boundary \(critical for multi-task plans\)/,
+    'specReview prompt 须有 Task Scope Boundary 段落（W1-5a）')
+  assert.match(runSrc, /FUTURE tasks.*are NOT missing.*Do not flag them as MISSING/,
+    'Task Scope Boundary 须明确 future task 不算 MISSING')
+
+  // W1-5e (2026-07-07): specReview + qualityReviewer 须有 Lessons Learned Exemption 段落 + lessonsPath 注入
+  assert.match(runSrc, /## Lessons Learned Exemption \(防 reviewer ↔ implementor 振荡\)/,
+    'specReview prompt 须有 Lessons Learned Exemption 段落（W1-5e）')
+  assert.match(runSrc, /## Lessons Learned Exemption \(限定维度硬性豁免/,
+    'qualityReviewer prompt 须有限定维度豁免段落（W1-5e）')
+  assert.match(runSrc, /不豁免的维度.*命名清晰度.*类型注解.*错误处理/,
+    'qualityReviewer 须列出不豁免维度（W1-5e）')
+  // runReviewRound 的 specReview/qualityReviewer buildPrompt 调用须传 lessonsPath
+  assert.match(runSrc, /buildPrompt\('specReview'[^]*lessonsPath: cfg\.lessons_path/,
+    'specReview buildPrompt 须传 lessonsPath（W1-5e）')
+  assert.match(runSrc, /buildPrompt\('qualityReviewer'[^]*lessonsPath: cfg\.lessons_path/,
+    'qualityReviewer buildPrompt 须传 lessonsPath（W1-5e）')
+
+  // W1-1/W1-4 (2026-07-07): bootstrap step 5 须分类处理 dirty_tree（非一律 reset --hard）
+  assert.match(runSrc, /classify and handle each change/,
+    'bootstrap step 5 须分类处理 dirty_tree（W1-1/W1-4）')
+  assert.match(runSrc, /auto-commit lessons\.md from interrupted run/,
+    'bootstrap 须 auto-commit lessons.md（W1-1）')
+  assert.match(runSrc, /git checkout -- runs\/ \.workflow\//,
+    'bootstrap 须 discard runs/ + .workflow/（W1-1）')
+
+  // W1-1 (2026-07-07): finalReport 须有 step 6 commit lessons.md（halt 后）
+  assert.match(runSrc, /Commit lessons\.md \(W1-1, 2026-07-07\)/,
+    'finalReport 须有 step 6 commit lessons.md（W1-1）')
+  assert.match(runSrc, /auto-commit lessons\.md from run \{\{runTs\}\}/,
+    'finalReport commit message 须含 runTs（W1-1）')
 })
 
 test('S3: lessonsText must not call formatLessons (replaced by Tier 1 + Tier 2)', () => {

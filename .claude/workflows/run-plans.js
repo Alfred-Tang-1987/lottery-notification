@@ -169,16 +169,26 @@ function buildPrompt(role, ctx = {}) {
 }
 function allGreen(...reviews) { return reviews.every(r => r && r.status === 'ok') }
 function unionFiles(...reviews) {
-  const set = new Set(); for (const r of reviews) for (const f of (r?.diagnostics?.files_touched || [])) set.add(f); return [...set]
+  const set = new Set(); for (const r of reviews) for (const f of (r?.diagnostics?.files_touched || [])) set.add(normalizeFilePath(f)); return [...set]
+}
+// 文件路径归一化（W1-5b, 2026-07-07）：统一 Windows 绝对路径 / 反斜杠 / 大小写为相对路径。
+// 防止 reviewer 返回 C:\...\src\... / C:/.../src\... / src/... 三种格式致 groupFindingsByFile
+// 按字符串比对失效（cross-reviewer 重叠检测漏报）。
+// 白名单覆盖常见顶层目录（src/tests/docs/data/logs/lib/app/internal/cmd/.claude），
+// 匹配首个白名单目录后保留相对路径；无匹配则原样返回（防误裁剪）。
+function normalizeFilePath(p) {
+  if (!p) return p
+  return String(p).replace(/\\/g, '/').replace(/^.*?\/(src|tests|docs|data|logs|lib|app|internal|cmd|\.claude)\//i, '$1/')
 }
 // 收集单个 failed review 的 findings（内部 helper，collectReviewFindings 与
 // reviewHaltForEmptyFailed 共用，避免两处重复 push 逻辑漂移）—— inline 自 lib.js
 // 非 failed 或无 diagnostics → 返回 []。items 归一化同 collectReviewFindings。
+// W1-5b: file 字段经 normalizeFilePath 归一化，防跨 reviewer 路径格式差异致重叠检测漏报。
 function findingsOf(r, source, key) {
   if (!r || r.status !== 'failed') return []
   const out = []
   for (const it of (r.diagnostics?.[key] || [])) {
-    if (it && typeof it === 'object') out.push({ source, severity: it.severity, title: it.title || String(it), file: it.file, fix: it.fix })
+    if (it && typeof it === 'object') out.push({ source, severity: it.severity, title: it.title || String(it), file: normalizeFilePath(it.file), fix: it.fix })
     else out.push({ source, title: String(it) })
   }
   return out
@@ -434,8 +444,8 @@ async function runReviewRound(taskId, cfg, plan, fc, concernsHint, labelSuffix, 
   // Q7: 三处 opts 都设 phase（若 phaseLabel 非空）——/workflows UI 中 spec/qual/hunt 按阶段分组一致
   const commonOpts = phaseLabel ? { phase: phaseLabel } : {}
   const [spec, qual, hunt] = await parallel([
-    async () => safeAgent(buildPrompt('specReview', { taskId, specPath: cfg.spec_path, planFilePath: plan.file, filesChanged: fc, concernsHint, referencePaths: formatReferencePaths(cfg.reference_paths) }), { schema: SCHEMAS.specReview, model: 'opus', ...commonOpts, label: `spec:${taskId}${labelSuffix}` }),
-    async () => safeAgent(buildPrompt('qualityReviewer', { taskId, filesChanged: fc, languageChecklist: languageChecklist(cfg.language) }), { schema: SCHEMAS.qualityReviewer, model: 'opus', ...commonOpts, label: `qual:${taskId}${labelSuffix}` }),
+    async () => safeAgent(buildPrompt('specReview', { taskId, specPath: cfg.spec_path, planFilePath: plan.file, filesChanged: fc, concernsHint, referencePaths: formatReferencePaths(cfg.reference_paths), lessonsPath: cfg.lessons_path || '' }), { schema: SCHEMAS.specReview, model: 'opus', ...commonOpts, label: `spec:${taskId}${labelSuffix}` }),
+    async () => safeAgent(buildPrompt('qualityReviewer', { taskId, filesChanged: fc, languageChecklist: languageChecklist(cfg.language), lessonsPath: cfg.lessons_path || '' }), { schema: SCHEMAS.qualityReviewer, model: 'opus', ...commonOpts, label: `qual:${taskId}${labelSuffix}` }),
     async () => safeAgent(buildPrompt('hunter', { taskId, filesChanged: fc, silentFailureContext: formatSilentFailureContext(cfg.silent_failure_context, cfg.silent_failure_intro) }), { schema: SCHEMAS.hunter, model: 'sonnet', ...commonOpts, label: `hunt:${taskId}${labelSuffix}` }),
   ])
   const haltReason = reviewHaltReason(spec, qual, hunt)
@@ -643,13 +653,15 @@ function gateCommands(config) {
 
 // 跨 reviewer 文件重叠检测：按 file 分组 findings → 返回分组数组。
 // 纯函数，不依赖任何映射表或 agent 调用。spec §3.1。—— inline 自 lib.js
+// W1-5b: file 经 normalizeFilePath 归一化后再分组，防路径格式差异致同文件分到不同 group。
 function groupFindingsByFile(findings) {
   const groups = {}
   for (const f of findings) {
     if (!f.file) continue
-    if (!groups[f.file]) groups[f.file] = { file: f.file, sources: new Set(), findings: [] }
-    groups[f.file].sources.add(f.source)
-    groups[f.file].findings.push(f)
+    const normFile = normalizeFilePath(f.file)
+    if (!groups[normFile]) groups[normFile] = { file: normFile, sources: new Set(), findings: [] }
+    groups[normFile].sources.add(f.source)
+    groups[normFile].findings.push(f)
   }
   return Object.values(groups)
 }
@@ -774,7 +786,14 @@ Steps:
 2. Config smoke: run test_command with --collect-only. 判断：命令本身不存在（command not found / No such file: pytest）→ status=failed（环境/typo）；命令存在但 collect 失败（no module named pytest / pyproject.toml 不存在 / no tests collected / 业务代码未初始化）→ 记录 'project not yet initialized' 到 summary，status 仍 ok（业务代码由后续 task 创建，预期）。
 3. For each {{plansDir}}/*.md: if frontmatter (starts with ---) read task models; else generate — extract LEAF ids — **CRITICAL: 必须返回 frontmatter models: 的每一个 key（含最大的 N，如 T10），一个不漏；body 里 ## Task N 若有 ### Task NX 子 task → 只取子 task（NX），子 task 不可遗漏；## Task N 无子 task → 取 N 本身**（leaf-first: ## Task N with ### Task NX children → only NX; else N), modelHint (title contains 安全|加密|认证|JWT|CSRF|Fernet|算法|比对|策略|边界|集成|接口 → opus, else omit), write frontmatter at file top. Idempotent. Record each plan's file (full path) and seq (last two digits of filename, e.g. 01). Also read write_files from frontmatter if present (format: "write_files:\n  T1:\n    - src/a.py\n    - src/b.py"). Return as task_write_files in evidence: [{task_id, plan_seq, files:[...]}] (plan_seq = this plan's seq). Absent → empty array.
 4. git log → 运行 git log --format=%s -n 200，**原样复制**每个 commit subject 第一行到 git_log_subjects（string[]，最多 200 条）。**不要解析、提取、转换、过滤、去重**——orchestrator 用正则从 subjects 确定性提取 completed，你只负责忠实复制 git log 输出。同时仍返回 completed（你最好的 task-id 提取，作 fallback，但不再作为单一事实源）。
-5. git status --porcelain → dirty_tree. If dirty_tree=true (uncommitted changes from a crashed previous run, §6.2 半提交自愈): run \`git reset --hard HEAD\` to clean the working tree (orchestrator has no shell, so bootstrap must self-heal here), then re-run \`git status --porcelain\` to confirm clean; set dirty_tree=false in evidence. If git reset fails, leave dirty_tree=true and record the error in summary.
+5. git status --porcelain → dirty_tree. If dirty_tree=true (uncommitted changes from a crashed previous run, §6.2 半提交自愈), classify and handle each change (W1-1/W1-4, 2026-07-07):
+   a. Workflow artifact changes:
+      - lessons.md (path = lessons_path read in step 1) has changes → git add <lessonsPath> && git commit -m "chore(workflow): auto-commit lessons.md from interrupted run" (preserve knowledge base, best-effort).
+      - runs/ and .workflow/ changes → git checkout -- runs/ .workflow/ (discard, regenerable).
+   b. Remaining changes = implementor half-done → git reset --hard HEAD to clean.
+   c. Re-run git status --porcelain to confirm clean; set dirty_tree=false in evidence.
+   d. If any step fails → leave dirty_tree=true and record the error in summary.
+   Rationale: old logic ran git reset --hard HEAD unconditionally, discarding lessons.md updates (knowledge base). New logic preserves lessons.md, discards regenerable artifacts, cleans implementor half-done code.
 6. For each leaf task return its model (sonnet|opus|undefined→sonnet) and title (the description text from the Task header).
 7. If runs/ directory exists: scan runs/*/manifest.json files. For each, read per_task object. For each task_id in per_task that has blocked_info, extract {task_id, plan_seq (the plan sequence this task belongs to, from the task_id prefix 'plan-<seq>/T-Y' or from the plan context), reason (from blocked_info.reason), error (from blocked_info.last_error)}. Filter to task_ids that match leaf tasks in the current plans. Return as failed_approaches in evidence. Also check if any task has status='in_progress' → in_progress=true (else false). If runs/ does not exist → failed_approaches=[], in_progress=false.
 
@@ -782,6 +801,11 @@ Return {status, evidence:{config (include ALL fields read in step 1, even option
 RED FLAG: evidence 必须是真实读取结果，绝不编造。`,
 
   implementor: `You are the IMPLEMENTOR for {{taskId}} (plan {{planId}}). TDD strict (RED→GREEN→REFACTOR). {{retryNote}}
+
+## Discipline (HARD REQUIREMENTS — 违反会导致 workflow 状态混乱)
+- DO NOT run \`git commit\` or \`git add\`. Committing is handled by a separate COMMIT agent after review passes.
+- Your job is to write code + tests only. Leave changes in the working tree uncommitted.
+- If you think committing is necessary, report status=blocked instead.
 
 Inputs: specPath={{specPath}} testCommand={{testCommand}} buildCommand={{buildCommand}} planFile={{planFilePath}} taskId={{taskId}} fixIssues={{fixIssues}}
 {{referencePaths}}
@@ -831,6 +855,19 @@ RED FLAG: tests_exit_code 必须真实，绝不编造 0。绝不跳过测试。�
 
 Inputs: specPath={{specPath}} taskId={{taskId}} planFile={{planFilePath}} changedHint={{filesChanged}}{{concernsHint}}
 {{referencePaths}}
+lessonsPath={{lessonsPath}}
+
+## Task Scope Boundary (critical for multi-task plans)
+Each task implements ONLY what its plan section requests. Methods/interfaces/fields needed by FUTURE tasks (documented in DESIGN.md or spec but NOT in this task's plan section) are NOT missing — they belong to their respective future tasks. Do not flag them as MISSING.
+Conversely, if the implementor adds methods/tests NOT in this task's plan section, that IS over-build — flag it as EXTRA.
+
+## Lessons Learned Exemption (防 reviewer ↔ implementor 振荡)
+W1-5e (2026-07-07): workflow 自主学习闭环——implementor 按 {{lessonsPath}} 中记录的 lesson 加固代码时，该加固虽不在 plan section 字面要求内，但 NOT EXTRA。否则 reviewer 报 EXTRA → implementor 删 → 下轮 implementor 又按 lesson 加回来 → OSCILLATING halt。
+判定流程（疑似 EXTRA 时执行）：
+1. 查 commit message / 代码注释是否有 L-YYYYMMDD-NN 编号（如 L-2026-07-07-002）。
+2. 有 L-xxx 编号 → 读 {{lessonsPath}} 中该 lesson 条目，核对加固是否 minimal 且 on-target（只修 lesson 描述的问题，未越界扩展）。
+3. minimal + on-target → NOT EXTRA（lessons learned 闭环修复）。
+4. 无 L-xxx 编号 / 加固超出 lesson 范围 / lesson 不存在 → 仍按 EXTRA 报告。
 
 Steps:
 1. git diff (or read changed files) for this task.
@@ -844,17 +881,29 @@ Steps:
 This is a STATIC READ-ONLY review. You may use 'git diff', 'git status', 'find', 'grep'/'rg', and read files to locate and inspect changes. Do NOT run the test suite, ruff, lint, or any build — spec verification is done by reading code, not by running it. Running tests/builds is the implementor's and gate's job, not yours.
 
 Return {status (ok|failed), diagnostics:{files_touched:[...], issues:[<dimension>: <spec requirement>: <code gap or over-build>]}, summary}.
-RED FLAG: ok 仅当三维度全清——逐条 spec 全符合 AND 无越界。绝不模糊通过。越界（spec 未要求的功能，尤其是合规红线禁止类如预测/推荐）必须 failed。issues 要具体（哪条 spec + 代码哪里不符/越界 + file:line）。若遇到 model 限额耗尽（quota/rate-limit/429 错误），返回 status:'model_unavailable'（非 failed），让 orchestrator halt 并保存进度。`,
+RED FLAG: ok 仅当三维度全清——逐条 spec 全符合 AND 无越界（lessons learned 修复经 Exemption 判定后不算越界）。绝不模糊通过。越界（spec 未要求的功能，尤其是合规红线禁止类如预测/推荐）必须 failed。issues 要具体（哪条 spec + 代码哪里不符/越界 + file:line）。若遇到 model 限额耗尽（quota/rate-limit/429 错误），返回 status:'model_unavailable'（非 failed），让 orchestrator halt 并保存进度。`,
 
   qualityReviewer: `You are the QUALITY-REVIEWER (model opus). Review code quality: architecture, boundaries, types, immutability, error handling, naming. Verdict on CURRENT tree.
 
 Inputs: taskId={{taskId}} changedHint={{filesChanged}}
 {{languageChecklist}}
+lessonsPath={{lessonsPath}}
 
 ## Universal quality checks
 - 函数 <50 行, 文件 <800 行, 无深层嵌套 (>4), 错误显式处理, 无 mutation, 无硬编码值, 命名清晰.
 - Each file has one clear responsibility; units decomposed so they can be tested independently.
 - Did this change create new large files or significantly grow existing ones? (Don't flag pre-existing sizes — focus on what this change contributed.)
+
+## Lessons Learned Exemption (限定维度硬性豁免，防 reviewer ↔ implementor 振荡)
+W1-5e (2026-07-07): implementor 按 {{lessonsPath}} 中记录的 lesson 加固代码时（commit message / 代码注释含 L-YYYYMMDD-NN 编号），以下维度**不报 finding**：
+- over-engineering / single-use helper（lesson 加固常加 helper）
+- 函数超 50 行（lesson 加固常让函数变长）
+- helper / abstraction 数量（lesson 加固常引入新抽象）
+判定流程（疑似上述维度 finding 时执行）：
+1. 查 commit message / 代码注释是否有 L-xxx 编号。
+2. 有 L-xxx 编号 → 读 {{lessonsPath}} 核对加固是否 minimal 且 on-target → 满足则**不报**该维度 finding。
+3. 无 L-xxx 编号 / 加固超出 lesson 范围 → 正常报告。
+**不豁免的维度**（仍正常判断）：命名清晰度、类型注解、错误处理、深层嵌套、mutation、硬编码值。lesson 加固不应损害这些维度。
 
 ## Steps
 1. Read changed files.
@@ -1000,7 +1049,8 @@ Steps:
    If output is empty, append "## Working Tree (clean)" — no uncommitted changes（likely_source=gate restored 时预期如此）。
    Also include: if the halt was due to a failed review round (not model_unavailable/agent_error/gate/commit), add a "## Cross-Reviewer Findings (grouped by file)" section to blocked.md: group all findings from the halted task's blocked_info by file, and highlight files where ≥2 reviewers reported findings with ⚠ CROSS-REVIEWER markers. This helps spot reviewer disagreements at a glance. Use the blockedInfo.raw field to extract reviewer findings — the raw field contains the diagnostics from spec/quality/hunter reviews.
 5. Lessons ({{lessonsAutoDistill}}): If lessonsAutoDistill=true AND mode=halted: lesson-distiller agent has ALREADY been invoked by orchestrator before this finalReport call — it read lessonsPath, extracted reusable root causes, and updated lessons.md itself. You do NOT need to touch lessonsPath. If distiller failed (quota/error), orchestrator logged it and proceeded — lessonsPath may be stale but manifest write must proceed. If lessonsAutoDistill=false or mode=done: lessonsPath untouched.
-6. Print a digest summary (counts: done/blocked, total tasks, per-plan gate result).
+6. Commit lessons.md (W1-1, 2026-07-07): If mode=halted, after step 5, check if {{lessonsPath}} has uncommitted changes: run "git status --porcelain {{lessonsPath}}". If output is non-empty → git add {{lessonsPath}} && git commit -m "chore(workflow): auto-commit lessons.md from run {{runTs}}". This ensures the knowledge base is persisted (bootstrap reads it to inject implementor). BEST-EFFORT — if git commit fails, do NOT block manifest write; record the error in summary.
+7. Print a digest summary (counts: done/blocked, total tasks, per-plan gate result).
 
 Return {evidence:{manifest_path}, summary: <digest>}.
 RED FLAG: manifest 必须真实写入磁盘（你 ls 确认）。stateJson 是 orchestrator 传入的完整状态，照实记录。`,

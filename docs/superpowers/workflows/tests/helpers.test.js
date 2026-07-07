@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, isQuotaError, errStr, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound, resolveMaxRounds, detectOscillation, distillLessonInput, applyLessonDecisions, formatLessonsForDistill, validateAmendResult, validateCheckoutResult, groupFindingsByFile, formatCrossReviewerNote, bareTaskId, dropParentTasks, extractCompletedFromSubjects, extractTaskKey, shouldEscalateOnOscillation, resolveReviewBudget, isFlipFlop, formatLessons, formatUniversalLessons, formatDomainLessons, updateFindingsHistory, formatFindingsHistory, hasRegressed } from '../lib.js'
+import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, isQuotaError, errStr, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound, resolveMaxRounds, detectOscillation, distillLessonInput, applyLessonDecisions, formatLessonsForDistill, validateAmendResult, validateCheckoutResult, groupFindingsByFile, formatCrossReviewerNote, bareTaskId, dropParentTasks, extractCompletedFromSubjects, extractTaskKey, shouldEscalateOnOscillation, resolveReviewBudget, isFlipFlop, formatLessons, formatUniversalLessons, formatDomainLessons, updateFindingsHistory, formatFindingsHistory, hasRegressed, normalizeFilePath } from '../lib.js'
 
 const ok = { status: 'ok', diagnostics: { files_touched: ['a.py'] } }
 const ok2 = { status: 'ok', diagnostics: { files_touched: ['b.py'] } }
@@ -743,6 +743,47 @@ test('groupFindingsByFile skips findings without file', () => {
 
 test('groupFindingsByFile empty array → empty array', () => {
   assert.deepEqual(groupFindingsByFile([]), [])
+})
+
+// —— normalizeFilePath (W1-5b) ——
+
+test('normalizeFilePath returns input as-is for falsy', () => {
+  assert.equal(normalizeFilePath(''), '')
+  assert.equal(normalizeFilePath(null), null)
+  assert.equal(normalizeFilePath(undefined), undefined)
+})
+
+test('normalizeFilePath strips absolute prefix to whitelisted dir', () => {
+  // Windows 绝对路径 + 反斜杠 → 相对路径
+  assert.equal(normalizeFilePath('C:\\Users\\alfred\\proj\\src\\app.py'), 'src/app.py')
+  assert.equal(normalizeFilePath('C:/Users/alfred/proj/tests/test_app.py'), 'tests/test_app.py')
+  // Unix 绝对路径
+  assert.equal(normalizeFilePath('/home/alfred/proj/src/app.py'), 'src/app.py')
+  assert.equal(normalizeFilePath('/home/alfred/proj/docs/workflow-design.md'), 'docs/workflow-design.md')
+  // 混合分隔符
+  assert.equal(normalizeFilePath('C:\\proj\\src\\sub\\file.py'), 'src/sub/file.py')
+})
+
+test('normalizeFilePath leaves relative path unchanged (already normalized)', () => {
+  assert.equal(normalizeFilePath('src/app.py'), 'src/app.py')
+  assert.equal(normalizeFilePath('tests/test_app.py'), 'tests/test_app.py')
+  // 无白名单目录前缀 → 原样返回（防误裁剪）
+  assert.equal(normalizeFilePath('scripts/run.sh'), 'scripts/run.sh')
+})
+
+test('normalizeFilePath covers extended whitelist (.claude/lib/app/internal/cmd/data/logs)', () => {
+  assert.equal(normalizeFilePath('/x/.claude/workflows/run-plans.js'), '.claude/workflows/run-plans.js')
+  assert.equal(normalizeFilePath('/x/lib/helper.js'), 'lib/helper.js')
+  assert.equal(normalizeFilePath('/x/app/server.js'), 'app/server.js')
+  assert.equal(normalizeFilePath('/x/internal/db.py'), 'internal/db.py')
+  assert.equal(normalizeFilePath('/x/cmd/main.go'), 'cmd/main.go')
+  assert.equal(normalizeFilePath('/x/data/seed.json'), 'data/seed.json')
+  assert.equal(normalizeFilePath('/x/logs/run.log'), 'logs/run.log')
+})
+
+test('normalizeFilePath is case-insensitive on whitelist dirs', () => {
+  assert.equal(normalizeFilePath('/x/SRC/app.py'), 'SRC/app.py')
+  assert.equal(normalizeFilePath('/x/Tests/test.py'), 'Tests/test.py')
 })
 
 // —— formatCrossReviewerNote ——
