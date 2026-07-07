@@ -89,6 +89,8 @@ Also extract `lesson_categories` from frontmatter if present (format: `lesson_ca
 
 **依据:** 审计报告 MEDIUM-1/LOW-1/2/3/4；设计文档 §4.2/§4.10/§4.3-4.6 / D4-D5
 
+**TDD 流程说明:** 本 Task 混合两类改动——(1) 守护断言（MEDIUM-1 trip-wire + B1-10 通用性守护）的 TDD 流程是**直接 GREEN**（断言当前代码已满足，无 RED 阶段——这是 spec §4.2/§4.10 的明确决策，守护断言的目标是防止未来回归而非验证当前行为）；(2) LOW-4 haltLikelySource 是标准 RED→GREEN（先写失败测试再修实现）。实施者注意区分：Step 2.1/2.2 是直接 GREEN，Step 2.6 的 LOW-4 是 RED→GREEN。
+
 ### Step 2.1 — MEDIUM-1：加 2 个 trip-wire 守护断言（trip-wire 1 已删）
 
 > **注意**：初稿列 3 个 trip-wire，复核发现 trip-wire 1（PROMPTS 反引号成对性）对当前代码就 FAIL（多行模板字面量每行反引号不成对）且方案 A 也有假阳性。删 trip-wire 1，只保留 trip-wire 2/3。详见设计文档 D4 复核修正。
@@ -213,6 +215,8 @@ if (r === 'plan gate failed' || r.includes('gate')) return 'gate restored'
 **目标:** 删 S11 死代码 + S12 let→const 合并 + S14 标 @deprecated。
 
 **依据:** 审计报告 S11/S12/S14；设计文档 §4.7-4.9 / D7
+
+**TDD 流程说明:** 本 Task 是重构清理（删死代码、let→const、加 @deprecated 注释），**无新行为、无新测试**，TDD 流程是保持现有 313 测试全绿（FULL 阶段验证行为不变）。无 RED 阶段——这些改动不引入新功能，靠现有测试守护正确性。
 
 ### Step 3.1 — S11：删 `|| []` 死代码
 
