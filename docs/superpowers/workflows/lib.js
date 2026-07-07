@@ -115,7 +115,11 @@ export function normalizeFilePath(p) {
   return p.replace(/\\/g, '/').replace(/^.*?\/(src|tests|docs|data|logs|lib|app|internal|cmd|\.claude|scripts|bin|tools|config|public|static|templates|utils|api|server|client|web|\.github)\//i, '$1/')
 }
 
-// 已被 collectReviewFindings 取代（orchestrator fix-round 用）；保留为通用工具 + 向后兼容。
+/**
+ * @deprecated (2026-07-07) 已被 collectReviewFindings 取代（orchestrator fix-round 用）。
+ * 保留仅为向后兼容；新代码请用 collectReviewFindings。
+ * 计划在下一轮 spec 修订时移除（需先确认无 memory/indexing 脚本调用）。
+ */
 export function issuesFromReviews(...reviews) {
   const out = []
   for (const r of reviews) if (r && r.status === 'failed') out.push(...(r.diagnostics?.issues || []))

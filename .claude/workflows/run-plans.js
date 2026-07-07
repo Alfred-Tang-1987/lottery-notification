@@ -1270,8 +1270,7 @@ async function runTask(plan, task) {
   }
   // —— needs_context: dispatch contextFetcher, retry implementor with context (§8.1) ——
   if (impl.status === 'needs_context') {
-    let ctxr
-    ctxr = await dispatchImpl(buildPrompt('contextFetcher', {
+    const ctxr = await dispatchImpl(buildPrompt('contextFetcher', {
       needType: impl.diagnostics?.blocked_category || 'file',
       query: impl.diagnostics?.last_error || impl.diagnostics?.suggested_fix || '',
       specPath: cfg.spec_path, workdir: '.',
@@ -1440,10 +1439,9 @@ async function runTask(plan, task) {
   // 本应 clean，simplify 若动代码 → git diff 非空 → 触发 review。省成本：simplify 没动代码则跳过 review。
 
   // —— commit（提前到 simplify 前；§5 状态原子转换）——
-  let commit
   // P1-5（第 6 轮）: commit/simplify/contextFetcher 硬编码 sonnet（spec §13b least-powerful-model；
   //   task model 可能因 BLOCKED 升级为 opus，commit/simplify 不应跟随升级，保持 sonnet 控成本）。
-  commit = await dispatchImpl(buildPrompt('commit', { taskId: task.id, planId: plan.id, planIdShort, commitMsg: commitSubject(plan.seq, task.id, task.title || task.id), testCommand: cfg.test_command, writeFilesScope: formatWriteFilesScope(state.taskWriteFiles?.[taskKey] || []) }), { schema: SCHEMAS.commit, label: `commit:${task.id}` }, 'sonnet')
+  const commit = await dispatchImpl(buildPrompt('commit', { taskId: task.id, planId: plan.id, planIdShort, commitMsg: commitSubject(plan.seq, task.id, task.title || task.id), testCommand: cfg.test_command, writeFilesScope: formatWriteFilesScope(state.taskWriteFiles?.[taskKey] || []) }), { schema: SCHEMAS.commit, label: `commit:${task.id}` }, 'sonnet')
   if (commit.halted) return commit
   if (commit.status === 'failed' && Array.isArray(commit.diagnostics?.out_of_scope) && commit.diagnostics.out_of_scope.length) return { halted: true, reason: 'commit out_of_scope', diag: commit.diagnostics }
   if (commit.status !== 'ok') return { halted: true, reason: 'commit failed', diag: commit.diagnostics }
@@ -1452,8 +1450,7 @@ async function runTask(plan, task) {
   log(`✓ ${task.id} committed @ ${commit.evidence.commit_sha}`)
 
   // —— simplify（max 1，§5.2 方案 C：git diff 独立验证是否动代码）——
-  let simp
-  simp = await dispatchImpl(buildPrompt('simplify', { taskId: task.id, filesChanged: filesChanged.join('\n') }), { schema: SCHEMAS.simplify, label: `simp:${task.id}` }, 'sonnet')
+  const simp = await dispatchImpl(buildPrompt('simplify', { taskId: task.id, filesChanged: filesChanged.join('\n') }), { schema: SCHEMAS.simplify, label: `simp:${task.id}` }, 'sonnet')
   if (simp.halted) return simp
   // commit 后工作树 clean → git status --porcelain 非空即 simplify 动了代码（不信任 simp.evidence.changed 自报）。
   // Q5: 用 git status --porcelain 替代 git diff --stat——同时检测 staged + unstaged，
@@ -1643,7 +1640,7 @@ const _regexCompleted = (Array.isArray(boot.evidence.git_log_subjects) && boot.e
 const _llmCompleted = (Array.isArray(boot.evidence.completed) ? boot.evidence.completed : [])
 const _rawCompleted = (Array.isArray(args.completed) && args.completed.length
   ? args.completed
-  : [...new Set([..._regexCompleted, ..._llmCompleted])]) || []
+  : [...new Set([..._regexCompleted, ..._llmCompleted])])
 state.completed = normalizeCompleted(_rawCompleted)
 // 跨 session 失败方案追踪：按 plan-scoped taskKey 索引存入 state，供 implCtx 注入 implementor prompt
 // P1-2（第 13 轮）: bootstrap 返回的 task_id 可能是裸 T1 或 plan-scoped；统一归一化为 plan-scoped key，防跨 plan 同名 task 查找失败
