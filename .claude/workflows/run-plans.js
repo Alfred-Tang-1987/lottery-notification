@@ -288,6 +288,18 @@ function makeHalt(reason, model, error) {
 function classifyThrown(e) {
   return isQuotaError(e) ? 'model_unavailable' : 'agent_error'
 }
+// checkImplStatus（S1, 2026-07-07）：implementor dispatch 后的状态检查 helper。—— inline 自 lib.js
+// halted → 透传；status 不在 allowed → halt；否则返回 null（继续往下）。
+// reason 逐字对齐原实现（D10）：reasonTemplate 含 {status} 占位符，函数内 replace。
+// 复核修正（2026-07-07）：原 reasonPrefix 形把 status 放尾部，但原实现把 status 放中间
+// （如 'implementor failed after retry'）→ 用 {status} 占位符模板保留原 reason 形。
+function checkImplStatus(impl, allowed = ['ok', 'done_with_concerns'], reasonTemplate = 'implementor {status}') {
+  if (impl.halted) return impl
+  if (!allowed.includes(impl.status)) {
+    return { halted: true, reason: reasonTemplate.replace('{status}', impl.status), diag: impl.diagnostics }
+  }
+  return null
+}
 // review status 的合法集合（含 orchestrator-internal sentinel）—— inline 自 lib.js
 // agent() 带 schema 时内部会重试 StructuredOutput；耗尽后偶发返回 null/空对象——
 // 即 thinking-only 空响应（模型在 thinking 块里"以为"调了 StructuredOutput，实际只输出 thinking，
@@ -1309,15 +1321,18 @@ async function runTask(plan, task) {
     if (impl.status === 'failed') {
       impl = await dispatchImpl(buildPrompt('implementor', implCtx('', '上下文补充后仍 failed，重试一次。', fetchedCtx)), { schema: SCHEMAS.implementor, model, label: `impl:${task.id}:ctx:retry` }, model, 'opus')
       if (impl.halted) return impl
-      if (impl.status !== 'ok' && impl.status !== 'done_with_concerns') return { halted: true, reason: `implementor ${impl.status} after context-fetch retry`, diag: impl.diagnostics }
+      const h1 = checkImplStatus(impl, undefined, 'implementor {status} after context-fetch retry')
+      if (h1) return h1
     }
-    if (impl.status !== 'ok' && impl.status !== 'done_with_concerns') return { halted: true, reason: `implementor ${impl.status} after context-fetch`, diag: impl.diagnostics }
+    const h2 = checkImplStatus(impl, undefined, 'implementor {status} after context-fetch')
+    if (h2) return h2
   }
   // —— failed: retry once → halt (§4.4) ——
   if (impl.status === 'failed') {
     impl = await dispatchImpl(buildPrompt('implementor', implCtx('', '上次 failed，重试一次。')), { schema: SCHEMAS.implementor, model, label: `impl:${task.id}:retry` }, model, 'opus')
     if (impl.halted) return impl
-    if (impl.status !== 'ok' && impl.status !== 'done_with_concerns') return { halted: true, reason: `implementor ${impl.status} after retry`, diag: impl.diagnostics }
+    const h3 = checkImplStatus(impl, undefined, 'implementor {status} after retry')
+    if (h3) return h3
   }
   // done_with_concerns: 记录疑虑，继续进 review（不 halt）；轻量透传给 specReview 作 focusHint。
   let concerns = []

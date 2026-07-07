@@ -238,6 +238,19 @@ export function classifyThrown(e) {
   return isQuotaError(e) ? 'model_unavailable' : 'agent_error'
 }
 
+// checkImplStatus（S1, 2026-07-07）：implementor dispatch 后的状态检查 helper。
+// halted → 透传；status 不在 allowed → halt；否则返回 null（继续往下）。
+// reason 逐字对齐原实现（D10）：reasonTemplate 含 {status} 占位符，函数内 replace。
+// 复核修正（2026-07-07）：原 reasonPrefix 形把 status 放尾部，但原实现把 status 放中间
+// （如 'implementor failed after retry'）→ 用 {status} 占位符模板保留原 reason 形。
+export function checkImplStatus(impl, allowed = ['ok', 'done_with_concerns'], reasonTemplate = 'implementor {status}') {
+  if (impl.halted) return impl
+  if (!allowed.includes(impl.status)) {
+    return { halted: true, reason: reasonTemplate.replace('{status}', impl.status), diag: impl.diagnostics }
+  }
+  return null
+}
+
 // review status 的合法集合（含 orchestrator-internal sentinel）。
 // agent() 带 schema 时内部会重试 StructuredOutput；耗尽后偶发返回 null/空对象——
 // 即 thinking-only 空响应（模型在 thinking 块里"以为"调了 StructuredOutput，实际只输出 thinking，

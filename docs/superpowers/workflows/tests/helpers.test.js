@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, formatFindingItem, isQuotaError, errStr, makeHalt, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound, resolveMaxRounds, detectOscillation, distillLessonInput, applyLessonDecisions, formatLessonsForDistill, validateAmendResult, validateCheckoutResult, groupFindingsByFile, formatCrossReviewerNote, bareTaskId, taskKey, dropParentTasks, extractCompletedFromSubjects, extractTaskKey, shouldEscalateOnOscillation, resolveReviewBudget, isFlipFlop, formatLessons, formatUniversalLessons, formatDomainLessons, updateFindingsHistory, formatFindingsHistory, hasRegressed, normalizeFilePath, REVIEW_SOURCES } from '../lib.js'
+import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, formatFindingItem, isQuotaError, errStr, makeHalt, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound, resolveMaxRounds, detectOscillation, distillLessonInput, applyLessonDecisions, formatLessonsForDistill, validateAmendResult, validateCheckoutResult, groupFindingsByFile, formatCrossReviewerNote, bareTaskId, taskKey, dropParentTasks, extractCompletedFromSubjects, extractTaskKey, shouldEscalateOnOscillation, resolveReviewBudget, isFlipFlop, formatLessons, formatUniversalLessons, formatDomainLessons, updateFindingsHistory, formatFindingsHistory, hasRegressed, normalizeFilePath, REVIEW_SOURCES, checkImplStatus } from '../lib.js'
 
 const ok = { status: 'ok', diagnostics: { files_touched: ['a.py'] } }
 const ok2 = { status: 'ok', diagnostics: { files_touched: ['b.py'] } }
@@ -104,6 +104,30 @@ test('S9 makeHalt: 构造 halt 对象', () => {
 test('S9 makeHalt: error 为 null/字符串', () => {
   assert.equal(makeHalt('x', 'm', null).diag.error, '')
   assert.equal(makeHalt('x', 'm', 'msg').diag.error, 'msg')
+})
+
+// —— checkImplStatus（S1, 2026-07-07）：implementor dispatch 后的状态检查 helper ——
+test('S1 checkImplStatus: halted 透传', () => {
+  const impl = { halted: true, reason: 'x', diag: {} }
+  assert.equal(checkImplStatus(impl), impl)
+})
+
+test('S1 checkImplStatus: status 不在 allowed 返回 halt', () => {
+  const impl = { status: 'failed', diagnostics: { e: 1 } }
+  const h = checkImplStatus(impl, ['ok'], 'implementor {status}')
+  assert.equal(h.halted, true)
+  assert.equal(h.reason, 'implementor failed')
+  assert.equal(h.diag.e, 1)
+})
+
+test('S1 checkImplStatus: status 在 allowed 返回 null', () => {
+  const impl = { status: 'ok', diagnostics: {} }
+  assert.equal(checkImplStatus(impl), null)
+})
+
+test('S1 checkImplStatus: 默认 allowed 含 done_with_concerns', () => {
+  const impl = { status: 'done_with_concerns', diagnostics: {} }
+  assert.equal(checkImplStatus(impl), null)
 })
 
 // —— matchesPlanFilter（Bug 10 修复）——
