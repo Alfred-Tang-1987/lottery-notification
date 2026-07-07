@@ -454,7 +454,7 @@ function normalizeFilePath(p) {
 白名单 `(src|tests|docs|data|logs|lib|app|internal|cmd|.claude)` 覆盖 JS/Go/Python 项目常见顶层目录。`unionFiles` / `findingsOf` / `groupFindingsByFile` 3 处调用归一化，防 cross-reviewer 重叠检测漏报（§13j）。
 
 **W1-5e Lessons Learned Exemption**（2 段 prompt + lessonsPath 注入，高度通用）：
-- **specReview 端**：`## Lessons Learned Exemption` 段落——implementor 按 `{{lessonsPath}}` 中 lesson 加固（commit message / 代码注释含 L-YYYYMMDD-NN 编号）NOT EXTRA。判定流程：查 L-编号 → 读 lessons.md 核对 minimal + on-target → 满足则豁免，否则仍按 EXTRA 报告。
+- **specReview 端**：`## Lessons Learned Exemption` 段落——implementor 按 `{{lessonsPath}}` 中 lesson 加固（commit message / 代码注释含 `L-<timestamp>` 编号，如 `L-20260701T103320Z`，与 lessonDistiller 的 `## L-<ts>` 格式一致）NOT EXTRA。判定流程：查 L-编号 → 读 lessons.md 核对 minimal + on-target → 满足则豁免，否则仍按 EXTRA 报告。**implementor prompt 配套指引**（Q-F2, 2026-07-07）：加固时在代码注释中标 `// L-<ts>: ...` 让 reviewer 可定位。
 - **qualityReviewer 端**：`## Lessons Learned Exemption (限定维度硬性豁免)` 段落——lesson 加固的"合理副作用"3 维度不报 finding：over-engineering / single-use helper、函数超 50 行、helper/abstraction 数量。不豁免的维度（lesson 加固不应损害）：命名清晰度、类型注解、错误处理、深层嵌套、mutation、硬编码值。
 - **lessonsPath 注入**：`runReviewRound` 的 specReview / qualityReviewer `buildPrompt` 调用新增 `lessonsPath: cfg.lessons_path` 参数。
 - **hunter 不改**：lesson 加固与 hunter 目标同向（都是防静默失败），不会振荡。
@@ -467,6 +467,13 @@ function normalizeFilePath(p) {
 - **finalReport step 6**：halt 后主动 commit lessons.md（best-effort，不阻塞 manifest 写入）。确保下次 bootstrap 能读到最新 lessons 注入 implementor。
 
 **测试守护**：sync.test 新增 W1 移植结构性断言（Discipline 段落 / Task Scope Boundary / Exemption 段落 / lessonsPath 注入 / 分类 dirty_tree / finalReport commit lessons.md）+ QC-4 字节守护扩展 `normalizeFilePath` / `unionFiles`。helpers.test 新增 5 个 normalizeFilePath 单元测试。
+
+**W1 修复（2026-07-07 三维复核后）**：
+- **Q-F1**：Exemption 编号格式从 `L-YYYYMMDD-NN`（OTC 格式）改为 `L-<timestamp>`（本仓库 lessonDistiller 的 `## L-<ts>` 格式），防 reviewer 按示例查找找不到实际条目。
+- **Q-F2**：implementor Discipline 段落加标编号指引——加固时在代码注释中标 `// L-<ts>: ...`，让 reviewer 可定位（Exemption 闭环配套输入）。
+- **H-F1**：orchestrator bootstrap 返回后加 `if (boot.evidence?.dirty_tree) halt(...)` 守卫，防脏工作树上跑 implementor 混入残留改动。
+- **H-F2**：bootstrap step 5a 从 `git add && git commit` 改为 `git commit <path>`（一步到位不预 staged），防 add 成功 commit 失败后 5b reset --hard 清除 staging。
+- **H-F3**：finalReport step 6 加空 lessonsPath 防御（空则 skip），防空串让 `git status --porcelain` 查全工作树 → 误 commit 全工作树。
 
 
 ### 5.4 lesson 自动提炼（distiller agent，2026-07-03）

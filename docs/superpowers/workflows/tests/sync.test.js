@@ -211,6 +211,37 @@ test('W1 移植: implementor Discipline + Task Scope Boundary + Lessons Learned 
     'finalReport commit message 须含 runTs（W1-1）')
 })
 
+test('W1 修复: Q-F1 Exemption 编号格式 + Q-F2 implementor 标编号 + H-F1 dirty_tree halt + H-F2 commit <path> + H-F3 空 lessonsPath 防御', () => {
+  // Q-F1 (2026-07-07): Exemption 段落编号格式须用 L-<timestamp>（与 lessonDistiller 的 ## L-<ts> 一致），
+  //   非 L-YYYYMMDD-NN（OTC 仓库格式，本仓库 lessonDistiller 不用此格式）
+  assert.doesNotMatch(runSrc, /L-YYYYMMDD-NN/,
+    'Exemption 段落不得用 L-YYYYMMDD-NN 格式（Q-F1：与本仓库 lessonDistiller 的 L-<ts> 不一致）')
+  assert.match(runSrc, /L-<timestamp>|L-\d{8}T\d{6}Z/,
+    'Exemption 段落须用 L-<timestamp> 格式或示例（Q-F1：与 lessonDistiller 一致）')
+
+  // Q-F2 (2026-07-07): implementor prompt 须要求加固时标 L-xxx 编号
+  //   否则 reviewer 找不到编号 → Exemption 永远不触发 → 防振荡闭环失效
+  assert.match(runSrc, /lesson.*id|L-<timestamp>|标.*编号|reference.*lesson/i,
+    'implementor prompt 须有标 L-xxx 编号指引（Q-F2：Exemption 闭环配套输入）')
+
+  // H-F1 (2026-07-07): orchestrator bootstrap 返回后须检查 dirty_tree，残留 true 则 halt
+  //   否则脏工作树上跑 implementor → commit 混入残留改动
+  assert.match(runSrc, /boot\.evidence\.dirty_tree|dirty_tree.*halt/i,
+    'orchestrator bootstrap 后须检查 dirty_tree（H-F1：残留 true 则 halt）')
+
+  // H-F2 (2026-07-07): bootstrap step 5a 须用 git commit <path>（非 git add && git commit）
+  //   防 add 成功 commit 失败后 5b reset --hard 清除 staging → lessons.md 丢失
+  assert.doesNotMatch(runSrc, /git add.*&&.*git commit.*lessons/i,
+    'bootstrap step 5a 不得用 git add && git commit（H-F2：staging 被 reset 清除）')
+  assert.match(runSrc, /git commit.*lessons|git commit.*<lessonsPath>/i,
+    'bootstrap step 5a 须用 git commit <path>（H-F2：一步到位不预 staged）')
+
+  // H-F3 (2026-07-07): finalReport step 6 须有空 lessonsPath 防御
+  //   空串 → git status --porcelain 查全工作树 → 误 commit 全工作树
+  assert.match(runSrc, /empty.*skip|lessonsPath.*empty|若.*lessonsPath.*为空|skip this step/i,
+    'finalReport step 6 须有空 lessonsPath 防御（H-F3：空则跳过）')
+})
+
 test('S3: lessonsText must not call formatLessons (replaced by Tier 1 + Tier 2)', () => {
   // S3 (2026-07-06): spec §5.5 改进 B 说"formatLessons 拆成 formatUniversalLessons + formatDomainLessons"（替换语义）。
   //   保留旧 formatLessons 调用会导致 keyword 匹配重复注入——

@@ -788,7 +788,7 @@ Steps:
 4. git log → 运行 git log --format=%s -n 200，**原样复制**每个 commit subject 第一行到 git_log_subjects（string[]，最多 200 条）。**不要解析、提取、转换、过滤、去重**——orchestrator 用正则从 subjects 确定性提取 completed，你只负责忠实复制 git log 输出。同时仍返回 completed（你最好的 task-id 提取，作 fallback，但不再作为单一事实源）。
 5. git status --porcelain → dirty_tree. If dirty_tree=true (uncommitted changes from a crashed previous run, §6.2 半提交自愈), classify and handle each change (W1-1/W1-4, 2026-07-07):
    a. Workflow artifact changes:
-      - lessons.md (path = lessons_path read in step 1) has changes → git add <lessonsPath> && git commit -m "chore(workflow): auto-commit lessons.md from interrupted run" (preserve knowledge base, best-effort).
+      - lessons.md (path = lessons_path read in step 1) has changes → git commit -m "chore(workflow): auto-commit lessons.md from interrupted run" <lessonsPath> (preserve knowledge base, best-effort; H-F2 2026-07-07: 用 git commit <path> 一步到位不预 staged, 防 add 成功 commit 失败后 5b reset --hard 清除 staging).
       - runs/ and .workflow/ changes → git checkout -- runs/ .workflow/ (discard, regenerable).
    b. Remaining changes = implementor half-done → git reset --hard HEAD to clean.
    c. Re-run git status --porcelain to confirm clean; set dirty_tree=false in evidence.
@@ -806,6 +806,7 @@ RED FLAG: evidence 必须是真实读取结果，绝不编造。`,
 - DO NOT run \`git commit\` or \`git add\`. Committing is handled by a separate COMMIT agent after review passes.
 - Your job is to write code + tests only. Leave changes in the working tree uncommitted.
 - If you think committing is necessary, report status=blocked instead.
+- When applying a lesson from {{lessons}} to harden code (W1-5e, 2026-07-07), add a comment on the hardened line(s) referencing the lesson id (e.g. \`// L-20260701T103320Z: guard null per lesson\`). This lets spec-reviewer apply Lessons Learned Exemption and not flag your hardening as EXTRA.
 
 Inputs: specPath={{specPath}} testCommand={{testCommand}} buildCommand={{buildCommand}} planFile={{planFilePath}} taskId={{taskId}} fixIssues={{fixIssues}}
 {{referencePaths}}
@@ -864,7 +865,7 @@ Conversely, if the implementor adds methods/tests NOT in this task's plan sectio
 ## Lessons Learned Exemption (防 reviewer ↔ implementor 振荡)
 W1-5e (2026-07-07): workflow 自主学习闭环——implementor 按 {{lessonsPath}} 中记录的 lesson 加固代码时，该加固虽不在 plan section 字面要求内，但 NOT EXTRA。否则 reviewer 报 EXTRA → implementor 删 → 下轮 implementor 又按 lesson 加回来 → OSCILLATING halt。
 判定流程（疑似 EXTRA 时执行）：
-1. 查 commit message / 代码注释是否有 L-YYYYMMDD-NN 编号（如 L-2026-07-07-002）。
+1. 查 commit message / 代码注释是否有 L-<timestamp> 编号（如 L-20260701T103320Z，与 lessons.md 中 ## L-<ts> 条目格式一致）。
 2. 有 L-xxx 编号 → 读 {{lessonsPath}} 中该 lesson 条目，核对加固是否 minimal 且 on-target（只修 lesson 描述的问题，未越界扩展）。
 3. minimal + on-target → NOT EXTRA（lessons learned 闭环修复）。
 4. 无 L-xxx 编号 / 加固超出 lesson 范围 / lesson 不存在 → 仍按 EXTRA 报告。
@@ -895,7 +896,7 @@ lessonsPath={{lessonsPath}}
 - Did this change create new large files or significantly grow existing ones? (Don't flag pre-existing sizes — focus on what this change contributed.)
 
 ## Lessons Learned Exemption (限定维度硬性豁免，防 reviewer ↔ implementor 振荡)
-W1-5e (2026-07-07): implementor 按 {{lessonsPath}} 中记录的 lesson 加固代码时（commit message / 代码注释含 L-YYYYMMDD-NN 编号），以下维度**不报 finding**：
+W1-5e (2026-07-07): implementor 按 {{lessonsPath}} 中记录的 lesson 加固代码时（commit message / 代码注释含 L-<timestamp> 编号，如 L-20260701T103320Z），以下维度**不报 finding**：
 - over-engineering / single-use helper（lesson 加固常加 helper）
 - 函数超 50 行（lesson 加固常让函数变长）
 - helper / abstraction 数量（lesson 加固常引入新抽象）
@@ -1049,7 +1050,7 @@ Steps:
    If output is empty, append "## Working Tree (clean)" — no uncommitted changes（likely_source=gate restored 时预期如此）。
    Also include: if the halt was due to a failed review round (not model_unavailable/agent_error/gate/commit), add a "## Cross-Reviewer Findings (grouped by file)" section to blocked.md: group all findings from the halted task's blocked_info by file, and highlight files where ≥2 reviewers reported findings with ⚠ CROSS-REVIEWER markers. This helps spot reviewer disagreements at a glance. Use the blockedInfo.raw field to extract reviewer findings — the raw field contains the diagnostics from spec/quality/hunter reviews.
 5. Lessons ({{lessonsAutoDistill}}): If lessonsAutoDistill=true AND mode=halted: lesson-distiller agent has ALREADY been invoked by orchestrator before this finalReport call — it read lessonsPath, extracted reusable root causes, and updated lessons.md itself. You do NOT need to touch lessonsPath. If distiller failed (quota/error), orchestrator logged it and proceeded — lessonsPath may be stale but manifest write must proceed. If lessonsAutoDistill=false or mode=done: lessonsPath untouched.
-6. Commit lessons.md (W1-1, 2026-07-07): If mode=halted, after step 5, check if {{lessonsPath}} has uncommitted changes: run "git status --porcelain {{lessonsPath}}". If output is non-empty → git add {{lessonsPath}} && git commit -m "chore(workflow): auto-commit lessons.md from run {{runTs}}". This ensures the knowledge base is persisted (bootstrap reads it to inject implementor). BEST-EFFORT — if git commit fails, do NOT block manifest write; record the error in summary.
+6. Commit lessons.md (W1-1, 2026-07-07): If mode=halted AND {{lessonsPath}} is non-empty (H-F3 2026-07-07: 空 lessonsPath 则 skip this step entirely — no lessonsPath configured → nothing to commit; 空 lessonsPath 会让 git status --porcelain 查全工作树 → 误 commit 全工作树), after step 5, check if {{lessonsPath}} has uncommitted changes: run "git status --porcelain {{lessonsPath}}". If output is non-empty → git commit -m "chore(workflow): auto-commit lessons.md from run {{runTs}}" {{lessonsPath}} (H-F2: 用 git commit <path> 一步到位不预 staged). This ensures the knowledge base is persisted (bootstrap reads it to inject implementor). BEST-EFFORT — if git commit fails, do NOT block manifest write; record the error in summary.
 7. Print a digest summary (counts: done/blocked, total tasks, per-plan gate result).
 
 Return {evidence:{manifest_path}, summary: <digest>}.
@@ -1598,6 +1599,9 @@ try {
 }
 if (boot.halted) { return await halt(null, null, { reason: boot.reason, diag: boot.diag }) }
 if (boot.status !== 'ok') { return await halt(null, null, { reason: `bootstrap ${boot.status}`, diag: boot.diagnostics }) }
+// H-F1 (2026-07-07): bootstrap step 5d 分类处理失败时 leave dirty_tree=true，orchestrator 须检查并 halt
+// 否则脏工作树上跑 implementor → commit 混入残留改动 → gate 在含残留的 SHA 上验证
+if (boot.evidence?.dirty_tree) { return await halt(null, null, { reason: 'bootstrap dirty_tree cleanup failed', diag: { summary: boot.summary || 'dirty_tree=true after bootstrap step 5 classification' } }) }
 // P1-bootstrap-sanitize (2026-07-05): bootstrap agent 偶返 plan-scoped task_id（"plan-06/T1"）而非裸 "T1"。
 // taskKey/commitSubject 会再拼一层 plan 前缀 → feat(plan-06/plan-06/T1) + completed 比对 key
 // (plan-06/plan-06/T1) 不匹配 state.completed (plan-06/T1) → 已完成 task 误判 pending → 重跑（实战 aae0ce2 bug）。

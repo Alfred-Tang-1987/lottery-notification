@@ -294,7 +294,7 @@ plan frontmatter 的 `model` 字段决定 implementor 用 sonnet 还是 opus：
 - **业务代码必须可测**——`test_command` 跑不通时 implementor/gate 会失败（项目未初始化时 bootstrap 容忍，但 implementor 跑测试需要 pyproject.toml 等就绪）
 - **commit convention**：`feat(plan-X/T-Y): <title>`——**全新跑**靠 git log 识别已完成 task 并跳过（这是续跑的单一体机制，见 §7.1）
 - **implementor 禁 commit**（W1-2, 2026-07-07）：implementor agent 不会自行 `git commit`/`git add`，只写代码 + 测试留工作树，由独立 commit agent 在 review 通过后提交。若 implementor 报 blocked 且需要 commit 才能继续，说明 plan 设计有误。
-- **lessons learned 编号约定**（W1-5e, 2026-07-07）：implementor 按 `lessons.md` 中 lesson 加固代码时，须在 commit message / 代码注释中标注 `L-YYYYMMDD-NN` 编号（如 `L-2026-07-07-002`）。specReview 据此编号判定加固 NOT EXTRA（防 reviewer 报 EXTRA → implementor 删 → 振荡）；qualityReviewer 对 lesson 加固的 over-engineering / 函数超 50 行 / helper 数量 3 维度豁免（命名/类型/错误处理等不豁免）。
+- **lessons learned 编号约定**（W1-5e, 2026-07-07）：implementor 按 `lessons.md` 中 lesson 加固代码时，须在代码注释中标注 `L-<timestamp>` 编号（如 `// L-20260701T103320Z: guard null per lesson`，与 lessonDistiller 生成的 `## L-<ts>` 格式一致）。specReview 据此编号判定加固 NOT EXTRA（防 reviewer 报 EXTRA → implementor 删 → 振荡）；qualityReviewer 对 lesson 加固的 over-engineering / 函数超 50 行 / helper 数量 3 维度豁免（命名/类型/错误处理等不豁免）。
 - **不降级继续**：限额 halt 后不会用弱 model 继续开发，只保存进度等恢复（§2.4 核心原则）
 - **错误恢复**：bootstrap/get-ts/implementor/review/simplify/commit/gate/finalReport **所有** agent 路径都有 quota 捕获 + 兜底，不会裸 crash 丢进度
 
