@@ -195,11 +195,13 @@ let state = {
   currentPlan: null,          // 当前执行的 plan id（仅内存，不写入 manifest；§13a `state.currentPlan = plan.id`）
   completed: [],              // 已完成 task key（plan-XX/TY）from bootstrap or commit
   plans: [],                  // bootstrap 解析的 plan 列表（P0-2，§13a main 流程 `state.plans = boot.evidence.plans`，finalReport stateJson 须含 plans 保 manifest 完整性）
-  perTask: {},                // {taskKey: {planId, status, model, review_rounds, files_touched_per_round,
+  perTask: {},                // {taskKey: {planId, status, model, audit_required, review_rounds, files_touched_per_round,
                               //   review_history, commit_sha, simplify_reverted, simplify_review_findings,
                               //   destructive_review_failed, destructive_review_findings, concerns, blocked_info}}
                               //   taskKey = `plan-{seq}/{task.id}`（plan-scoped，防跨 plan 同名 task 覆盖）
                               //   S10 (2026-07-07): 统一经 lib.js taskKey(seq, taskId) 构造，防 ad-hoc padStart 位数不一致
+                              //   audit_required (Task 4, 2026-07-08): refactor 类 task 标记，触发 implementor AUDIT 阶段（§5.0/§13l）
+                              //   ensurePerTaskDefaults 共 17 字段（finalReport prompt 清单为权威源）
   failedApproaches: {},       // {taskKey: [{reason, error}]} 跨 session 失败方案（bootstrap 扫 runs/ 提取，key 已 plan-scoped）
   taskLessons: {},            // {taskKey: [lesson]} bootstrap 按 task 标题关键词匹配（S3：存储用 plan-scoped key）
   taskWriteFiles: {},         // {taskKey: [file]} bootstrap 提取的 plan declared write_files（S3：存储用 plan-scoped key）
@@ -288,6 +290,10 @@ switch (agentReturn.status) {
                        ▼
               mark task committed → 写 manifest → 下一个 task
 ```
+
+### 5.0 AUDIT 阶段（refactor 类 task，Pre-RED 核查）
+
+refactor 类 task（frontmatter `Type: refactor` 或 brief 含 `替换/去重/抽取/行为不变/逐字对齐/refactor/extract` 等关键词）在 implementor dispatch 内、RED 之前执行 AUDIT 阶段：用 Grep/Read 工具核查 brief 对现状代码的假设（site 数/文本一致性/控制流/字面量），产出 `.audit/<taskKey>.md`。差异分级响应：无差异/有意变体带证据 → 进 RED；brief 缺陷/拿不准/工具失败 → `status='needs_audit_fix'` + `audit_reason`（brief_defect/intentional_variant_unclear/tool_failure）→ `dispatchImpl` halt `reason='audit fix needed'` → 人工修 brief 后 resume 重审。非 refactor task opt-out（`{{auditDirective}}` 默认空串，零影响）。详见 §13l。
 
 ### 5.1 为什么 review 是 rounds 而非独立循环（Eng C1）
 
@@ -828,7 +834,7 @@ return {result: 'done', perTask: state.perTask}
 | role | prompt 核心职责 | model | evidence 必填（§13c） |
 |---|---|---|---|
 | `bootstrap` | 读 config（§11.1）+ plan files（§13e 生成 frontmatter、叶子优先解析）+ git log（completed）+ dirty_tree（**分类自愈** W1-1/W1-4 §5.6：lessons.md commit / runs+.workflow discard / implementor 半成品 reset）+ in_progress（扫 `runs/*/manifest.json`，§13c） | sonnet | config, plans[], completed[], dirty_tree, in_progress, failed_approaches[], task_lessons[], task_write_files[] |
-| `implementor` | TDD（RED→GREEN→REFACTOR），跑 `test_command`，self-review；**Discipline 禁 git commit/add**（W1-2，§5.6）；**`build_command` 非空时 GREEN 前跑构建验证可构建性**（P1-11，§11.1 build_command 字段）；BLOCKED 时填 diagnostics；done_with_concerns 时填 concerns[] | task.model\|\|sonnet | tests_exit_code, files_changed[], pytest_summary |
+| `implementor` | TDD（RED→GREEN→REFACTOR），跑 `test_command`，self-review；**Discipline 禁 git commit/add**（W1-2，§5.6）；**`build_command` 非空时 GREEN 前跑构建验证可构建性**（P1-11，§11.1 build_command 字段）；**refactor 类 task（audit_required=true）先 AUDIT 再 RED**（§5.0/§13l，`{{auditDirective}}` 注入 AUDIT_DIRECTIVE）；BLOCKED 时填 diagnostics；done_with_concerns 时填 concerns[] | task.model\|\|sonnet | tests_exit_code, files_changed[], pytest_summary |
 | `specReviewer` | 代码 vs spec（`spec_path`）逐行比对，记 files_touched；**Task Scope Boundary**（W1-5a，§5.6：future task 不算 MISSING）；**Lessons Learned Exemption**（W1-5e，§5.6：lesson 加固 NOT EXTRA） | opus | status, issues[] |
 | `qualityReviewer` | 质量/架构/边界/类型/不可变性，记 files_touched；**Lessons Learned Exemption 限定维度硬性豁免**（W1-5e，§5.6：over-engineering/函数超 50 行/helper 数量豁免；命名/类型/错误处理/嵌套/mutation/硬编码不豁免） | opus | status, issues[] |
 | `hunter` | 静默失败/吞错/bad fallback（ECC silent-failure-hunter 语义），记 files_touched。**只读审查**：禁止跑 pytest/ruff/build（那是 implementor/gate 职责）；项目特定静默失败纪律经 `silent_failure_context` config 注入，hunter 优先核查 | sonnet | status, silent_failures[] |
@@ -1045,6 +1051,86 @@ bootstrap `evidence.completed` 不稳定：plan-06/T6d 有 feat `b08e3e7` + fix 
 - SCHEMAS.bootstrap evidence 加 `git_log_subjects`（required + 字段定义）
 
 **守护**：sync QC-4 字节比较 `bareTaskId`/`dropParentTasks`/`extractCompletedFromSubjects` 函数体（lib.js ↔ run-plans.js inline）；helpers.test 含三个 REGRESSION 用例（plan-06/T1 双重前缀、T6 非叶子、T6d feat+fix 漏识别）；sync S6 断言跟进 8→9 evidence 字段。
+
+### 13l. AUDIT 阶段（refactor 类 task Pre-RED 核查，2026-07-08）
+
+**动机**：refactor 类 task 的 brief 常含「现状代码有 N 处可替换为 X」「逐字对齐 Y」「行为不变」等假设。implementor 直接 RED 时，若 brief 假设与现状代码不符（site 数错/文本变体/控制流漏算/字面量漂移），RED 测试会基于错误前提 → 假绿或反复修测试 → 浪费 review rounds + 可能落盘错误重构。AUDIT 阶段在 RED 前用工具核查 brief 假设，差异 → 阻断修 brief 而非盲跑 RED。
+
+**触发机制（双层 guard）**：
+
+1. **bootstrap LLM 主路径**：bootstrap agent 读 plan frontmatter 的 `Type` 字段（`trim().toLowerCase()`）+ 扫 task brief 文本匹配 `AUDIT_REFACTOR_KEYWORDS` 正则。`audit_required = (type === 'refactor') OR (brief matches keyword regex)`。bootstrap 读完整 brief 是主路径（LLM 能读 plan 文件 body）。
+2. **runtime 正则兜底**：`runTask` 初始 dispatch 前，若 `state.perTask[tk].audit_required` 仍为 false（bootstrap 漏读/幻觉），runtime 用同一 `AUDIT_REFACTOR_KEYWORDS` 正则重算 brief 文本 → 命中则 `audit_required=true` 回填 perTask。
+3. **`AUDIT_REFACTOR_KEYWORDS`**（lib.js + run-plans.js inline，sync QC-4b 字节守护）：`/(替换|去重|抽取|行为不变|逐字对齐|N 处可替换|refactor|extract)/i`。初版从 2026-07-07 simplification 7 处缺陷归纳（D13），随实践迭代。
+
+**runtime fallback 局限**：runtime orchestrator 无 fs，正则只扫 `task.title` + `task.model` 等 frontmatter 可得字段，**不扫 plan 文件 body 内的 brief**（plan 文件体由 bootstrap LLM 读取）。故 bootstrap 漏读 + brief 仅在 body 含关键词时 runtime 兜底失效——但 bootstrap LLM 是主路径，且 `Type: refactor` frontmatter 标注也能触发 audit_required，多源降低漏检。
+
+**5 项核查清单（A1-A5）+ 工具约束**（`AUDIT_DIRECTIVE` 常量，lib.js + run-plans.js inline，sync QC-4b 字节守护）：
+
+| 项 | 核查动作（须用指定工具） | 什么算差异 |
+|---|---|---|
+| A1 site 数 | Grep 工具精确搜索 brief 声称的 pattern，数实际命中 | brief 说 N 处，实际 M 处（M≠N）→ 差异 |
+| A2 文本一致 | Read 工具读取各 site 后 diff 待去重文本 | 多类变体 → 差异 |
+| A3 控制流 | 列出重构涉及的控制流关键路径（if/return/continue/break/短路/await 顺序，或被调函数返回值影响分支），trace 重构前后；**Read 工具读取被调函数定义并摘录相关注释**。**不管判断一致与否，A3 推理过程必须写进报告（含 brief 声明 + 注释摘要 + 你的判断）** | brief 声明的控制流与实际不符 → 差异 |
+| A4 行号/签名 | Grep 搜索 brief 提到的函数名/签名，核对行号 + 参数 | 仅行号漂移 → 无害（记录即可）；符号不存在 → 缺陷（按 A1 处理） |
+| A5 字面量 | Read 工具提取 brief 给的目标字面量（reason/diag/string），与现状对应字段 diff | 字面量位置/内容不符 → 差异 |
+
+**工具约束（D17）**：必须用 Grep（精确搜索）和 Read（读函数定义）；**不得用 shell 做字符串处理**（跨平台/安全）。orchestrator runtime 无 fs 无 shell，AUDIT 由 implementor subagent 在 dispatch 内执行（有 Grep/Read/Bash 工具访问）。
+
+**产出**：`.audit/<taskKey>.md`（覆盖写入）。若 AUDIT 适用但报告缺失 → 不得进入 RED（强约束）。
+
+**A3 强制可审计（D4/D12）**：A3 推理过程**不管判断一致与否都必须写进报告**（含 brief 声明 + 注释摘要 + 你的判断）。这是 §5.1 局限的兜底——review 是 rounds 而非独立循环，语义漏检靠 A3 traceability 事后追溯。
+
+**差异分级响应**：
+
+| 分级 | 响应 |
+|---|---|
+| 无差异 / 仅 A4 行号漂移 | 进 RED |
+| A1/A2/A5 差异且能判定为「有意变体」**+ 有证据**（Read 读到的 schema 字段/注释/代码逻辑能解释为何 brief 简化说法与现状不一致但仍合理；仅凭感觉不算） | 报告标注「有意变体 + 证据」→ 进 RED |
+| A1/A2/A3/A5 差异且判定为「brief 缺陷」 | STOP，`status='needs_audit_fix'`，`audit_reason='brief_defect'` + 差异清单 |
+| 拿不准是有意变体还是缺陷 | STOP，`status='needs_audit_fix'`，`audit_reason='intentional_variant_unclear'`（拿不准时阻断比强行实现安全） |
+| 工具执行失败（Grep/Read 报错）或 .audit/ 写入失败 | STOP，`status='needs_audit_fix'`，`audit_reason='tool_failure'`（无法核查时不能盲跑 RED） |
+
+**状态机**：
+
+```
+bootstrap (Type: refactor OR keyword match) → state.perTask[tk].audit_required = true
+   ↓
+runTask 初始 dispatch 前：runtime fallback 正则重算（D15 双层 guard）→ auditRequired 回填 perTask
+   ↓
+implementor dispatch（audit_required=true → auditDirective 注入 AUDIT_DIRECTIVE 常量；=false → 空串 opt-out）
+   ↓
+implementor 在 RED 前执行 AUDIT（Grep/Read，写 .audit/<taskKey>.md）
+   ↓
+├─ 无差异 / 有意变体带证据 → 进 RED → 正常 TDD 流程
+└─ brief 缺陷 / 拿不准 / 工具失败 → status='needs_audit_fix' + audit_reason
+   ↓
+dispatchImpl 检测 needs_audit_fix（在 model_unavailable 之前，更具体 status 先查）→ halt
+   reason: 'audit fix needed', diag: { ...impl.diagnostics, audit_reason, taskKey }
+   ↓
+halt → finalReport 写 .workflow/blocked.md（按 audit_reason 分类渲染，见下）+ manifest
+   ↓
+[人工介入] controller 修 brief / 确认有意变体 / 修工具环境 → resume
+   ↓
+resume 重跑该 task → bootstrap 重读 plan（含修过的 brief）→ 重算 audit_required → 重审
+```
+
+**与现有机制交互**：
+
+- **复用 halt/blocked.md/resume**：AUDIT 不新增 control flow 节点——`needs_audit_fix` 是 implementor schema status enum 的新值（lib.js + run-plans.js inline SCHEMAS.implementor，sync 守护），`dispatchImpl` 在 `model_unavailable` 检查之前识别并 halt（更具体 status 先查，dispatchImpl-retry.test 守护）。halt 走 §8.2 + §13h 同路径（`haltLikelySource('audit fix needed')` → `'unknown'`，无工作树脏状态），blocked.md 由 finalReport 写。
+- **`haltLikelySource` audit 映射**：`'audit fix needed'` 自然落空到 `'unknown'`（无 dirty tree 状态——AUDIT 在 RED 前执行，未写业务代码）。lib.js 注释明确（Task 1，2026-07-08）。
+- **`blocked.md` 按 `audit_reason` 分类渲染**（finalReport prompt，lib.js + run-plans.js inline，sync 守护）：
+  - `brief_defect`：「## AUDIT: Brief 与现状代码不一致」+ 差异清单 + Action「修正 plan brief 后 resume，bootstrap 会重读重审」
+  - `intentional_variant_unclear`：「## AUDIT: 无法判定是否有意变体」+ 差异 + Action「确认是有意变体（在 brief 标注理由）还是缺陷（修 brief），resume」
+  - `tool_failure`：「## AUDIT: 核查工具执行失败」+ 失败原因 + Action「检查文件系统/工具可用性后 resume」
+- **perTask 持久化**：`audit_required` 进 `ensurePerTaskDefaults`（17 字段之一，§4.4）+ finalReport manifest `per_task.<taskKey>` 清单（sync S6 守护）。
+
+**局限**：
+
+- **§5.1 语义漏检靠 A3 可追溯**：review 是 rounds 而非独立循环（§5.1），AUDIT 也不是独立的 reviewer——它是 implementor dispatch 内嵌的 Pre-RED 阶段。语义级漏检（如 brief 说的「行为不变」实际有边角行为差异）无法在 AUDIT 100% 检出，但 A3 强制可审计保证事后可追溯（audit 报告留痕 + 注释摘要 + 判断记录），reviewer 发现问题可对照 audit 报告定位。
+- **§5.2 关键词迭代**：`AUDIT_REFACTOR_KEYWORDS` 初版从 2026-07-07 simplification 7 处缺陷归纳，随实践迭代（D13）。漏检关键词 → audit_required=false → 跳过 AUDIT。`Type: refactor` frontmatter 标注是确定性触发，建议 plan 作者对 refactor 类 task 显式标注。
+- **§5.4 needs_audit_fix 是人工 gate**：halt 后须人工介入（修 brief / 确认有意变体 / 修工具环境）→ resume。不像 `model_unavailable` 有 fallback 链自动保存进度，不像 `OSCILLATING` 有 opus 升级路径。这是设计选择——AUDIT 差异本质是 brief 与现状的不一致，需要人类决策（修 brief 还是确认变体），不应自动绕过。
+
+**与 implementor prompt 集成**：`PROMPTS.implementor` 含 `{{auditDirective}}` 占位（retryNote 后、`## Discipline` 前）。`buildPrompt` defaults 默认空串（非 refactor task opt-out，零影响）；audit_required=true 时调用方传 `AUDIT_DIRECTIVE` 常量注入。helpers.test 守护默认空串无 `{{auditDirective}}` 残留 + 显式传值注入。
 
 ## 14. Wontfix / TODO 决策记录（第 6 轮 review 收敛）
 
