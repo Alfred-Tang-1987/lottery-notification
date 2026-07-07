@@ -635,22 +635,34 @@ export function formatBulletSection(heading, intro, items, renderItem, outro = '
 
 ### Step 10.1 — RED：写失败测试
 
-- [ ] `docs/superpowers/workflows/tests/helpers.test.js` 加测试（buildPrompt 已可测，参照 buildPrompt.test.js）：
+> **复核修正（2026-07-07，实施前）**：原 RED 测试用 `buildPrompt('implementor', ...)` 作 target，但 implementor 是保留变体（非替换，见 Step 10.2 范围修正）→ 原 test 1 在当前代码已 GREEN（implementor 含 model_unavailable/quota），test 2 也无法 opt-out（implementor 无 `{{quotaHaltNote}}` 占位）。改用 specReview（5 个替换 prompt 之一）作 target，断言**常量逐字注入**（GREEN 前不会出现，因当前 specReview 是内联硬编码变体）。
+
+- [ ] `docs/superpowers/workflows/tests/helpers.test.js` 加测试（import 列表加 `QUOTA_HALT_NOTE`；`buildPrompt` 已在 buildPrompt.test.js 可测，helpers.test 同样 import）：
 
 ```javascript
-test('S7 QUOTA_HALT_NOTE: buildPrompt 默认注入限额说明', () => {
-  const out = buildPrompt('implementor', { taskId: 'T1', planId: '01', retryNote: '', fixIssues: '' })
-  assert.ok(out.includes('model_unavailable'), 'implementor prompt 应含限额说明')
-  assert.ok(out.includes('quota'), '应含 quota 关键词')
+test('S7 QUOTA_HALT_NOTE: 常量导出 + 内容', () => {
+  assert.equal(typeof QUOTA_HALT_NOTE, 'string')
+  assert.ok(QUOTA_HALT_NOTE.includes('model_unavailable'), '常量须含 model_unavailable')
+  assert.ok(QUOTA_HALT_NOTE.includes('quota'), '常量须含 quota')
+})
+
+test('S7 QUOTA_HALT_NOTE: buildPrompt 默认注入限额说明（specReview target）', () => {
+  // specReview 是 5 个替换 prompt 之一；GREEN 后其 PROMPTS 模板含 {{quotaHaltNote}} 占位，
+  // buildPrompt 默认注入 QUOTA_HALT_NOTE。GREEN 前是硬编码内联文本（与常量字面相同），
+  // 故此断言对常量子串 `（非 failed），让 orchestrator` 须 GREEN。RED：占位符未替换前 buildPrompt
+  // 输出含字面常量文本（也通过）→ 改测占位符机制：GREEN 后传 quotaHaltNote:'MARKER_X' 应见 MARKER_X。
+  const out = buildPrompt('specReview', { quotaHaltNote: 'MARKER_QUOTA_TEST' })
+  assert.ok(out.includes('MARKER_QUOTA_TEST'), 'specReview 须有 {{quotaHaltNote}} 占位 + buildPrompt 注入')
 })
 
 test('S7 QUOTA_HALT_NOTE: 调用方可 opt-out（传空串）', () => {
-  const out = buildPrompt('implementor', { taskId: 'T1', planId: '01', retryNote: '', fixIssues: '', quotaHaltNote: '' })
-  assert.ok(!out.includes('model_unavailable'), '传空串应关闭限额说明注入')
+  const out = buildPrompt('specReview', { quotaHaltNote: '' })
+  assert.ok(!out.includes('MARKER_QUOTA_TEST'), '传空串应关闭默认注入')
+  assert.ok(!out.includes(QUOTA_HALT_NOTE), 'opt-out 后常量文本不应出现')
 })
 ```
 
-- [ ] 运行确认测试 FAIL（当前 buildPrompt 无默认注入）
+- [ ] 运行确认 test 2/3 FAIL（当前 specReview 无 `{{quotaHaltNote}}` 占位 → buildPrompt 输出字面 PROMPTS.specReview，MARKER_QUOTA_TEST 不出现；但 test 2 断言 includes MARKER → FAIL 是对的）。test 1 也 FAIL（QUOTA_HALT_NOTE 未导出）。
 
 ### Step 10.2 — GREEN：lib.js 加常量 + buildPrompt 默认 + 7 prompt 替换
 
@@ -687,14 +699,19 @@ export function buildPrompt(role, ctx = {}) {
 }
 ```
 
-- [ ] 7 个 prompt（implementor/specReview/qualityReviewer/hunter/commit/gate/lessonDistiller）末尾的限额说明重复文本替换为 `{{quotaHaltNote}}`。**实施时先 grep 定位每个 prompt 中的限额说明文本**（`grep -n "限额耗尽\|model_unavailable\|quota" docs/superpowers/workflows/lib.js`），逐个替换。注意 lessonDistiller 的限额说明措辞略不同（decisions: [{action:'skip'}]），需单独处理或保留。
+- [ ] **实际替换范围（复核修正 2026-07-07，实施前）**：核查当前代码，7 个 prompt 中限额说明文本分 3 类：
+  - **5 个完全匹配常量**（`返回 status:'model_unavailable'（非 failed），让 orchestrator halt 并保存进度。`）：specReview / qualityReviewer / hunter / commit / gate → 替换为 `{{quotaHaltNote}}` 占位符。
+  - **1 个变体**（implementor，含 `（非 failed/blocked）` 而非 `（非 failed）`）：implementor schema enum 含 `blocked` 状态，限额说明须区分 model_unavailable 与 failed/blocked（防 agent 误返 blocked 触发 blocked 升级链而非 halt）。**保留原文不替换**——此变体是有意为之，强行用常量会丢 /blocked 区分。
+  - **1 个完全不同**（lessonDistiller，用 `decisions: [{action:'skip'}]` 而非 model_unavailable status）：**保留原文不替换**。
+  - 故实际替换 **5 处**（非 7）。常量仍统一限额话术，但尊重各 prompt 的 schema 语义差异。implementor/lessonDistiller 不引入 `{{quotaHaltNote}}` 占位符（不替换 → 不受 buildPrompt 默认注入影响）。
+  - 实施时 `grep -n "限额耗尽\|model_unavailable\|quota" docs/superpowers/workflows/lib.js` 定位每个 prompt 中的限额说明文本，逐个核对是否完全匹配常量再替换。
 - [ ] `.claude/workflows/run-plans.js` inline 副本同步（PROMPTS + buildPrompt）
 
 ### Step 10.3 — SYNC + FULL
 
-- [ ] sync.test prompt 字节断言更新基线（7 个 prompt 体变了，`PROMPTS.{role} identical` 测试两端同步即可，但若有逐字内容断言需更新）
-- [ ] 运行 `node --test docs/superpowers/workflows/tests/*.test.js` → 330 tests green（328 + 2：默认注入 + opt-out 两个测试）
-- [ ] CRLF 修复 + git commit: `refactor(workflow): B2-7 S7 QUOTA_HALT_NOTE 常量 + buildPrompt 默认注入 (7 prompt 去重)`
+- [ ] sync.test prompt 字节断言更新基线（5 个替换 prompt 体变了：specReview/qualityReviewer/hunter/commit/gate，`PROMPTS.{role} identical` 测试两端同步即可，但若有逐字内容断言需更新）
+- [ ] 运行 `node --test docs/superpowers/workflows/tests/*.test.js` → 332 tests green（329 + 3：常量内容 + 默认注入 + opt-out）
+- [ ] CRLF 修复 + git commit: `refactor(workflow): B2-7 S7 QUOTA_HALT_NOTE 常量 + buildPrompt 默认注入 (5 prompt 去重, implementor/lessonDistiller 保留变体)`
 
 ---
 
