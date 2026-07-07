@@ -219,8 +219,8 @@ test('v3 runtime wiring: findings_history update + taskCategories declared + OSC
   assert.match(runSrc, /reason: 'review max rounds'[\s\S]{0,200}findings_history/, 'review max rounds halt diag 须含 findings_history')
 
   // H3: finalReport prompt per_task 清单须含 opus_escalated（防 manifest strip 导致重复升级）
-  const finalReportPerTaskIdx = libSrc.indexOf('per_task:{<taskKey>:{planId,status,model,review_rounds,files_touched_per_round,review_history,findings_history,oscillation_escalated_at_round,opus_escalated')
-  assert.notEqual(finalReportPerTaskIdx, -1, 'lib.js finalReport prompt per_task 清单须含 opus_escalated（LOW-3 补 planId 于清单首位）')
+  const finalReportPerTaskIdx = libSrc.indexOf('per_task:{<taskKey>:{planId,status,model,audit_required,review_rounds,files_touched_per_round,review_history,findings_history,oscillation_escalated_at_round,opus_escalated')
+  assert.notEqual(finalReportPerTaskIdx, -1, 'lib.js finalReport prompt per_task 清单须含 opus_escalated（LOW-3 补 planId 于清单首位；Task 4 补 audit_required）')
 
   // H4: formatUniversalLessons inline 副本须与 lib.js 字节一致（容错 silent-failure 变体）
   const libUniversalFn = extractFunctionBody(libSrc, 'function formatUniversalLessons')
@@ -1297,5 +1297,26 @@ test('AUDIT: SCHEMAS.implementor 含 needs_audit_fix + audit_reason', () => {
     'lib.js SCHEMAS.implementor 须含 audit_reason 顶层字段 + 三枚举值（brief_defect/intentional_variant_unclear/tool_failure）')
   assert.match(runSchemas, /audit_reason:\s*\{\s*type:\s*'string',\s*enum:\s*\['brief_defect',\s*'intentional_variant_unclear',\s*'tool_failure'\]\s*\}/,
     'run-plans.js SCHEMAS.implementor 须含 audit_reason 顶层字段 + 三枚举值（inline 同步）')
+})
+
+// ===== Task 4 (2026-07-08): bootstrap audit_required 双层 guard + runTask 初始 dispatch 注入 + runtime fallback =====
+// 守护断言：bootstrap prompt 须指示读 task Type 字段（小写归一）+ 扫 refactor 关键词 → audit_required；
+//   Return schema tasks 须含 audit_required；runTask 初始 dispatch 须据 audit_required 传 auditDirective，
+//   并含 AUDIT_REFACTOR_KEYWORDS 正则作 runtime 兜底（bootstrap 漏读/幻觉时确定性重算）。
+test('AUDIT bootstrap: prompt 含 Type 字段小写归一 + 关键词扫描指示', () => {
+  const boot = promptBody(libSrc, 'bootstrap')
+  assert.match(boot, /Type.*refactor.*audit_required|audit_required.*Type.*refactor/is,
+    'bootstrap prompt 须指示读 task Type 字段（小写归一）并判定 audit_required')
+  assert.match(boot, /toLowerCase/, '须含 Type 字段小写归一（D9）')
+})
+
+test('AUDIT bootstrap: Return schema tasks 含 audit_required 字段', () => {
+  const boot = promptBody(libSrc, 'bootstrap')
+  assert.match(boot, /audit_required/, 'bootstrap Return schema tasks 须含 audit_required')
+})
+
+test('AUDIT runTask: 初始 dispatch 据 audit_required 传 auditDirective + runtime fallback 正则', () => {
+  assert.match(runSrc, /auditDirective.*AUDIT_DIRECTIVE/, 'runTask 初始 dispatch 须传 AUDIT_DIRECTIVE')
+  assert.match(runSrc, /AUDIT_REFACTOR_KEYWORDS/, 'runTask 须含 runtime fallback 正则（D15）')
 })
 
