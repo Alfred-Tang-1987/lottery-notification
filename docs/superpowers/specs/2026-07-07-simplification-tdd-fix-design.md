@@ -134,10 +134,10 @@ Batch 3 (高风险) — runtime 循环拆分
 |---|---|---|---|
 | 基线 | — | — | 307 |
 | Batch 1 | +6 | +0 | 313 |
-| Batch 2 | +17 | +8 + prompt 基线更新 | 330 |
-| Batch 3 | +13 | +5 | 343 |
+| Batch 2 | +19 | +8 + prompt 基线更新 | 332 |
+| Batch 3 | +14 | +5 | 346 |
 
-> **复核修正说明**：初稿 Batch 1 +5（MEDIUM-1 +3）/ Batch 3 +12（decideReviewOutcome 9 用例）。复核后 Batch 1 +6（MEDIUM-1 删 trip-wire 1 → +2，新增 B1-10 通用性守护 +1，净 +6）；Batch 3 +13（decideReviewOutcome halt 子类 6 个 → 10 用例，+1）。累计终点 307+6+17+13 = 343。
+> **复核修正说明（二轮，2026-07-07）**：初稿 Batch 1 +5（MEDIUM-1 +3）/ Batch 2 +17 / Batch 3 +12（decideReviewOutcome 9 用例）。一轮复核后 Batch 1 +6（MEDIUM-1 删 trip-wire 1 → +2，新增 B1-10 通用性守护 +1）/ Batch 3 +13（decideReviewOutcome halt 子类 6 个 → 10 用例，+1）。二轮复核（对照 plan 实际 test() 块计数）进一步修正：Batch 2 +19（B2-1 taskKey=2, B2-2 REVIEW_SOURCES=1, B2-3 makeHalt=2, B2-4 checkImplStatus=4, B2-5 formatBulletSection=3, B2-6 formatFindingItem=3, B2-7 QUOTA_HALT_NOTE=2[默认注入+opt-out], B2-8 STATIC_READONLY=2[默认注入+LESSONS_EXEMPTION_NOTE 传参]）/ Batch 3 +14（recordReviewRound=3, decideReviewOutcome=10, runFixRound=0, S3 simplify helper sync.test=1）。累计终点 307+6+19+14 = 346。**plan 为权威计数**，spec §3.3 表格同步对齐。
 
 ---
 
@@ -754,10 +754,10 @@ if (diffCheck.changed) {
 ### 6.5 B3-2 TDD 流程与风险
 
 **TDD 流程**（D17 决策，不加新单测）：
-1. RED：无（runtime 函数依赖 safeAgent 全局，mock 成本高）
+1. RED：无（可测逻辑已被 lib.js 纯函数测试覆盖——validateAmendResult/validateCheckoutResult 的失败分支已有 helpers.test 覆盖；3 helper 剩余只是 safeAgent 胶水调用，详见 D17 复核修正）
 2. GREEN：run-plans.js 加 3 函数 + 主流程改写
 3. SYNC：spec §5.2 方案 C 加 3 函数说明；sync.test 加 3 函数存在性断言（grep 函数名）
-4. FULL：307 测试全绿（靠回归）
+4. FULL：全量回归全绿（靠现有测试守护行为不变）
 
 **风险（中）**：
 - 3 函数返回 `{ error: true, ... }` vs `{ error: false, ... }` 调用方判断需逐处核对
