@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, formatFindingItem, isQuotaError, errStr, makeHalt, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound, resolveMaxRounds, detectOscillation, distillLessonInput, applyLessonDecisions, formatLessonsForDistill, validateAmendResult, validateCheckoutResult, groupFindingsByFile, formatCrossReviewerNote, bareTaskId, taskKey, dropParentTasks, extractCompletedFromSubjects, extractTaskKey, shouldEscalateOnOscillation, resolveReviewBudget, isFlipFlop, formatLessons, formatUniversalLessons, formatDomainLessons, updateFindingsHistory, formatFindingsHistory, hasRegressed, normalizeFilePath, REVIEW_SOURCES, checkImplStatus, formatBulletSection } from '../lib.js'
+import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, formatFindingItem, isQuotaError, errStr, makeHalt, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound, resolveMaxRounds, detectOscillation, distillLessonInput, applyLessonDecisions, formatLessonsForDistill, validateAmendResult, validateCheckoutResult, groupFindingsByFile, formatCrossReviewerNote, bareTaskId, taskKey, dropParentTasks, extractCompletedFromSubjects, extractTaskKey, shouldEscalateOnOscillation, resolveReviewBudget, isFlipFlop, formatLessons, formatUniversalLessons, formatDomainLessons, updateFindingsHistory, formatFindingsHistory, hasRegressed, normalizeFilePath, REVIEW_SOURCES, checkImplStatus, formatBulletSection, buildPrompt, QUOTA_HALT_NOTE } from '../lib.js'
 
 const ok = { status: 'ok', diagnostics: { files_touched: ['a.py'] } }
 const ok2 = { status: 'ok', diagnostics: { files_touched: ['b.py'] } }
@@ -1267,4 +1267,30 @@ test('S5 formatBulletSection: 基本渲染', () => {
 test('S5 formatBulletSection: 含 intro + outro（多行）', () => {
   const out = formatBulletSection('H', 'intro line', ['x'], x => `- ${x}`, 'outro line 1\noutro line 2')
   assert.equal(out, '## H\nintro line\n- x\noutro line 1\noutro line 2')
+})
+
+// —— S7 QUOTA_HALT_NOTE 常量 + buildPrompt 默认注入（5 prompt 去重，2026-07-07）——
+// 5 个 prompt（specReview/qualityReviewer/hunter/commit/gate）的限额说明文本完全相同，
+// 抽 QUOTA_HALT_NOTE 常量统一真源，PROMPTS 模板用 {{quotaHaltNote}} 占位符，buildPrompt
+// 默认注入常量（opt-out via empty string）。implementor/lessonDistiller 是变体，不替换。
+
+test('S7 QUOTA_HALT_NOTE: 常量导出 + 内容', () => {
+  assert.equal(typeof QUOTA_HALT_NOTE, 'string')
+  assert.ok(QUOTA_HALT_NOTE.includes('model_unavailable'), '常量须含 model_unavailable')
+  assert.ok(QUOTA_HALT_NOTE.includes('quota'), '常量须含 quota')
+})
+
+test('S7 QUOTA_HALT_NOTE: buildPrompt 默认注入限额说明（specReview target）', () => {
+  // specReview 是 5 个替换 prompt 之一；GREEN 后其 PROMPTS 模板含 {{quotaHaltNote}} 占位，
+  // buildPrompt 默认注入 QUOTA_HALT_NOTE。GREEN 前是硬编码内联文本（与常量字面相同），
+  // 故此断言对常量子串 `（非 failed），让 orchestrator` 须 GREEN。RED：占位符未替换前 buildPrompt
+  // 输出含字面常量文本（也通过）→ 改测占位符机制：GREEN 后传 quotaHaltNote:'MARKER_X' 应见 MARKER_X。
+  const out = buildPrompt('specReview', { quotaHaltNote: 'MARKER_QUOTA_TEST' })
+  assert.ok(out.includes('MARKER_QUOTA_TEST'), 'specReview 须有 {{quotaHaltNote}} 占位 + buildPrompt 注入')
+})
+
+test('S7 QUOTA_HALT_NOTE: 调用方可 opt-out（传空串）', () => {
+  const out = buildPrompt('specReview', { quotaHaltNote: '' })
+  assert.ok(!out.includes('MARKER_QUOTA_TEST'), '传空串应关闭默认注入')
+  assert.ok(!out.includes(QUOTA_HALT_NOTE), 'opt-out 后常量文本不应出现')
 })

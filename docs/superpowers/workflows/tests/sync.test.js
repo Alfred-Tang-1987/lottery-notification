@@ -828,13 +828,15 @@ test('P1-6（第 6 轮）: bootstrap prompt 须含 dirty_tree 自愈逻辑（git
 test('P1-7（第 6 轮）: buildPrompt undefined 须渲染为空串（非 "undefined"）', () => {
   // buildPrompt 用 String(ctx[k]) → undefined 渲染为 "undefined" 污染 prompt
   // 修：ctx[k] === undefined 时渲染空串
+  // S7（2026-07-07）: buildPrompt 合并 defaults（{ quotaHaltNote: QUOTA_HALT_NOTE }）→ ctx 变量
+  //   改为 merged。undefined/null 检查仍在（merged[k]），行为不变。正则接受 ctx[k] 或 merged[k]。
   for (const src of [libSrc, runSrc]) {
     const fn = extractFunctionBody(src, 'buildPrompt')
     assert.ok(fn, '须有 buildPrompt 函数')
     // 不得直接 String(ctx[k])（undefined → "undefined"）
     assert.doesNotMatch(fn, /=> \(k in ctx \? String\(ctx\[k\]\)/, 'buildPrompt 不得直接 String(ctx[k])（P1-7：undefined→"undefined"）')
-    // 须检查 undefined 或 null
-    assert.match(fn, /ctx\[k\] (?:===?\s*undefined|!=?\s*null|!==?\s*undefined)/, 'buildPrompt 须检查 undefined/null（P1-7）')
+    // 须检查 undefined 或 null（ctx[k] for pre-S7，merged[k] for post-S7 defaults 合并）
+    assert.match(fn, /(?:ctx|merged)\[k\] (?:===?\s*undefined|!=?\s*null|!==?\s*undefined)/, 'buildPrompt 须检查 undefined/null（P1-7；S7 后用 merged[k]）')
   }
 })
 

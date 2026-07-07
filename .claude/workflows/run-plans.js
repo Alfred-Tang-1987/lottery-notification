@@ -161,10 +161,15 @@ function buildPrompt(role, ctx = {}) {
   if (!tpl) throw new Error(`unknown role: ${role}`)
   // P1-7（第 6 轮）: undefined/null 值渲染为空串（防 "undefined" 污染 prompt）。
   //   key 缺失（k in ctx=false）保留 {{k}} 占位符（debug 用）；key 存在但值为 undefined → 空串。
+  // S7（2026-07-07）: defaults 合并 — quotaHaltNote 默认注入 QUOTA_HALT_NOTE（5 个 prompt 占位符），
+  //   调用方可传 quotaHaltNote: '' 显式 opt-out（空串替换占位符 → 无注入）。implementor/lessonDistiller
+  //   无占位符 → 不受影响。
+  const defaults = { quotaHaltNote: QUOTA_HALT_NOTE }
+  const merged = { ...defaults, ...ctx }
   return tpl.replace(/\{\{(\w+)\}\}/g, (_, k) => {
-    if (!(k in ctx)) return `{{${k}}}`
-    if (ctx[k] === undefined || ctx[k] === null) return ''
-    return String(ctx[k])
+    if (!(k in merged)) return `{{${k}}}`
+    if (merged[k] === undefined || merged[k] === null) return ''
+    return String(merged[k])
   })
 }
 function allGreen(...reviews) { return reviews.every(r => r && r.status === 'ok') }
@@ -835,6 +840,12 @@ const SCHEMAS = {
     } },
 }
 
+// QUOTA_HALT_NOTE（S7, 2026-07-07）—— inline 自 lib.js（去 export）
+// 5 个 prompt（specReview/qualityReviewer/hunter/commit/gate）末尾限额耗尽说明的真源常量。
+// PROMPTS 模板用 {{quotaHaltNote}} 占位符，buildPrompt 默认注入此常量。
+// implementor/lessonDistiller 是变体，不引用此常量。
+const QUOTA_HALT_NOTE = `若遇到 model 限额耗尽（quota/rate-limit/429 错误），返回 status:'model_unavailable'（非 failed），让 orchestrator halt 并保存进度。`
+
 // ===== PROMPTS（inline 自 lib.js Task 6，增强版 bootstrap，去 export）=====
 const PROMPTS = {
   bootstrap: `You are the BOOTSTRAP agent for the workflow orchestrator. Read project state and return structured data. You MAY write YAML frontmatter to plan files that lack it (idempotent). Modify no other files.
@@ -943,7 +954,7 @@ Steps:
 This is a STATIC READ-ONLY review. You may use 'git diff', 'git status', 'find', 'grep'/'rg', and read files to locate and inspect changes. Do NOT run the test suite, ruff, lint, or any build — spec verification is done by reading code, not by running it. Running tests/builds is the implementor's and gate's job, not yours.
 
 Return {status (ok|failed), diagnostics:{files_touched:[...], issues:[<dimension>: <spec requirement>: <code gap or over-build>]}, summary}.
-RED FLAG: ok 仅当三维度全清——逐条 spec 全符合 AND 无越界（lessons learned 修复经 Exemption 判定后不算越界）。绝不模糊通过。越界（spec 未要求的功能，尤其是合规红线禁止类如预测/推荐）必须 failed。issues 要具体（哪条 spec + 代码哪里不符/越界 + file:line）。若遇到 model 限额耗尽（quota/rate-limit/429 错误），返回 status:'model_unavailable'（非 failed），让 orchestrator halt 并保存进度。`,
+RED FLAG: ok 仅当三维度全清——逐条 spec 全符合 AND 无越界（lessons learned 修复经 Exemption 判定后不算越界）。绝不模糊通过。越界（spec 未要求的功能，尤其是合规红线禁止类如预测/推荐）必须 failed。issues 要具体（哪条 spec + 代码哪里不符/越界 + file:line）。{{quotaHaltNote}}`,
 
   qualityReviewer: `You are the QUALITY-REVIEWER (model opus). Review code quality: architecture, boundaries, types, immutability, error handling, naming. Verdict on CURRENT tree.
 
@@ -980,7 +991,7 @@ Categorize issues by ACTUAL severity — not everything is Critical. Acknowledge
 
 Return {status (ok|failed), diagnostics:{files_touched:[...], issues:[{severity: critical|important|minor, title, file, fix}]}, summary}.
 issues 元素 MUST 是 object 且必有 title + fix（severity/file 亦建议）——纯字符串或缺 title/fix 的对象会被 schema 拒绝。
-RED FLAG: ok 仅当无 critical/important 问题。critical/important（架构/安全/正确性）必须 failed；仅 minor 可 ok（记入 issues）。若遇到 model 限额耗尽（quota/rate-limit/429 错误），返回 status:'model_unavailable'（非 failed），让 orchestrator halt 并保存进度。`,
+RED FLAG: ok 仅当无 critical/important 问题。critical/important（架构/安全/正确性）必须 failed；仅 minor 可 ok（记入 issues）。{{quotaHaltNote}}`,
 
   hunter: `You are the SILENT-FAILURE-HUNTER. Hunt swallowed errors, bad fallbacks, missing error propagation, swallowed exceptions, except:pass, broad except hiding bugs, default values masking failures. Verdict on CURRENT tree.
 
@@ -1004,7 +1015,7 @@ This is a STATIC READ-ONLY review. You may use 'git status', 'git diff', 'find',
 
 Return {status (ok|failed), diagnostics:{files_touched:[...], silent_failures:[{title, severity (critical|important|minor), file, line?, fix}]}, summary}.
 silent_failures 元素 MUST 是 object（必有 title + fix；file 强烈建议；severity 可选默认 important）——纯字符串或不带 fix 的对象会被 schema 拒绝。
-RED FLAG: 只报真正的静默失败（会导致 bug 被隐藏），不报刻意的优雅降级（有日志+合理 fallback）。若遇到 model 限额耗尽（quota/rate-limit/429 错误），返回 status:'model_unavailable'（非 failed），让 orchestrator halt 并保存进度。`,
+RED FLAG: 只报真正的静默失败（会导致 bug 被隐藏），不报刻意的优雅降级（有日志+合理 fallback）。{{quotaHaltNote}}`,
 
   simplify: `You are SIMPLIFY. Reduce code: dedupe, remove dead code, tighten naming, lower complexity. Behavior MUST be preserved (tests still pass). Be honest about whether you changed anything.
 
@@ -1058,7 +1069,7 @@ Steps:
 5. git rev-parse HEAD → commit_sha。
 
 Return {status (ok|failed), evidence:{commit_sha, committed_files:[...], tests_at_commit}, summary}.
-RED FLAG: tests exit != 0 时绝不 commit（status=failed）。commit_sha 必须真实。HEAD 消息必须等于 {{commitMsg}}（步骤 4 校验，不符必 amend）。若遇到 model 限额耗尽（quota/rate-limit/429 错误），返回 status:'model_unavailable'（非 failed），让 orchestrator halt 并保存进度。`,
+RED FLAG: tests exit != 0 时绝不 commit（status=failed）。commit_sha 必须真实。HEAD 消息必须等于 {{commitMsg}}（步骤 4 校验，不符必 amend）。{{quotaHaltNote}}`,
 
   contextFetcher: `You are CONTEXT-FETCHER. The implementor requested context (NEEDS_CONTEXT). Find and return it. Read-only.
 
@@ -1090,7 +1101,7 @@ Steps:
 Return {status (ok|failed), evidence:{tests_exit_code, pytest_summary, lint_results:[{command, exit_code}], restored_head}, summary}.
 - restored_head: 步骤 3/4 恢复后执行 'git rev-parse HEAD' 的 40 位 SHA，供 orchestrator 验证基线已恢复。
 - status=ok ONLY if EVERY command exit_code == 0 AND restored_head 非空。
-RED FLAG: every exit_code 必须真实（你在 committed SHA 上亲跑）。必须 checkout 回原 HEAD 并记录 restored_head。任一 exit != 0 → status=failed（包括 lint 命令——架构纪律如层纯度由 lint 强制）。若遇到 model 限额耗尽（quota/rate-limit/429 错误），返回 status:'model_unavailable'（非 failed），让 orchestrator halt 并保存进度。`,
+RED FLAG: every exit_code 必须真实（你在 committed SHA 上亲跑）。必须 checkout 回原 HEAD 并记录 restored_head。任一 exit != 0 → status=failed（包括 lint 命令——架构纪律如层纯度由 lint 强制）。{{quotaHaltNote}}`,
 
   headVerifier: `You are HEAD-VERIFIER. Read-only. Run "git rev-parse HEAD" in the repository root and return the current HEAD SHA.
 
