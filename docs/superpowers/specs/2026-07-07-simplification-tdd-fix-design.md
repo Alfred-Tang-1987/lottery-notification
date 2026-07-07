@@ -51,8 +51,8 @@
 | D10 | B2-4 checkImplStatus reason | 逐字对齐原实现 | 防止 reason 字符串变化破坏现有日志/诊断。复核修正（2026-07-07）：原实现的 reason 把 `${impl.status}` 放在中间（如 `implementor ${impl.status} after retry`），3-arg `reasonPrefix` 函数形只能把 status 放尾部 → 逐字对齐不可能。改签名为 `reasonTemplate='implementor {status}'`，函数内 `reasonTemplate.replace('{status}', impl.status)`，调用方传 `'implementor {status} after retry'` 等。保留 helper 抽取 + D10 + 调用简洁。 |
 | D11 | B2-5 formatBulletSection outro | 支持多行 string | 原 6 个 format* 的 outro 有单行也有多行 |
 | D12 | B2-7 buildPrompt 默认注入 | 内置 quotaHaltNote 默认值 | 调用方不需显式传（opt-out 见 buildPrompt defaults 语义注） |
-| D13 | B2-8 LESSONS_EXEMPTION_NOTE | 函数，调用方传参 | applicableDimensions 随 reviewer 变化 |
-| D14 | B2-8 STATIC_READONLY_NOTE | 进 buildPrompt 默认 | 3 个 reviewer 文本一致（opt-out 见 buildPrompt defaults 语义注） |
+| D13 | ~~B2-8 LESSONS_EXEMPTION_NOTE~~ | **已撤销（三轮复核 2026-07-07）** | 原以为 3 reviewer 共享 Exemption 段；核查实际：specReview 是 EXTRA 检测（9 行 'NOT EXTRA'）、qualityReviewer 是质量维度豁免（12 行 '限定维度硬性豁免'）、hunter 无此段。三段概念不同非参数化差异 → 无可去重公共文本，DROP。 |
+| D14 | B2-8 STATIC_READONLY_NOTE | 函数，调用方传 reviewType（三轮复核修正） | 原决策"进 buildPrompt 默认（3 reviewer 文本一致）"错误：核查实际仅 specReview/qualityReviewer 文本近似（唯一差异 'spec verification' vs 'quality review'），hunter 文本实质不同（'git status, git diff' 顺序 + 'silent-failure hunting' 措辞）。改为 `STATIC_READONLY_NOTE(reviewType)` 函数（D13 风格），仅 specReview/qualityReviewer 2 处去重，hunter 保留原文。不进 buildPrompt 默认（reviewType 随 reviewer 变）。 |
 | D15 | B3-1 decideReviewOutcome action | 10 个 action 枚举 | halt 的 6 个子类用 reason 区分，action 顶层用 halt 统一；非 halt 4 个（break/escalate/continue/fix）。详见 D15 复核修正 |
 | D16 | B3-1 runFixRound | 不用 checkImplStatus | fix-round 的 blocked/failed/needs_context 都是 halt，语义不同于初始 dispatch |
 | D17 | B3-2 测试策略 | 不加新单测 | 可测逻辑已被 lib.js 纯函数测试覆盖，剩余只是胶水调用（详见 D17 复核修正） |
@@ -139,7 +139,10 @@ Batch 3 (高风险) — runtime 循环拆分
 
 > **复核修正说明（二轮，2026-07-07）**：初稿 Batch 1 +5（MEDIUM-1 +3）/ Batch 2 +17 / Batch 3 +12（decideReviewOutcome 9 用例）。一轮复核后 Batch 1 +6（MEDIUM-1 删 trip-wire 1 → +2，新增 B1-10 通用性守护 +1）/ Batch 3 +13（decideReviewOutcome halt 子类 6 个 → 10 用例，+1）。二轮复核（对照 plan 实际 test() 块计数）进一步修正：Batch 2 +19（B2-1 taskKey=2, B2-2 REVIEW_SOURCES=1, B2-3 makeHalt=2, B2-4 checkImplStatus=4, B2-5 formatBulletSection=3, B2-6 formatFindingItem=3, B2-7 QUOTA_HALT_NOTE=2[默认注入+opt-out], B2-8 STATIC_READONLY=2[默认注入+LESSONS_EXEMPTION_NOTE 传参]）/ Batch 3 +14（recordReviewRound=3, decideReviewOutcome=10, runFixRound=0, S3 simplify helper sync.test=1）。累计终点 307+6+19+14 = 346。**plan 为权威计数**，spec §3.3 表格同步对齐。
 >
-> **三轮修正（2026-07-07，Task 10 实施前）**：B2-7 QUOTA_HALT_NOTE 范围从"7 prompt 去重"修正为"5 prompt 去重 + implementor/lessonDistiller 保留变体"（implementor 含 `（非 failed/blocked）` 防 agent 误返 blocked 触发升级链；lessonDistiller 用 `decisions:[{action:'skip'}]` 非 model_unavailable status）。RED 测试从 implementor target 改 specReview target（implementor 非替换目标）。B2-7 测试 +2→+3（常量内容 + 默认注入 + opt-out）。Batch 2 累计 +19→+20，终点 346→347。各实际 commit 后的全量回归数为准（307→313→332→...→347，每 task 累加该 task 实际新增 test() 块数）。
+> **三轮修正（2026-07-07，Task 10/11 实施前）**：
+> - B2-7 QUOTA_HALT_NOTE 范围从"7 prompt 去重"修正为"5 prompt 去重 + implementor/lessonDistiller 保留变体"（implementor 含 `（非 failed/blocked）` 防 agent 误返 blocked 触发升级链；lessonDistiller 用 `decisions:[{action:'skip'}]` 非 model_unavailable status）。RED 测试从 implementor target 改 specReview target（implementor 非替换目标）。B2-7 测试 +2→+3（常量内容 + 默认注入 + opt-out）。
+> - B2-8 STATIC_READONLY_NOTE + LESSONS_EXEMPTION_NOTE：**DROP LESSONS_EXEMPTION_NOTE**（specReview 是 EXTRA 检测 / qualityReviewer 是质量维度豁免 / hunter 无此段——概念不同非参数化差异，无可去重公共文本）。STATIC_READONLY_NOTE 改为**函数** `STATIC_READONLY_NOTE(reviewType)`（D13 风格，非 buildPrompt 默认），仅 specReview/qualityReviewer 2 处去重（hunter 文本不同保留）。B2-8 测试 +2（reviewType 插值 + buildPrompt 注入）不变。
+> - Batch 2 累计 +19→+20，终点 346→347 不变（B2-8 仍 +2）。各实际 commit 后的全量回归数为准（307→313→332→...→347，每 task 累加该 task 实际新增 test() 块数）。
 
 ---
 
@@ -519,29 +522,33 @@ export function buildPrompt(role, ctx = {}) {
 > - **lessonDistiller 完全不同**（用 `decisions: [{action:'skip'}]`，非 model_unavailable status）：**保留原文**。
 > 故实际替换 **5 处**（非 7）。常量仍统一限额话术，但尊重各 prompt 的 schema 语义差异。
 
-### 5.8 B2-8: S8 STATIC_READONLY_NOTE + LESSONS_EXEMPTION_NOTE
+### 5.8 B2-8: S8 STATIC_READONLY_NOTE（三轮复核修正：DROP LESSONS_EXEMPTION_NOTE）
 
-**签名**：
+**复核修正（2026-07-07，实施前）**：原决策假设 3 reviewer prompt 共享 STATIC READ-ONLY + Lessons Exemption 重复段。核查当前代码实际：
+- **STATIC READ-ONLY**：specReview/qualityReviewer 文本近似（唯一差异 `spec verification` vs `quality review`），hunter 实质不同（`git status, git diff` 顺序 + `silent-failure hunting` 措辞）。**仅 specReview/qualityReviewer 2 处可去重**，hunter 保留原文。
+- **Lessons Exemption**：specReview 是 EXTRA 检测（9 行 'NOT EXTRA' 语义）、qualityReviewer 是质量维度豁免（12 行 '限定维度硬性豁免' 语义）、hunter 无此段。三段**概念不同**（非参数化差异）→ **无可去重公共文本，DROP**。
+
+**签名**（STATIC_READONLY_NOTE 改为函数，D13 风格，非 buildPrompt 默认——reviewType 随 reviewer 变）：
 ```js
-const STATIC_READONLY_NOTE = `## STATIC READ-ONLY Constraint
-...（10 行公共文本）`
-
-function LESSONS_EXEMPTION_NOTE(applicableDimensions) {
-  return `## Lessons Learned Exemption
-... ${applicableDimensions} ...`
+export function STATIC_READONLY_NOTE(reviewType) {
+  return `This is a STATIC READ-ONLY review. You may use 'git diff', 'git status', 'find', 'grep'/'rg', and read files to locate and inspect changes. Do NOT run the test suite, ruff, lint, or any build — ${reviewType} is done by reading code, not by running it. Running tests/builds is the implementor's and gate's job, not yours.`
 }
 ```
+（reviewType = 'spec verification' / 'quality review'）
 
 **改动**：
-- STATIC_READONLY_NOTE 进 buildPrompt 默认（D14 决策）
-- LESSONS_EXEMPTION_NOTE 是函数，由调用方传参（D13 决策，applicableDimensions 随 reviewer 变化）
-- 3 个 reviewer prompt 重复段替换为占位符
+- lib.js 加 `STATIC_READONLY_NOTE(reviewType)` 函数（export）
+- specReview prompt 的 STATIC READ-ONLY 段替换为 `{{staticReadonlyNote}}` 占位符
+- qualityReviewer prompt 的 STATIC READ-ONLY 段替换为 `{{staticReadonlyNote}}` 占位符
+- hunter prompt **不动**（文本不同）
+- run-plans.js 调用 specReview/qualityReviewer 的 buildPrompt 处传 `staticReadonlyNote: STATIC_READONLY_NOTE('spec verification'/'quality review')`
+- run-plans.js inline 副本同步 STATIC_READONLY_NOTE 函数
 
 **TDD 流程**：
-1. RED：helpers.test 加 buildPrompt 注入断言
-2. GREEN：lib.js 加常量 + 重构 3 prompt；run-plans.js inline
-3. SYNC：sync.test prompt 断言更新
-4. FULL：307 + 1 测试
+1. RED：helpers.test 加 STATIC_READONLY_NOTE 函数测试（2 用例：reviewType 插值 + 内容关键词）
+2. GREEN：lib.js 加函数 + 重构 2 prompt；run-plans.js inline + 调用点传参
+3. SYNC：sync.test prompt 断言更新（specReview/qualityReviewer prompt 体变）
+4. FULL：307 + 2 测试（STATIC_READONLY_NOTE 内容 + reviewType 插值）
 
 ### 5.9 Batch 2 测试与 commit
 

@@ -715,62 +715,63 @@ export function buildPrompt(role, ctx = {}) {
 
 ---
 
-## Task 11: Batch 2 Commit 8 — B2-8 S8 STATIC_READONLY_NOTE + LESSONS_EXEMPTION_NOTE
+## Task 11: Batch 2 Commit 8 — B2-8 S8 STATIC_READONLY_NOTE（三轮复核修正：DROP LESSONS_EXEMPTION_NOTE）
 
-**目标:** 提 STATIC_READONLY_NOTE（进 buildPrompt 默认，opt-out 同 D12）+ LESSONS_EXEMPTION_NOTE（函数，调用方传参），3 个 reviewer prompt 重复段替换。
+**目标:** 提 `STATIC_READONLY_NOTE(reviewType)` 函数，specReview/qualityReviewer 2 处 STATIC READ-ONLY 段去重。**DROP LESSONS_EXEMPTION_NOTE**（无公共文本可去重）。
 
-**依据:** 审计报告 S8；设计文档 §5.8 / D13-D14
+**依据:** 审计报告 S8；设计文档 §5.8 / D13-D14（三轮复核修正）
+
+**复核修正（2026-07-07，实施前，用户决策）**：原 plan 假设 3 reviewer 共享 STATIC READ-ONLY + Lessons Exemption 段。核查当前代码实际：
+- **STATIC READ-ONLY**：specReview/qualityReviewer 唯一差异 `spec verification` vs `quality review`（其余逐字相同）；hunter 实质不同（`git status, git diff` 顺序 + `silent-failure hunting` 措辞）。**仅 specReview/qualityReviewer 2 处去重**，hunter 保留原文。
+- **Lessons Exemption**：specReview 是 EXTRA 检测（9 行）、qualityReviewer 是质量维度豁免（12 行）、hunter 无此段。**概念不同，无可去重公共文本 → DROP**。
+- 故 STATIC_READONLY_NOTE 改为**函数**（D13 风格，`reviewType` 参数），非 buildPrompt 默认（reviewType 随 reviewer 变）。
 
 ### Step 11.1 — RED：写失败测试
 
-- [ ] `docs/superpowers/workflows/tests/helpers.test.js` 加测试：
+- [ ] `docs/superpowers/workflows/tests/helpers.test.js` 加测试（import 列表加 `STATIC_READONLY_NOTE`）：
 
 ```javascript
-test('S8 STATIC_READONLY_NOTE: buildPrompt 默认注入', () => {
-  const out = buildPrompt('specReview', { taskId: 'T1', planId: '01', specPath: '', implSummary: '', filesTouched: '' })
-  assert.ok(out.includes('STATIC READ-ONLY'), 'specReview prompt 应含 STATIC READ-ONLY')
+test('S8 STATIC_READONLY_NOTE: reviewType 插值', () => {
+  assert.equal(
+    STATIC_READONLY_NOTE('spec verification'),
+    `This is a STATIC READ-ONLY review. You may use 'git diff', 'git status', 'find', 'grep'/'rg', and read files to locate and inspect changes. Do NOT run the test suite, ruff, lint, or any build — spec verification is done by reading code, not by running it. Running tests/builds is the implementor's and gate's job, not yours.`
+  )
+  assert.ok(STATIC_READONLY_NOTE('quality review').includes('quality review is done by reading code'))
 })
 
-test('S8 LESSONS_EXEMPTION_NOTE: 调用方传 applicableDimensions', () => {
-  const out = buildPrompt('specReview', { taskId: 'T1', planId: '01', specPath: '', implSummary: '', filesTouched: '', lessonsExemptionNote: LESSONS_EXEMPTION_NOTE('spec compliance') })
-  assert.ok(out.includes('spec compliance'), '应含调用方传入的 applicableDimensions')
+test('S8 STATIC_READONLY_NOTE: buildPrompt 注入（specReview target）', () => {
+  const out = buildPrompt('specReview', { staticReadonlyNote: STATIC_READONLY_NOTE('spec verification') })
+  assert.ok(out.includes('STATIC READ-ONLY'), 'specReview prompt 应含 STATIC READ-ONLY 段')
+  assert.ok(out.includes('spec verification'), '应含 reviewType 插值')
 })
 ```
 
-（需在 import 加 `LESSONS_EXEMPTION_NOTE`）
+- [ ] 运行确认 test 1 FAIL（STATIC_READONLY_NOTE 未导出）；test 2 也 FAIL（specReview 当前无 `{{staticReadonlyNote}}` 占位 → buildPrompt 输出字面 PROMPTS，但占位机制未就位 → 实际 test 2 在占位加入前可能 pass 若 specReview 已含 'spec verification' 文本；实施时确认 test 1 为 RED 主证据）
 
-- [ ] 运行确认测试 FAIL
+### Step 11.2 — GREEN：lib.js 加函数 + 重构 2 prompt
 
-### Step 11.2 — GREEN：lib.js 加常量 + 函数 + 重构 3 prompt
-
-- [ ] `docs/superpowers/workflows/lib.js` 加常量 + 函数。**实施时先读取 specReview/qualityReviewer/hunter 三个 prompt，提取它们的 STATIC READ-ONLY 段（10 行公共文本）作为常量值**：
+- [ ] `docs/superpowers/workflows/lib.js` 加函数（放在 PROMPTS 之前，与 QUOTA_HALT_NOTE 同区）：
 
 ```javascript
-const STATIC_READONLY_NOTE = `## STATIC READ-ONLY Constraint
-...（从现有 specReview prompt 提取的 10 行公共文本，实施时逐字复制）...`
-
-// LESSONS_EXEMPTION_NOTE 是函数（D13）：applicableDimensions 随 reviewer 变化
-export function LESSONS_EXEMPTION_NOTE(applicableDimensions) {
-  return `## Lessons Learned Exemption
-... ${applicableDimensions} ...`
+// STATIC_READONLY_NOTE（S8, 2026-07-07）：STATIC READ-ONLY review 纪律段，2 个 reviewer 复用。
+// reviewType 随 reviewer 变（'spec verification' / 'quality review'）。hunter 文本不同，不复用。
+// 三轮复核修正：原决策以为是 3 reviewer 共享常量；核查仅 specReview/qualityReviewer 近似（唯一 reviewType 差异）。
+export function STATIC_READONLY_NOTE(reviewType) {
+  return `This is a STATIC READ-ONLY review. You may use 'git diff', 'git status', 'find', 'grep'/'rg', and read files to locate and inspect changes. Do NOT run the test suite, ruff, lint, or any build — ${reviewType} is done by reading code, not by running it. Running tests/builds is the implementor's and gate's job, not yours.`
 }
 ```
 
-- [ ] buildPrompt defaults 加 `staticReadonlyNote: STATIC_READONLY_NOTE`（D14 决策，opt-out 同 D12）：
-```javascript
-const defaults = { quotaHaltNote: QUOTA_HALT_NOTE, staticReadonlyNote: STATIC_READONLY_NOTE }
-```
-（注意：`lessonsExemptionNote` **不进默认**——它是函数返回值，由调用方传参）
-
-- [ ] 3 个 reviewer prompt（specReview/qualityReviewer/hunter）重复段替换为 `{{staticReadonlyNote}}` + `{{lessonsExemptionNote}}`
-- [ ] run-plans.js 调用 reviewer 的地方传 `lessonsExemptionNote: LESSONS_EXEMPTION_NOTE(applicableDimensions)`。**实施时 grep run-plans.js 中 buildPrompt('specReview'/'qualityReviewer'/'hunter') 调用点**，加 lessonsExemptionNote 参数。
-- [ ] `.claude/workflows/run-plans.js` inline 副本同步
+- [ ] specReview prompt（lib.js ~1041）：STATIC READ-ONLY 段（一整行）替换为 `{{staticReadonlyNote}}`
+- [ ] qualityReviewer prompt（lib.js ~1074）：STATIC READ-ONLY 段（一整行）替换为 `{{staticReadonlyNote}}`
+- [ ] hunter prompt（lib.js ~1101）：**不动**（文本不同）
+- [ ] `.claude/workflows/run-plans.js` inline 副本同步（STATIC_READONLY_NOTE 函数 + 2 prompt 占位符替换）
+- [ ] run-plans.js 调用 specReview/qualityReviewer 的 buildPrompt 处传 `staticReadonlyNote: STATIC_READONLY_NOTE('spec verification' / 'quality review')`。**实施时 grep run-plans.js 中 `buildPrompt('specReview'` 和 `buildPrompt('qualityReviewer'` 调用点**，加 staticReadonlyNote 参数。
 
 ### Step 11.3 — SYNC + FULL
 
-- [ ] sync.test prompt 断言更新基线
-- [ ] 运行 `node --test docs/superpowers/workflows/tests/*.test.js` → 332 tests green（330 + 2：默认注入 + LESSONS_EXEMPTION_NOTE 传参两个测试）
-- [ ] CRLF 修复 + git commit: `refactor(workflow): B2-8 S8 STATIC_READONLY_NOTE + LESSONS_EXEMPTION_NOTE (3 reviewer prompt 去重)`
+- [ ] sync.test prompt 断言更新基线（specReview/qualityReviewer prompt 体变了，`PROMPTS.{role} identical` 两端同步即可，但若有逐字 STATIC 内容断言需更新）
+- [ ] 运行 `node --test docs/superpowers/workflows/tests/*.test.js` → 334 tests green（332 + 2：STATIC_READONLY_NOTE reviewType 插值 + buildPrompt 注入）
+- [ ] CRLF 修复 + git commit: `refactor(workflow): B2-8 S8 STATIC_READONLY_NOTE 函数 (specReview/qualityReviewer 2 处去重, DROP LESSONS_EXEMPTION 无公共文本, hunter 保留变体)`
 
 ---
 
