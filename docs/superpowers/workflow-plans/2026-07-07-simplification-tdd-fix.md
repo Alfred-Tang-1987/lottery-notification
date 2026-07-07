@@ -586,7 +586,8 @@ test('S5 formatBulletSection: 基本渲染', () => {
 
 test('S5 formatBulletSection: 含 intro + outro（多行）', () => {
   const out = formatBulletSection('H', 'intro line', ['x'], x => `- ${x}`, 'outro line 1\noutro line 2')
-  assert.equal(out, '## H\nintro line\n- x\n\noutro line 1\noutro line 2')
+  // bullets 与 outro 之间单 \n（非空行），与 6 个原 format* 的模板字面量 spacing 一致。
+  assert.equal(out, '## H\nintro line\n- x\noutro line 1\noutro line 2')
 })
 ```
 
