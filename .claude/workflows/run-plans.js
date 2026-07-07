@@ -480,6 +480,11 @@ function bareTaskId(id) {
   return String(id).replace(/^plan-\d+\/+/i, '')
 }
 
+// taskKey 构造（S10, 2026-07-07）：统一 padStart 2 位 —— inline 自 lib.js（sync QC-4 守护）。
+function taskKey(seq, taskId) {
+  return `plan-${String(seq).padStart(2, '0')}/${taskId}`
+}
+
 // 过滤非叶子父 task（T{N} 与 T{N}{letter} 共存 → drop T{N}）—— inline 自 lib.js（sync QC-4 守护）。
 // bootstrap 偶不遵循 leaf-first → 返回 ## Task N 父说明段 → implementor 跑说明段混乱（wf_3e729d02 T6）。
 function dropParentTasks(tasks) {
@@ -1164,7 +1169,7 @@ function ensurePerTaskDefaults(entry) {
 async function halt(plan, task, r) {
   // Q2（第 4 轮）: tid 须 plan-scoped（与 runTask 的 taskKey 一致），防跨 plan 同名 task 覆盖。
   // plan 可用 → `plan-{seq}/{task.id}`；plan=null（bootstrap halt）→ 裸 task.id 或 'unknown'。
-  const tid = (plan && task?.id) ? `plan-${String(plan.seq).padStart(2, '0')}/${task.id}` : (task?.id || 'unknown')
+  const tid = (plan && task?.id) ? taskKey(plan.seq, task.id) : (task?.id || 'unknown')
   state.perTask[tid] = ensurePerTaskDefaults({ ...(state.perTask[tid] || {}), status: 'blocked',
     blocked_info: {
       plan: plan?.id, task: tid, reason: r.reason,
@@ -1239,9 +1244,9 @@ async function runTask(plan, task) {
   // Q2（第 4 轮）: perTask key 须 plan-scoped（与外层 state.completed 一致），防跨 plan 同名 task 覆盖
   //   （Plan 01/02 都有 T1-T10 → 裸 task.id 作 key → Plan 02 的 T2 覆盖 Plan 01 的 T2 perTask）。
   //   halt() 已用 plan-scoped tid；runTask 内所有 perTask 访问也须用 taskKey 保持一致。
-  const taskKey = `plan-${String(plan.seq).padStart(2, '0')}/${task.id}`
+  const tk = taskKey(plan.seq, task.id)
   // Q5（第 5 轮）: 复用 ensurePerTaskDefaults helper（DRY：字段列表与 halt() 的 ensurePerTaskDefaults 重复，字段增删需两处同步易漂移）
-  state.perTask[taskKey] = ensurePerTaskDefaults({ planId: plan.id, status: 'in_progress', model: task.model || 'sonnet' })
+  state.perTask[tk] = ensurePerTaskDefaults({ planId: plan.id, status: 'in_progress', model: task.model || 'sonnet' })
   log(`▶ ${task.id} (${task.model || 'sonnet'}): 派发 implementor — TDD 可能含长命令(uv sync/build/全量测试)，正常耗时请等待；/workflows 可看实时工具调用`)
 
   // —— implementor + BLOCKED 升级链（§2.3）——
@@ -1256,7 +1261,7 @@ async function runTask(plan, task) {
   //   Tier 2 的 title keyword fallback 已覆盖 legacy 无 category 场景（helpers.test 有测试）。
   const taskCategories = task.lesson_categories || []
   const lessonsText = formatUniversalLessons(state.allLessons || []) + formatDomainLessons(state.allLessons || [], taskCategories, planIdShort, task.title || '')
-  const implCtx = (fix, note, ctx = '') => ({ planId: plan.id, taskId: task.id, planFilePath: plan.file, specPath: cfg.spec_path, testCommand: cfg.test_command, buildCommand: cfg.build_command || '', fixIssues: fix, retryNote: note, fetchedContext: ctx, referencePaths: formatReferencePaths(cfg.reference_paths), failedApproaches: formatFailedApproaches(state.failedApproaches?.[taskKey] || []), lessons: lessonsText })
+  const implCtx = (fix, note, ctx = '') => ({ planId: plan.id, taskId: task.id, planFilePath: plan.file, specPath: cfg.spec_path, testCommand: cfg.test_command, buildCommand: cfg.build_command || '', fixIssues: fix, retryNote: note, fetchedContext: ctx, referencePaths: formatReferencePaths(cfg.reference_paths), failedApproaches: formatFailedApproaches(state.failedApproaches?.[tk] || []), lessons: lessonsText })
   let impl
   impl = await dispatchImpl(buildPrompt('implementor', implCtx('', '')), { schema: SCHEMAS.implementor, model, label: `impl:${task.id}` }, model, 'opus')
   if (impl.halted) return impl
@@ -1305,7 +1310,7 @@ async function runTask(plan, task) {
   let concerns = []
   if (impl.status === 'done_with_concerns') {
     concerns = impl.diagnostics?.concerns || []
-    state.perTask[taskKey].concerns = concerns
+    state.perTask[tk].concerns = concerns
     log(`⚠ ${task.id} done_with_concerns: ${concerns.join('; ') || '(no detail)'}`)
   }
   let concernsHint = formatConcernsHint(concerns)
@@ -1314,17 +1319,17 @@ async function runTask(plan, task) {
   // —— review rounds（max 可配，默认 4；0=无限靠 detectOscillation 防线，§5）——
   const maxRounds = resolveMaxRounds(cfg)
   for (let round = 1; maxRounds === 0 ? true : round <= maxRounds; round++) {
-    state.perTask[taskKey].review_rounds = round
+    state.perTask[tk].review_rounds = round
     const fc = filesChanged.join('\n')
     const { spec, qual, hunt, haltReason: reviewReason, emptyFailed: emptyFailedReason } = await runReviewRound(task.id, cfg, plan, fc, concernsHint, `:r${round}`, `Plan ${plan.id}`)
     // Q15（第 5 轮）: push 须在 halt 检查之前——halt 轮的 files_touched/review_history 也须持久化，
     //   否则 distiller 看不到 halt 轮 review 状态（如 review_failed_no_findings 的 failed-but-empty 信号）。
-    state.perTask[taskKey].files_touched_per_round.push(unionFiles(spec, qual, hunt))
-    state.perTask[taskKey].review_history.push(summarizeReviewRound(round, spec, qual, hunt))
+    state.perTask[tk].files_touched_per_round.push(unionFiles(spec, qual, hunt))
+    state.perTask[tk].review_history.push(summarizeReviewRound(round, spec, qual, hunt))
     // v3: findings 状态机更新（在 halt 检查之前，halt 轮也须持久化）
     const currentFindings = collectReviewFindings(spec, qual, hunt)
-    state.perTask[taskKey].findings_history = updateFindingsHistory(
-      state.perTask[taskKey].findings_history, currentFindings, round
+    state.perTask[tk].findings_history = updateFindingsHistory(
+      state.perTask[tk].findings_history, currentFindings, round
     )
     if (reviewReason) {
       return { halted: true, reason: reviewReason, diag: { spec: spec?.diagnostics, qual: qual?.diagnostics, hunt: hunt?.diagnostics } }
@@ -1338,9 +1343,9 @@ async function runTask(plan, task) {
     // （T2 invite / T5 channels）。真矛盾（reviewer 持续分歧，如 T7 claims 时区）不会全绿，
     // 自然落进 detectOscillation 正确 halt 让人介入。单轮全绿即 review 共识，足以放行。
     if (allGreen(spec, qual, hunt)) break
-    const osc = detectOscillation(state.perTask[taskKey].files_touched_per_round)
-    const flipFlop = isFlipFlop(state.perTask[taskKey].review_history || [])
-    const regressed = hasRegressed(state.perTask[taskKey].findings_history || [])
+    const osc = detectOscillation(state.perTask[tk].files_touched_per_round)
+    const flipFlop = isFlipFlop(state.perTask[tk].review_history || [])
+    const regressed = hasRegressed(state.perTask[tk].findings_history || [])
 
     // v3 (§5.5): 任一 finding 回归（fixed→regressed）→ 立即 halt（独立于文件振荡）
     if (regressed) {
@@ -1352,7 +1357,7 @@ async function runTask(plan, task) {
           ...osc,
           flipFlop,
           regressed,
-          regressedFindings: state.perTask[taskKey].findings_history.filter(h => h.status === 'regressed'),
+          regressedFindings: state.perTask[tk].findings_history.filter(h => h.status === 'regressed'),
           model,
         },
       }
@@ -1374,9 +1379,9 @@ async function runTask(plan, task) {
         }
       }
       // flipFlop=false 且无 regressed（每轮新 findings = 在推进）
-      if (shouldEscalateOnOscillation(model, state.perTask[taskKey].opus_escalated)) {
-        state.perTask[taskKey].opus_escalated = true
-        state.perTask[taskKey].oscillation_escalated_at_round = round  // v3 F: 升级轮次
+      if (shouldEscalateOnOscillation(model, state.perTask[tk].opus_escalated)) {
+        state.perTask[tk].opus_escalated = true
+        state.perTask[tk].oscillation_escalated_at_round = round  // v3 F: 升级轮次
         model = 'opus'
         log(`⚠ ${task.id}: r${round} OSCILLATING (new-findings 补充, flipFlop=false) — escalate to opus, continue (v3)`)
       } else {
@@ -1390,20 +1395,20 @@ async function runTask(plan, task) {
       const budget = resolveReviewBudget(cfg)
       if (round >= budget) {
         // D4 决策：halt reason 改可操作——blocked.md 建议拆 task
-        return { halted: true, reason: 'review_not_converging', diag: { round, budget, findings_history: state.perTask[taskKey].findings_history, spec: spec.diagnostics, qual: qual.diagnostics, hunt: hunt.diagnostics } }
+        return { halted: true, reason: 'review_not_converging', diag: { round, budget, findings_history: state.perTask[tk].findings_history, spec: spec.diagnostics, qual: qual.diagnostics, hunt: hunt.diagnostics } }
       }
     } else if (round === maxRounds) {
       // 有限模式仍用 maxRounds 硬上限；diagnostics 也带 findings_history，便于接手判断是重复问题还是新问题
-      return { halted: true, reason: 'review max rounds', diag: { round, findings_history: state.perTask[taskKey].findings_history, spec: spec.diagnostics, qual: qual.diagnostics, hunt: hunt.diagnostics } }
+      return { halted: true, reason: 'review max rounds', diag: { round, findings_history: state.perTask[tk].findings_history, spec: spec.diagnostics, qual: qual.diagnostics, hunt: hunt.diagnostics } }
     }
     const findings = collectReviewFindings(spec, qual, hunt)
     const crossReviewerNote = formatCrossReviewerNote(findings)
     // D1: history 主导单源——formatFindingsHistory 已含本轮 [OPEN]（标★本轮新增），
     // 不再单独注入 formatFindings(本轮) 避免重复。cross-reviewer note 按 file 聚合保留。
-    const findingsHistoryText = formatFindingsHistory(state.perTask[taskKey].findings_history || [], round)
+    const findingsHistoryText = formatFindingsHistory(state.perTask[tk].findings_history || [], round)
     const fullFixIssues = findingsHistoryText ? `${findingsHistoryText}\n${crossReviewerNote}` : crossReviewerNote
     // v3 F: opus 升级轮强化 retryNote（DX: 移除中英混杂 + 双重否定，正向陈述；文本修正 r{round} 而非 r{round-1}）
-    const oscEscRound = state.perTask[taskKey].oscillation_escalated_at_round
+    const oscEscRound = state.perTask[tk].oscillation_escalated_at_round
     const retryNote = oscEscRound === round
       ? `## 升级到 opus，本轮必须修完所有 [OPEN]\n- 逐条核对 [OPEN]，每条要么修完，要么说明不修的原因（★ 标本轮新增的优先修）\n- 修完后，核对 [FIXED] 列表的 fix 在你的改动后仍然存在；若 [OPEN] 与 [FIXED] 同文件，只动 [OPEN] 描述的代码，不要回退 [FIXED] 对应的修改\n- 不要留到下一轮，下一轮不再有升级空间\n- 截至 r${round} review 累计未修 findings 如上`
       : `修复 review round ${round} 问题（${findings.length} 项发现；★ 标本轮新增）。`
@@ -1424,7 +1429,7 @@ async function runTask(plan, task) {
     //   须在此分支更新 concerns + concernsHint + perTask，与初始 dispatch 路径一致。
     if (impl.status === 'done_with_concerns') {
       concerns = impl.diagnostics?.concerns || concerns
-      state.perTask[taskKey].concerns = concerns
+      state.perTask[tk].concerns = concerns
       concernsHint = formatConcernsHint(concerns)
       log(`⚠ ${task.id} fix-round ${round} done_with_concerns: ${concerns.join('; ') || '(no detail)'}`)
     }
@@ -1441,12 +1446,12 @@ async function runTask(plan, task) {
   // —— commit（提前到 simplify 前；§5 状态原子转换）——
   // P1-5（第 6 轮）: commit/simplify/contextFetcher 硬编码 sonnet（spec §13b least-powerful-model；
   //   task model 可能因 BLOCKED 升级为 opus，commit/simplify 不应跟随升级，保持 sonnet 控成本）。
-  const commit = await dispatchImpl(buildPrompt('commit', { taskId: task.id, planId: plan.id, planIdShort, commitMsg: commitSubject(plan.seq, task.id, task.title || task.id), testCommand: cfg.test_command, writeFilesScope: formatWriteFilesScope(state.taskWriteFiles?.[taskKey] || []) }), { schema: SCHEMAS.commit, label: `commit:${task.id}` }, 'sonnet')
+  const commit = await dispatchImpl(buildPrompt('commit', { taskId: task.id, planId: plan.id, planIdShort, commitMsg: commitSubject(plan.seq, task.id, task.title || task.id), testCommand: cfg.test_command, writeFilesScope: formatWriteFilesScope(state.taskWriteFiles?.[tk] || []) }), { schema: SCHEMAS.commit, label: `commit:${task.id}` }, 'sonnet')
   if (commit.halted) return commit
   if (commit.status === 'failed' && Array.isArray(commit.diagnostics?.out_of_scope) && commit.diagnostics.out_of_scope.length) return { halted: true, reason: 'commit out_of_scope', diag: commit.diagnostics }
   if (commit.status !== 'ok') return { halted: true, reason: 'commit failed', diag: commit.diagnostics }
-  state.perTask[taskKey].status = 'committed'
-  state.perTask[taskKey].commit_sha = commit.evidence.commit_sha
+  state.perTask[tk].status = 'committed'
+  state.perTask[tk].commit_sha = commit.evidence.commit_sha
   log(`✓ ${task.id} committed @ ${commit.evidence.commit_sha}`)
 
   // —— simplify（max 1，§5.2 方案 C：git diff 独立验证是否动代码）——
@@ -1491,7 +1496,7 @@ async function runTask(plan, task) {
         // Q1/Q2/Q8: amend 失败或 SHA 格式错 → halt（防 gate 在旧 SHA 跑漏检 simplify 改动）
         return { halted: true, reason: 'simplify amend failed', diag: { task: task.id, amendError: amendCheck.error, commitSha: commit.evidence.commit_sha } }
       }
-      state.perTask[taskKey].commit_sha = amendCheck.sha
+      state.perTask[tk].commit_sha = amendCheck.sha
       log(`✓ ${task.id} simplify review green — amended commit @ ${amendCheck.sha}`)
     } else {
       // review 失败 → git reset --hard HEAD + git clean -fd 回退 simplify 改动（HEAD 不变，保留原 commit）
@@ -1509,8 +1514,8 @@ async function runTask(plan, task) {
         return { halted: true, reason: 'simplify checkout failed', diag: { task: task.id, checkoutError: checkoutCheck.error, commitSha: commit.evidence.commit_sha } }
       }
       log(`⚠ ${task.id} simplify review NOT green — reverted simplify changes (HEAD unchanged @ ${commit.evidence.commit_sha})`)
-      state.perTask[taskKey].simplify_reverted = true
-      state.perTask[taskKey].simplify_review_findings = collectReviewFindings(spec2, qual2, hunt2)
+      state.perTask[tk].simplify_reverted = true
+      state.perTask[tk].simplify_review_findings = collectReviewFindings(spec2, qual2, hunt2)
     }
   }
 
@@ -1528,16 +1533,16 @@ async function runTask(plan, task) {
     const { spec: dSpec, qual: dQual, hunt: dHunt, haltReason: dReason, emptyFailed: dEmptyFailed } = await runReviewRound(task.id, cfg, plan, fc, '', ':destructive', `Plan ${plan.id}`)
     if (dReason || dEmptyFailed) {
       // model 不可用/空响应：不 halt，记录失败继续（destructive review 是增强保护，非阻断）
-      state.perTask[taskKey].destructive_review_failed = true
+      state.perTask[tk].destructive_review_failed = true
       // Q14（第 5 轮）: 异常路径 shape 须与正常路径一致（[{source, severity, title, fix}]），
       //   旧 [{source, title}] 简化 shape 混在同字段 → manifest 消费者需处理两种结构
-      state.perTask[taskKey].destructive_review_findings = [{ source: 'destructive-review', severity: 'critical', title: dReason || dEmptyFailed, fix: 'investigate review agent failure' }]
+      state.perTask[tk].destructive_review_findings = [{ source: 'destructive-review', severity: 'critical', title: dReason || dEmptyFailed, fix: 'investigate review agent failure' }]
       log(`⚠ ${task.id} destructive review 异常 (${dReason || dEmptyFailed}) — 记录并继续`)
     } else if (!allGreen(dSpec, dQual, dHunt)) {
       // 不全绿：不 halt，记录 destructive_review_failed + findings 到 perTask，继续下一 task
-      state.perTask[taskKey].destructive_review_failed = true
-      state.perTask[taskKey].destructive_review_findings = collectReviewFindings(dSpec, dQual, dHunt)
-      log(`⚠ ${task.id} destructive review NOT green — 记录 ${state.perTask[taskKey].destructive_review_findings.length} 项 findings 并继续（不 halt）`)
+      state.perTask[tk].destructive_review_failed = true
+      state.perTask[tk].destructive_review_findings = collectReviewFindings(dSpec, dQual, dHunt)
+      log(`⚠ ${task.id} destructive review NOT green — 记录 ${state.perTask[tk].destructive_review_findings.length} 项 findings 并继续（不 halt）`)
     } else {
       log(`✓ ${task.id} destructive review green — 继续正常流程`)
     }
@@ -1545,7 +1550,7 @@ async function runTask(plan, task) {
 
   // Q8（第 5 轮）: runTask 全流程完成（commit + simplify + destructive review）须设终态 status='done'。
   //   旧代码停在 'committed' → 无法区分"已提交但 simplify/destructive 未完成"与"全流程完成"。
-  state.perTask[taskKey].status = 'done'
+  state.perTask[tk].status = 'done'
   return { halted: false }
 }
 
@@ -1646,7 +1651,7 @@ state.completed = normalizeCompleted(_rawCompleted)
 // P1-2（第 13 轮）: bootstrap 返回的 task_id 可能是裸 T1 或 plan-scoped；统一归一化为 plan-scoped key，防跨 plan 同名 task 查找失败
 if (Array.isArray(boot.evidence.failed_approaches)) {
   for (const fa of boot.evidence.failed_approaches) {
-    const faKey = fa.task_id.includes('/') ? fa.task_id : `plan-${String(fa.plan_seq).padStart(2, '0')}/${fa.task_id}`
+    const faKey = fa.task_id.includes('/') ? fa.task_id : taskKey(fa.plan_seq, fa.task_id)
     if (!state.failedApproaches[faKey]) state.failedApproaches[faKey] = []
     state.failedApproaches[faKey].push(fa)
   }
@@ -1657,14 +1662,14 @@ if (Array.isArray(boot.evidence.failed_approaches)) {
 //   bootstrap prompt 已改为返回 plan_seq 字段，此处归一化为 plan-scoped key。
 if (Array.isArray(boot.evidence.task_write_files)) {
   for (const twf of boot.evidence.task_write_files) {
-    state.taskWriteFiles[`plan-${String(twf.plan_seq).padStart(2, '0')}/${twf.task_id}`] = twf.files || []
+    state.taskWriteFiles[taskKey(twf.plan_seq, twf.task_id)] = twf.files || []
   }
 }
 // LESSONS.md 跨任务失败知识库：按 plan-scoped key 索引存入 state，供 implCtx 注入 implementor prompt
 // S3（第 5 轮）: 同 taskWriteFiles，存储须用 plan-scoped key（防跨 plan 同名 task 覆盖）
 if (Array.isArray(boot.evidence.task_lessons)) {
   for (const tl of boot.evidence.task_lessons) {
-    state.taskLessons[`plan-${String(tl.plan_seq).padStart(2, '0')}/${tl.task_id}`] = tl.lessons || []
+    state.taskLessons[taskKey(tl.plan_seq, tl.task_id)] = tl.lessons || []
   }
 }
 // v3: bootstrap 额外返回 all_lessons（全量，含 category），存 state.allLessons
@@ -1679,8 +1684,8 @@ for (const plan of boot.evidence.plans) {
   const want = (Array.isArray(args.tasks) && args.tasks.length) ? new Set(args.tasks.map(String)) : null  // P2-9a（第 9 轮）: Array.isArray 防御字符串误传（字符串有 .length，.map(String) 会 TypeError）
   const tasks = plan.tasks.filter(t => !want || want.has(t.id))
   for (const task of tasks) {
-    const taskKey = `plan-${String(plan.seq).padStart(2, '0')}/${task.id}`  // plan-scoped：跨 plan 同名 task 不误跳过，seq 归一化为 2 位填充
-    if (state.completed.includes(taskKey)) { log(`skip ${taskKey} (already committed)`); continue }
+    const tk = taskKey(plan.seq, task.id)  // plan-scoped：跨 plan 同名 task 不误跳过，seq 归一化为 2 位填充
+    if (state.completed.includes(tk)) { log(`skip ${tk} (already committed)`); continue }
     let r
     try {
       r = await runTask(plan, task)
@@ -1699,7 +1704,7 @@ for (const plan of boot.evidence.plans) {
   // P0-7（第 7 轮）: tk 须用 padStart 归一化（与其他 4 处一致），否则 plan.seq=1（数字）→ "plan-1" 查不到 "plan-01" 的 perTask。
   let lastSha = null
   for (let i = plan.tasks.length - 1; i >= 0; i--) {
-    const tk = `plan-${String(plan.seq).padStart(2, '0')}/${plan.tasks[i].id}`
+    const tk = taskKey(plan.seq, plan.tasks[i].id)
     if (state.perTask[tk]?.commit_sha) { lastSha = state.perTask[tk].commit_sha; break }
   }
   if (lastSha) {

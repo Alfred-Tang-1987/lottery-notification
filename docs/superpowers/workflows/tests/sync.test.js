@@ -70,6 +70,8 @@ test('QC-4: 关键 helper 函数体 lib.js ↔ run-plans.js 字节一致', () =>
     'groupFindingsByFile', 'formatCrossReviewerNote',
     // bootstrap task_id sanitize (2026-07-05): 防 plan-scoped task_id → 双重前缀 + 重跑
     'bareTaskId',
+    // S10 (2026-07-07): 统一 task-key 构造，防 padStart 位数不一致
+    'taskKey',
     // bootstrap leaf-guard (2026-07-05): 过滤非叶子父 task（T6+T6b 共存 → drop T6）
     'dropParentTasks',
     // bootstrap deterministic-completed (2026-07-05): git log subjects → completed 正则提取（不依赖 LLM）
@@ -133,8 +135,8 @@ test('REGRESSION: allGreen break 在 detectOscillation 之前（防收敛误报 
 
 test('v3 runtime wiring: findings_history update + taskCategories declared + OSC regressed branch', () => {
   // findings_history 在 review loop 内更新，且必须在 halt 检查之前（同 Q15 review_history 顺序）
-  const reviewHistoryPushIdx = runSrc.indexOf('state.perTask[taskKey].review_history.push')
-  const findingsHistoryUpdateIdx = runSrc.indexOf('state.perTask[taskKey].findings_history = updateFindingsHistory')
+  const reviewHistoryPushIdx = runSrc.indexOf('state.perTask[tk].review_history.push')
+  const findingsHistoryUpdateIdx = runSrc.indexOf('state.perTask[tk].findings_history = updateFindingsHistory')
   const reviewReasonIdx = runSrc.indexOf('if (reviewReason)')
   assert.notEqual(reviewHistoryPushIdx, -1, 'run-plans.js 须有 review_history.push')
   assert.notEqual(findingsHistoryUpdateIdx, -1, 'run-plans.js 须更新 findings_history')
@@ -157,7 +159,7 @@ test('v3 runtime wiring: findings_history update + taskCategories declared + OSC
   assert.match(runSrc, /reason: 'review_not_converging'/, 'run-plans.js 须有 review_not_converging halt reason')
 
   // fix-round 必须调用 formatFindingsHistory（D1 history 主导单源）
-  assert.match(runSrc, /formatFindingsHistory\(state\.perTask\[taskKey\]\.findings_history \|\| \[\], round\)/, 'fix round 须用 formatFindingsHistory 注入历史')
+  assert.match(runSrc, /formatFindingsHistory\(state\.perTask\[tk\]\.findings_history \|\| \[\], round\)/, 'fix round 须用 formatFindingsHistory 注入历史（S10 后局部变量 tk 经 taskKey() 构造）')
 
   // H2: review max rounds halt diag 须含 findings_history（接手判断）
   assert.match(runSrc, /reason: 'review max rounds'[\s\S]{0,200}findings_history/, 'review max rounds halt diag 须含 findings_history')
@@ -560,7 +562,7 @@ test('Q2（第 4 轮）: perTask 须用 plan-scoped key（非 bare task.id）', 
   // Q2: state.perTask[task.id] 用裸 task.id（如 'T1'），跨 plan 同名 task 覆盖
   //   修：perTask key 改为 plan-scoped（与 state.completed 一致）
   assert.doesNotMatch(runSrc, /state\.perTask\[task\.id\]/, 'perTask 不得用 bare task.id 作 key（Q2：跨 plan 覆盖）')
-  assert.match(runSrc, /state\.perTask\[taskKey\]/, 'perTask 须用 plan-scoped taskKey（Q2）')
+  assert.match(runSrc, /state\.perTask\[tk\]/, 'perTask 须用 plan-scoped key（Q2；S10 后局部变量 tk 经 taskKey() 构造）')
 })
 
 test('Q4（第 4 轮）: halt() 须初始化 perTask 默认字段（防 manifest 字段缺失）', () => {
@@ -599,7 +601,7 @@ test('S1（第 5 轮）: failedApproaches 查找须用 plan-scoped taskKey（非
   //   implCtx 查找用裸 task.id（T2）→ 永远 undefined → failedApproaches 占位符不注入 implementor prompt
   //   修：implCtx 查找改用 taskKey（与 halt() line 868 的 state.failedApproaches[tid] 一致）
   assert.doesNotMatch(runSrc, /state\.failedApproaches\?\.\[task\.id\]/, 'failedApproaches 不得用裸 task.id 查找（S1：存储键 plan-scoped）')
-  assert.match(runSrc, /state\.failedApproaches\?\.\[taskKey\]/, 'failedApproaches 须用 taskKey 查找（S1）')
+  assert.match(runSrc, /state\.failedApproaches\?\.\[tk\]/, 'failedApproaches 须用 plan-scoped key 查找（S1；S10 后局部变量 tk 经 taskKey() 构造）')
 })
 
 test('S3（第 5 轮）: taskWriteFiles / taskLessons 须用 plan-scoped key（非裸 task.id）', () => {
@@ -607,12 +609,12 @@ test('S3（第 5 轮）: taskWriteFiles / taskLessons 须用 plan-scoped key（�
   //   → 后一个 plan 覆盖前一个 plan 同名 task 条目。修：存储和查找都用 plan-scoped key
   assert.doesNotMatch(runSrc, /state\.taskWriteFiles\?\.\[task\.id\]/, 'taskWriteFiles 查找不得用裸 task.id（S3：跨 plan 覆盖）')
   assert.doesNotMatch(runSrc, /state\.taskLessons\?\.\[task\.id\]/, 'taskLessons 查找不得用裸 task.id（S3：跨 plan 覆盖）')
-  assert.match(runSrc, /state\.taskWriteFiles\?\.\[taskKey\]/, 'taskWriteFiles 须用 taskKey 查找（S3）')
+  assert.match(runSrc, /state\.taskWriteFiles\?\.\[tk\]/, 'taskWriteFiles 须用 plan-scoped key 查找（S3；S10 后局部变量 tk 经 taskKey() 构造）')
   // S3 修复（2026-07-06）：taskLessons 不再被 implCtx 查找（formatLessons 调用已移除，由 Tier 1+Tier 2 替代）。
   //   存储仍用 plan-scoped key（bootstrap 填充 state.taskLessons，向后兼容 + 无害）。
   // 存储时也须用 plan-scoped key（bootstrap 返回的 task_id 须归一化为 plan-{seq}/T{id}）
-  assert.match(runSrc, /taskWriteFiles\[`plan-\$\{[^}]+\}\/\$\{twf\.task_id\}`\]/, 'taskWriteFiles 存储须用 plan-scoped key（S3）')
-  assert.match(runSrc, /taskLessons\[`plan-\$\{[^}]+\}\/\$\{tl\.task_id\}`\]/, 'taskLessons 存储须用 plan-scoped key（S3）')
+  assert.match(runSrc, /taskWriteFiles\[taskKey\(twf\.plan_seq,\s*twf\.task_id\)\]/, 'taskWriteFiles 存储须用 plan-scoped key（S3，S10 后经 taskKey）')
+  assert.match(runSrc, /taskLessons\[taskKey\(tl\.plan_seq,\s*tl\.task_id\)\]/, 'taskLessons 存储须用 plan-scoped key（S3，S10 后经 taskKey）')
 })
 
 test('S2（第 5 轮）: get-ts agent 返回非 string 须降级 unknown-ts（防 runsDir="runs/null"）', () => {
@@ -667,7 +669,7 @@ test('Q4（第 5 轮）: SCHEMAS 整块须 lib.js ↔ run-plans.js 字节一致'
 test('Q5（第 5 轮）: runTask perTask 初始化须用 ensurePerTaskDefaults（DRY）', () => {
   // Q5: runTask line 916 perTask 初始化字段列表与 ensurePerTaskDefaults 重复（12 字段）
   //   字段增删需两处同步，易漂移。修：复用 ensurePerTaskDefaults helper
-  assert.match(runSrc, /state\.perTask\[taskKey\] = ensurePerTaskDefaults\(/, 'perTask 初始化须用 ensurePerTaskDefaults（Q5：DRY）')
+  assert.match(runSrc, /state\.perTask\[tk\] = ensurePerTaskDefaults\(/, 'perTask 初始化须用 ensurePerTaskDefaults（Q5：DRY；S10 后局部变量 tk 经 taskKey() 构造）')
 })
 
 test('Q6（第 5 轮）: dispatchImpl null halt 消息须根据 retryModel 分支', () => {
@@ -693,7 +695,7 @@ test('Q7（第 5 轮）: implementor prompt 中 fetchedContext 占位符只出�
 test('Q8（第 5 轮）: runTask 完成时 perTask.status 须设为 done（终态）', () => {
   // Q8: perTask.status 停在 'committed'，从未设为 'done' → 无法区分"已提交但 simplify/destructive 未完成"与"全流程完成"
   //   修：runTask 末尾 return 前设 status = 'done'
-  assert.match(runSrc, /state\.perTask\[taskKey\]\.status = 'done'/, 'runTask 完成时须设 status=done（Q8：终态语义）')
+  assert.match(runSrc, /state\.perTask\[tk\]\.status = 'done'/, 'runTask 完成时须设 status=done（Q8：终态语义；S10 后局部变量 tk 经 taskKey() 构造）')
 })
 
 test('Q11（第 5 轮）: concernsHint 须抽 formatConcernsHint helper（DRY）', () => {
@@ -734,7 +736,7 @@ test('Q15（第 5 轮）: review_history.push 须在 halt 检查之前（halt �
   // Q15: review 循环中 push 在 halt 检查之后 → halt 轮的 files_touched/review_history 不持久化
   //   distiller 看不到 halt 轮的 review 状态（如 review_failed_no_findings 的 failed-but-empty 信号）
   //   修：push 移到 halt 检查之前（先记录再判断 halt）
-  const pushIdx = runSrc.indexOf('state.perTask[taskKey].files_touched_per_round.push(unionFiles(spec, qual, hunt))')
+  const pushIdx = runSrc.indexOf('state.perTask[tk].files_touched_per_round.push(unionFiles(spec, qual, hunt))')
   const reviewReasonIdx = runSrc.indexOf('if (reviewReason)')
   assert.notEqual(pushIdx, -1, '须有 files_touched_per_round.push')
   assert.notEqual(reviewReasonIdx, -1, '须有 reviewReason halt 检查')
@@ -861,16 +863,16 @@ test('P1-11（第 6 轮）: implementor prompt 须接入 build_command', () => {
 
 // ===== 第 7 轮 TDD red 断言 =====
 
-test('P0-7（第 7 轮）: lastSha key 须用 padStart 归一化（与其他 4 处一致）', () => {
+test('P0-7（第 7 轮）: lastSha key 须用 padStart 归一化（S10 后经 taskKey 统一）', () => {
   // :1284 旧代码 `plan-${plan.seq}` 无 padStart，若 plan.seq=1（数字）→ "plan-1"
   // 其他 4 处用 `plan-${String(plan.seq).padStart(2, '0')}` → "plan-01"
   // 不一致 → perTask 查不到 → gate 在 null SHA 上跑漏检
-  // 修：lastSha 循环内须用 padStart 归一化
+  // S10 (2026-07-07): 所有 task-key 构造统一经 lib.js taskKey(seq, taskId)，padStart 一致性由该函数保证
   const lastShaIdx = runSrc.indexOf('let lastSha = null')
   assert.notEqual(lastShaIdx, -1, '须有 lastSha 声明')
   const ctx = runSrc.slice(lastShaIdx, lastShaIdx + 400)
-  assert.match(ctx, /plan-\$\{String\(plan\.seq\)\.padStart\(2,\s*'0'\)\}/,
-    'lastSha key 须用 String(plan.seq).padStart(2,\'0\') 归一化（P0-7，与其他 4 处一致）')
+  assert.match(ctx, /taskKey\(plan\.seq,\s*plan\.tasks\[i\]\.id\)/,
+    'lastSha key 须用 taskKey(plan.seq, plan.tasks[i].id) 归一化（P0-7，S10 后经 taskKey 统一）')
 })
 
 test('P2-7（第 7 轮）: args 入口须校验 configPath/plansDir 类型（fail-fast）', () => {
@@ -1021,9 +1023,9 @@ test('P1-2a（第 13 轮）: bootstrap schema 须要求 failed_approaches[].plan
 })
 
 test('P1-2b（第 13 轮）: failed_approaches 存储须归一化为 plan-scoped key', () => {
-  // 修：orchestrator 按 plan-${String(fa.plan_seq).padStart(2,'0')}/${fa.task_id} 索引
-  assert.match(runSrc, /fa\.task_id\.includes\('\/'\)\s*\?\s*fa\.task_id\s*:\s*`plan-\$\{String\(fa\.plan_seq\)\.padStart\(2,\s*'0'\)\}\/\$\{fa\.task_id\}`/,
-    'run-plans.js 须对 failed_approaches task_id 做 plan-scoped 归一化（P1-2b）')
+  // 修：orchestrator 按 taskKey(fa.plan_seq, fa.task_id) 索引（S10 后统一经 taskKey 构造）
+  assert.match(runSrc, /fa\.task_id\.includes\('\/'\)\s*\?\s*fa\.task_id\s*:\s*taskKey\(fa\.plan_seq,\s*fa\.task_id\)/,
+    'run-plans.js 须对 failed_approaches task_id 做 plan-scoped 归一化（P1-2b，S10 后用 taskKey）')
 })
 
 test('P1-3a（第 13 轮）: qualityReviewer severity enum 须与 hunter 统一为小写', () => {

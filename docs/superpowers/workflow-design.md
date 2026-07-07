@@ -199,6 +199,7 @@ let state = {
                               //   review_history, commit_sha, simplify_reverted, simplify_review_findings,
                               //   destructive_review_failed, destructive_review_findings, concerns, blocked_info}}
                               //   taskKey = `plan-{seq}/{task.id}`（plan-scoped，防跨 plan 同名 task 覆盖）
+                              //   S10 (2026-07-07): 统一经 lib.js taskKey(seq, taskId) 构造，防 ad-hoc padStart 位数不一致
   failedApproaches: {},       // {taskKey: [{reason, error}]} 跨 session 失败方案（bootstrap 扫 runs/ 提取，key 已 plan-scoped）
   taskLessons: {},            // {taskKey: [lesson]} bootstrap 按 task 标题关键词匹配（S3：存储用 plan-scoped key）
   taskWriteFiles: {},         // {taskKey: [file]} bootstrap 提取的 plan declared write_files（S3：存储用 plan-scoped key）

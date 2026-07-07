@@ -467,6 +467,12 @@ export function bareTaskId(id) {
   return String(id).replace(/^plan-\d+\/+/i, '')
 }
 
+// taskKey 构造（S10, 2026-07-07）：统一 padStart 2 位，防历史 P0-7 位数不一致 bug 复发。
+// runTask/state 键统一经此函数构造，杜绝 ad-hoc `` `plan-${...padStart...}/${id}` `` 拼接散落。
+export function taskKey(seq, taskId) {
+  return `plan-${String(seq).padStart(2, '0')}/${taskId}`
+}
+
 // 过滤非叶子父 task：T{N} 与 T{N}{letter}（如 T6 与 T6b）共存 → T{N} 是「拆子 task」的父说明段，
 // 非可执行 leaf，drop。bootstrap agent 偶不遵循 leaf-first 规则，把 ## Task N（有 ### 子 task）也返回
 // → runtime 派 implementor 跑说明段，混乱（实战 wf_3e729d02 plan-06/T6 bug）。
