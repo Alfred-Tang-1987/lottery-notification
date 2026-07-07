@@ -126,6 +126,8 @@ implementor 在 RED 前先把 AUDIT 结果写到 `.audit/<taskKey>.md`（与 man
 
 ## 5. 局限（诚实边界）
 
+> **两类问题划清边界**：§5.1/§5.2 是**漏检问题**（该 halt 的没 halt——implementor 误判为一致，或 AUDIT 根本没触发）；§5.3/§5.4 是**频率/成本问题**（halt 触发了，但担心太多/太贵）。§5.4 的缓解（多数无差异通过、SDD controller 自动处理）只对**频率问题**有效——它们降低「halt 触发时的代价」，但对「没触发 halt 导致漏检」无效（halt 没发生，controller 没机会介入，"多数无差异"说的是别的 task）。别误用 §5.4 缓解到 §5.1/§5.2。
+
 ### 5.1 语义级控制流 bug：AUDIT 不阻止，靠 A3 可追溯 + 下游 review
 
 A3 是清单里唯一不能纯机械核查的项。这次 Task 13 的 fall-through bug 靠的是读 `resolveReviewBudget` 注释的意图——AUDIT 只能要求 implementor「列出路径 + 读注释 + 标注」，判断是否一致仍靠 implementor 读代码。**若 implementor 误判为一致（没读出注释意图），bug 会漏到实现阶段**。
