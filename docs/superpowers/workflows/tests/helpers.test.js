@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, formatFindingItem, isQuotaError, errStr, makeHalt, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound, resolveMaxRounds, detectOscillation, distillLessonInput, applyLessonDecisions, formatLessonsForDistill, validateAmendResult, validateCheckoutResult, groupFindingsByFile, formatCrossReviewerNote, bareTaskId, taskKey, dropParentTasks, extractCompletedFromSubjects, extractTaskKey, shouldEscalateOnOscillation, resolveReviewBudget, isFlipFlop, formatLessons, formatUniversalLessons, formatDomainLessons, updateFindingsHistory, formatFindingsHistory, hasRegressed, normalizeFilePath, REVIEW_SOURCES, checkImplStatus, formatBulletSection, buildPrompt, QUOTA_HALT_NOTE, STATIC_READONLY_NOTE, recordReviewRound, decideReviewOutcome } from '../lib.js'
+import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, formatFindingItem, isQuotaError, errStr, makeHalt, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound, resolveMaxRounds, detectOscillation, distillLessonInput, applyLessonDecisions, formatLessonsForDistill, validateAmendResult, validateCheckoutResult, groupFindingsByFile, formatCrossReviewerNote, bareTaskId, taskKey, dropParentTasks, extractCompletedFromSubjects, extractTaskKey, shouldEscalateOnOscillation, resolveReviewBudget, isFlipFlop, formatLessons, formatUniversalLessons, formatDomainLessons, updateFindingsHistory, formatFindingsHistory, hasRegressed, normalizeFilePath, REVIEW_SOURCES, checkImplStatus, formatBulletSection, buildPrompt, QUOTA_HALT_NOTE, STATIC_READONLY_NOTE, recordReviewRound, decideReviewOutcome, AUDIT_DIRECTIVE, AUDIT_REFACTOR_KEYWORDS } from '../lib.js'
 
 const ok = { status: 'ok', diagnostics: { files_touched: ['a.py'] } }
 const ok2 = { status: 'ok', diagnostics: { files_touched: ['b.py'] } }
@@ -1497,4 +1497,30 @@ test('S2 decideReviewOutcome: osc + alreadyEscalated + 无限模式 round>=budge
   assert.equal(out.reason, 'review_not_converging')
   assert.equal(out.diag.budget, 5)
   assert.equal(out.diag.round, 5)
+})
+
+// ===== Task 1 (2026-07-08): AUDIT_DIRECTIVE + AUDIT_REFACTOR_KEYWORDS 常量 + haltLikelySource 注释 =====
+
+test('AUDIT_DIRECTIVE: 常量导出 + 内容关键词', () => {
+  assert.equal(typeof AUDIT_DIRECTIVE, 'string')
+  assert.ok(AUDIT_DIRECTIVE.length > 100, '须是完整指令非空串')
+  for (const k of ['A1', 'A2', 'A3', 'A4', 'A5']) assert.ok(AUDIT_DIRECTIVE.includes(k), `须含 ${k}`)
+  assert.ok(AUDIT_DIRECTIVE.includes('needs_audit_fix'), '须含 needs_audit_fix 状态')
+  assert.ok(AUDIT_DIRECTIVE.includes('.audit/'), '须指示写 .audit/ 报告')
+  // 工具约束（D17）
+  assert.ok(AUDIT_DIRECTIVE.includes('Grep'), '须指定 Grep 工具')
+  assert.ok(AUDIT_DIRECTIVE.includes('Read'), '须指定 Read 工具')
+  // 工具/写入失败也阻断（D11）
+  assert.ok(AUDIT_DIRECTIVE.includes('工具') && AUDIT_DIRECTIVE.includes('失败'), '须含工具失败分级')
+})
+
+test('AUDIT_REFACTOR_KEYWORDS: 命中 refactor 词 + 不命中 feature 词', () => {
+  assert.ok(AUDIT_REFACTOR_KEYWORDS.test('替换 4 处重复'), '命中 替换')
+  assert.ok(AUDIT_REFACTOR_KEYWORDS.test('refactor the helper'), '命中 refactor')
+  assert.ok(AUDIT_REFACTOR_KEYWORDS.test('extract pure function'), '命中 extract')
+  assert.ok(!AUDIT_REFACTOR_KEYWORDS.test('add new login feature'), '不命中 feature 词')
+})
+
+test('AUDIT_DIRECTIVE: haltLikelySource audit fix needed → unknown', () => {
+  assert.equal(haltLikelySource('audit fix needed'), 'unknown')
 })

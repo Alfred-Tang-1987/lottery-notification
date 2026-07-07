@@ -386,6 +386,7 @@ function haltLikelySource(reason) {
   ])
   if (implReasons.has(r)) return 'implementor changes'
   if (r.startsWith('implementor ')) return 'implementor changes'
+  // audit fix needed（refactor task AUDIT 差异 halt）不涉及工作树脏状态 → unknown（自然落空，无需加 Set）
   return 'unknown'
 }
 
@@ -895,6 +896,35 @@ const QUOTA_HALT_NOTE = `若遇到 model 限额耗尽（quota/rate-limit/429 错
 function STATIC_READONLY_NOTE(reviewType) {
   return `This is a STATIC READ-ONLY review. You may use 'git diff', 'git status', 'find', 'grep'/'rg', and read files to locate and inspect changes. Do NOT run the test suite, ruff, lint, or any build — ${reviewType} is done by reading code, not by running it. Running tests/builds is the implementor's and gate's job, not yours.`
 }
+
+// AUDIT_REFACTOR_KEYWORDS（2026-07-08）—— inline 自 lib.js（去 export）
+// refactor 类 task 关键词，双层 guard 共用（bootstrap + runtime）。命中 → audit_required=true。
+// 初版从 2026-07-07 simplification 7 处缺陷归纳，随实践迭代（D13）。大小写不敏感（i 标志）。
+const AUDIT_REFACTOR_KEYWORDS = /(替换|去重|抽取|行为不变|逐字对齐|N 处可替换|refactor|extract)/i
+
+// AUDIT_DIRECTIVE（2026-07-08）—— inline 自 lib.js（去 export）
+// refactor 类 task implementor 在 RED 前核查 brief 现状假设的指令。buildPrompt defaults 默认空串
+// （非 refactor task 零影响）；audit_required 时调用方传此常量。工具约束（D17）：必须用 Grep/Read，
+// 不得 shell。A3 强制可审计（D4/D12）。工具/写入失败也阻断（D11）。
+const AUDIT_DIRECTIVE = `## Pre-RED Audit（此 task 标记为 refactor 类）
+在写 RED 测试之前，先用工具核查 brief 对现状代码的假设。对下表每项执行核查 + 填「实际」，产出写到 .audit/<taskKey>.md（覆盖写入；若 AUDIT 适用但报告缺失，不得进入 RED）：
+
+| 项 | 核查动作（须用指定工具） | 什么算差异 |
+|---|---|---|
+| A1 site 数 | 用 Grep 工具精确搜索 brief 声称的 pattern（如 Grep "bareTaskId" 在目标文件），数实际命中 | brief 说 N 处，实际 M 处（M≠N）→ 差异 |
+| A2 文本一致 | 用 Read 工具读取各 site 后 diff 待去重文本 | 多类变体 → 差异 |
+| A3 控制流 | 列出重构涉及的控制流关键路径（if/return/continue/break/短路/await 顺序，或被调函数返回值影响分支），trace 重构前后；**用 Read 工具读取被调函数定义并摘录相关注释**。**不管判断一致与否，A3 推理过程必须写进报告（含 brief 声明 + 注释摘要 + 你的判断）** | brief 声明的控制流与实际不符 → 差异 |
+| A4 行号/签名 | 用 Grep 搜索 brief 提到的函数名/签名，核对行号 + 参数 | 仅行号漂移 → 无害（记录即可）；符号不存在 → 缺陷（按 A1 处理） |
+| A5 字面量 | 用 Read 工具提取 brief 给的目标字面量（reason/diag/string），与现状对应字段 diff | 字面量位置/内容不符 → 差异 |
+
+工具约束：必须使用 Grep（精确搜索）和 Read（读函数定义）；不得用 shell 做字符串处理（跨平台/安全）。
+
+差异分级响应：
+- 无差异 / 仅 A4 行号漂移 → 进 RED。
+- A1/A2/A5 差异且你能判定为「有意变体」——**必须有证据**（用 Read 读到的 schema 字段/注释/代码逻辑，能解释为何 brief 简化说法与现状不一致但仍合理；仅凭感觉不算）→ 报告标注「有意变体 + 证据」→ 进 RED。
+- A1/A2/A3/A5 差异且判定为「brief 缺陷」→ STOP，status='needs_audit_fix'，diag 含 audit_reason='brief_defect' + 差异清单。
+- 拿不准是有意变体还是缺陷 → STOP，status='needs_audit_fix'，audit_reason='intentional_variant_unclear'（拿不准时阻断比强行实现安全）。
+- 工具执行失败（Grep/Read 报错）或 .audit/ 写入失败 → STOP，status='needs_audit_fix'，audit_reason='tool_failure'（无法核查时不能盲跑 RED）。`
 
 // ===== PROMPTS（inline 自 lib.js Task 6，增强版 bootstrap，去 export）=====
 const PROMPTS = {

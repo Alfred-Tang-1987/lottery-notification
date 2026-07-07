@@ -117,6 +117,28 @@ test('QC-4b: REVIEW_SOURCES 常量 lib.js ↔ run-plans.js 字节一致（S4 rev
   assert.match(libRS, /\{ name: 'hunter', key: 'silent_failures' \}/, 'REVIEW_SOURCES 须含 hunter/silent_failures 三元组')
 })
 
+test('QC-4b AUDIT: AUDIT_DIRECTIVE + AUDIT_REFACTOR_KEYWORDS 两端字节一致', () => {
+  // Task 1 (2026-07-08): 两常量 lib.js ↔ run-plans.js 字节一致守护。
+  // AUDIT_DIRECTIVE 是 template literal（` 开头到首个 ` 闭合，无内嵌反引号）；
+  // AUDIT_REFACTOR_KEYWORDS 是 RegExp literal（/ 开头到行尾 /flags 闭合）。
+  // 提取按值定界：template literal 用 `[\s\S]*?` 非贪婪到首个闭合 `，
+  // RegExp literal 用 /[^\n]*/[a-z]* 匹配行内正则字面量。
+  // 非贪婪 `([\\s\\S]*?)` 配合终止定界符确保只捕获值，不含后续注释（lib.js/run-plans.js 注释风格不同）。
+  function extractAuditConst(src, name, withExport) {
+    const prefix = withExport ? 'export ' : ''
+    const re = new RegExp(`${prefix}const ${name} = ((?:\`[\\s\\S]*?\`)|(?:/[^\\n]*/[a-z]*))`)
+    const m = src.match(re)
+    return m ? m[1] : null
+  }
+  for (const name of ['AUDIT_DIRECTIVE', 'AUDIT_REFACTOR_KEYWORDS']) {
+    const libVal = extractAuditConst(libSrc, name, true)
+    const runVal = extractAuditConst(runSrc, name, false)
+    assert.ok(libVal, `lib.js 须含 ${name}`)
+    assert.ok(runVal, `run-plans.js 须含 ${name} inline`)
+    assert.equal(libVal, runVal, `${name} 字节一致——lib.js 改了必须同步 run-plans.js inline 副本`)
+  }
+})
+
 test('run-plans.js SCHEMAS mirror key changes', () => {
   // implementor enum 含 done_with_concerns；diagnostics 含 concerns
   assert.match(runSrc, /'done_with_concerns'/)
