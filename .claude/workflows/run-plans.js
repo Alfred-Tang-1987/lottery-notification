@@ -1350,6 +1350,35 @@ async function halt(plan, task, r) {
 //              └─无改动──→ 跳过 review（省成本）
 //   destructive_changes 非空──→ 额外 review round（:destructive）──失败/异常不 halt，记 destructive_review_failed + findings
 // 任一 agent 限额/异常──→ halt 'model_unavailable' / 'agent_error'（reviewHaltReason 判定）
+// runFixRound（S2, 2026-07-07）：fix-round dispatch + 状态检查封装。
+// D16: 不用 checkImplStatus——fix-round 的 blocked/failed/needs_context 都 halt，语义不同。
+// 返回 { impl, halted: true }（impl.halted）/ { impl, halted: true, reason }（blocked/failed/needs_context）/
+//   { impl, halted: false, concerns, concernsHint, filesChanged }（normal/done_with_concerns）。
+//   调用方据 halted + reason 还原原 inline return 语义（halt 对象 / fixResult.impl）。
+async function runFixRound(taskKey, plan, task, round, spec, qual, hunt, state, cfg, implCtx, model, maxRounds, concerns, concernsHint) {
+  const findings = collectReviewFindings(spec, qual, hunt)
+  const crossReviewerNote = formatCrossReviewerNote(findings)
+  const findingsHistoryText = formatFindingsHistory(state.perTask[taskKey].findings_history || [], round)
+  const fullFixIssues = findingsHistoryText ? `${findingsHistoryText}\n${crossReviewerNote}` : crossReviewerNote
+  const oscEscRound = state.perTask[taskKey].oscillation_escalated_at_round
+  const retryNote = oscEscRound === round
+    ? `## 升级到 opus，本轮必须修完所有 [OPEN]\n- 逐条核对 [OPEN]，每条要么修完，要么说明不修的原因（★ 标本轮新增的优先修）\n- 修完后，核对 [FIXED] 列表的 fix 在你的改动后仍然存在；若 [OPEN] 与 [FIXED] 同文件，只动 [OPEN] 描述的代码，不要回退 [FIXED] 对应的修改\n- 不要留到下一轮，下一轮不再有升级空间\n- 截至 r${round} review 累计未修 findings 如上`
+    : `修复 review round ${round} 问题（${findings.length} 项发现；★ 标本轮新增）。`
+  const fixModel = fixModelForRound(round, model, maxRounds)
+  const impl = await dispatchImpl(buildPrompt('implementor', implCtx(fullFixIssues, retryNote)), { schema: SCHEMAS.implementor, model: fixModel, label: `impl:${task.id}:fix${round}` }, fixModel, 'opus')
+  if (impl.halted) return { impl, halted: true }
+  if (impl.status === 'blocked' || impl.status === 'failed' || impl.status === 'needs_context') {
+    return { impl, halted: true, reason: `implementor ${impl.status} in fix-round ${round}` }
+  }
+  if (impl.status === 'done_with_concerns') {
+    concerns = impl.diagnostics?.concerns || concerns
+    state.perTask[taskKey].concerns = concerns
+    concernsHint = formatConcernsHint(concerns)
+    log(`⚠ ${task.id} fix-round ${round} done_with_concerns: ${concerns.join('; ') || '(no detail)'}`)
+  }
+  return { impl, halted: false, concerns, concernsHint, filesChanged: impl.evidence.files_changed }
+}
+
 async function runTask(plan, task) {
   state.currentTask = task.id
   const cfg = state.config
@@ -1467,39 +1496,20 @@ async function runTask(plan, task) {
       log(`⚠ ${task.id}: r${round} OSCILLATING (flipFlop=false, opus already escalated) — continue until budget guard (v3)`)
     }
     // action === 'fix' → 走 fix-round（runFixRound，Task 14 抽取）
-    const findings = collectReviewFindings(spec, qual, hunt)
-    const crossReviewerNote = formatCrossReviewerNote(findings)
-    // D1: history 主导单源——formatFindingsHistory 已含本轮 [OPEN]（标★本轮新增），
-    // 不再单独注入 formatFindings(本轮) 避免重复。cross-reviewer note 按 file 聚合保留。
-    const findingsHistoryText = formatFindingsHistory(state.perTask[tk].findings_history || [], round)
-    const fullFixIssues = findingsHistoryText ? `${findingsHistoryText}\n${crossReviewerNote}` : crossReviewerNote
-    // v3 F: opus 升级轮强化 retryNote（DX: 移除中英混杂 + 双重否定，正向陈述；文本修正 r{round} 而非 r{round-1}）
-    const oscEscRound = state.perTask[tk].oscillation_escalated_at_round
-    const retryNote = oscEscRound === round
-      ? `## 升级到 opus，本轮必须修完所有 [OPEN]\n- 逐条核对 [OPEN]，每条要么修完，要么说明不修的原因（★ 标本轮新增的优先修）\n- 修完后，核对 [FIXED] 列表的 fix 在你的改动后仍然存在；若 [OPEN] 与 [FIXED] 同文件，只动 [OPEN] 描述的代码，不要回退 [FIXED] 对应的修改\n- 不要留到下一轮，下一轮不再有升级空间\n- 截至 r${round} review 累计未修 findings 如上`
-      : `修复 review round ${round} 问题（${findings.length} 项发现；★ 标本轮新增）。`
-    // 最后 1 轮 fix 强制 opus（有限模式 round===maxRounds-1 / 无限模式 round>=4）：
-    // 难度递增，最后机会用最强 model 降低 halt 概率。maxRounds 未传向后兼容默认 3（round=2 升级）。
-    const fixModel = fixModelForRound(round, model, maxRounds)
-    impl = await dispatchImpl(buildPrompt('implementor', implCtx(fullFixIssues, retryNote)), { schema: SCHEMAS.implementor, model: fixModel, label: `impl:${task.id}:fix${round}` }, fixModel, 'opus')
-    if (impl.halted) return impl
-    // Bug 4: fix-round implementor 返回 blocked/failed/needs_context 时不能静默忽略——
-    // 否则 orchestrator 在 stale code 上继续下一轮 review，必然重复发现同样问题 → 浪费轮次。
-    // 初始 dispatch 已有 opus 升级链 + context-fetch 路径；fix-round 内 halt 暴露问题而非静默循环。
-    if (impl.status === 'blocked' || impl.status === 'failed' || impl.status === 'needs_context') {
-      return { halted: true, reason: `implementor ${impl.status} in fix-round ${round}`, diag: impl.diagnostics }
+    // S2 (2026-07-07): fix-round dispatch + 状态检查抽进 runFixRound。原 inline 实现
+    //   （collectReviewFindings → formatCrossReviewerNote → formatFindingsHistory →
+    //    dispatchImpl + halted/blocked/failed/needs_context/done_with_concerns 分支）
+    //   逐字迁入函数体；调用方据 { impl, halted, reason, concerns, concernsHint, filesChanged }
+    //   还原原 return 语义（halt 对象 / fixResult.impl）。concerns/concernsHint 是闭包变量，
+    //   通过返回值传出——不能像原代码直接 mutate 闭包。
+    const fixResult = await runFixRound(tk, plan, task, round, spec, qual, hunt, state, cfg, implCtx, model, maxRounds, concerns, concernsHint)
+    if (fixResult.halted) {
+      if (fixResult.reason) return { halted: true, reason: fixResult.reason, diag: fixResult.impl.diagnostics }
+      return fixResult.impl
     }
-    // Q10（第 4 轮）: fix-round implementor 也可能返回 done_with_concerns（修了 review 问题但新增疑虑）。
-    //   旧代码只处理初始 dispatch 的 done_with_concerns → fix-round 的 concerns 被丢弃，
-    //   concernsHint 全程不变 → 后续 review round 收不到新疑虑作 focusHint。
-    //   须在此分支更新 concerns + concernsHint + perTask，与初始 dispatch 路径一致。
-    if (impl.status === 'done_with_concerns') {
-      concerns = impl.diagnostics?.concerns || concerns
-      state.perTask[tk].concerns = concerns
-      concernsHint = formatConcernsHint(concerns)
-      log(`⚠ ${task.id} fix-round ${round} done_with_concerns: ${concerns.join('; ') || '(no detail)'}`)
-    }
-    filesChanged = impl.evidence.files_changed || filesChanged
+    concerns = fixResult.concerns
+    concernsHint = fixResult.concernsHint
+    filesChanged = fixResult.filesChanged || filesChanged
   }
 
   // —— 方案 C（§5.2）：commit 提前 + git diff 触发 review + amend/checkout 回退 ——

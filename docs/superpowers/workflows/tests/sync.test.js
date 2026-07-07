@@ -189,7 +189,9 @@ test('v3 runtime wiring: findings_history update + taskCategories declared + OSC
   assert.match(runSrc, /reason: 'review_not_converging'/, 'run-plans.js 须有 review_not_converging halt reason')
 
   // fix-round 必须调用 formatFindingsHistory（D1 history 主导单源）
-  assert.match(runSrc, /formatFindingsHistory\(state\.perTask\[tk\]\.findings_history \|\| \[\], round\)/, 'fix round 须用 formatFindingsHistory 注入历史（S10 后局部变量 tk 经 taskKey() 构造）')
+  // S2/Task 14 (2026-07-07): fix-round 逻辑抽进 runFixRound(taskKey, ...)，参数名 taskKey
+  //   （调用方传 loop 局部 tk 作 taskKey 实参，访问同一 perTask 条目）。
+  assert.match(runSrc, /formatFindingsHistory\(state\.perTask\[taskKey\]\.findings_history \|\| \[\], round\)/, 'fix round 须用 formatFindingsHistory 注入历史（Task 14 抽进 runFixRound，参数名 taskKey；调用方传 tk 实参）')
 
   // H2: review max rounds halt diag 须含 findings_history（接手判断）
   assert.match(runSrc, /reason: 'review max rounds'[\s\S]{0,200}findings_history/, 'review max rounds halt diag 须含 findings_history')
@@ -1140,6 +1142,39 @@ test('finalReport prompt per_task includes v3 fields', () => {
     assert.match(p, /findings_history/, 'finalReport prompt mentions findings_history')
     assert.match(p, /oscillation_escalated_at_round/, 'finalReport prompt mentions oscillation_escalated_at_round')
   }
+})
+
+// ===== Task 14 (2026-07-07): B3-1 runFixRound runtime helper 存在性断言 =====
+// S2/D17: runFixRound 是 runtime 胶水（调 dispatchImpl），只能留 run-plans.js（lib.js 纯模块
+//   不能调 agent() runtime 全局，§4.3 分层）。可测逻辑已被 lib.js 纯函数覆盖
+//   （collectReviewFindings/formatCrossReviewerNote/formatFindingsHistory/fixModelForRound），
+//   runFixRound 只是胶水调用——靠 sync 存在性断言 + 全量回归兜底（D17 不加新单测）。
+test('Task 14: runFixRound runtime helper 存在 + 关键分支源码字面量守护', () => {
+  assert.match(runSrc, /async function runFixRound\(/, 'run-plans.js 须定义 runFixRound runtime helper（Task 14 抽取）')
+  // D16: 不用 checkImplStatus——fix-round 的 blocked/failed/needs_context 都 halt，语义不同
+  const fnStart = runSrc.indexOf('async function runFixRound(')
+  const fnEnd = runSrc.indexOf('\n}', fnStart)
+  const body = runSrc.slice(fnStart, fnEnd + 2)
+  // fix-round dispatch 须用 fixModelForRound + retryModel='opus'（改进 7.1）
+  assert.match(body, /fixModelForRound\(round, model, maxRounds\)/, 'runFixRound 须用 fixModelForRound 决定 fix-round model')
+  assert.match(body, /dispatchImpl\([\s\S]*label: `impl:\$\{task\.id\}:fix\$\{round\}`[\s\S]*'opus'\)/, 'runFixRound 须 dispatch implementor with fix label + retryModel opus')
+  // impl.halted → { impl, halted: true }（调用方据 reason 缺失 return fixResult.impl）
+  assert.match(body, /if \(impl\.halted\) return \{ impl, halted: true \}/, 'runFixRound impl.halted 须返回 { impl, halted: true }（D16 不用 checkImplStatus）')
+  // blocked/failed/needs_context → halt with reason
+  assert.match(body, /impl\.status === 'blocked' \|\| impl\.status === 'failed' \|\| impl\.status === 'needs_context'/, 'runFixRound 须 inline 判 blocked/failed/needs_context halt（D16）')
+  assert.match(body, /reason: `implementor \$\{impl\.status\} in fix-round \$\{round\}`/, 'runFixRound halt reason 须含 fix-round N')
+  // done_with_concerns → 更新 concerns + perTask + concernsHint + log（Q10）
+  assert.match(body, /impl\.status === 'done_with_concerns'[\s\S]*?concerns = impl\.diagnostics\?\.concerns \|\| concerns/, 'runFixRound done_with_concerns 须更新 concerns（Q10）')
+  assert.match(body, /state\.perTask\[taskKey\]\.concerns = concerns/, 'runFixRound done_with_concerns 须写 perTask.concerns')
+  assert.match(body, /concernsHint = formatConcernsHint\(concerns\)/, 'runFixRound done_with_concerns 须更新 concernsHint')
+  // 正常/done_with_concerns 返回 { impl, halted: false, concerns, concernsHint, filesChanged }
+  assert.match(body, /return \{ impl, halted: false, concerns, concernsHint, filesChanged: impl\.evidence\.files_changed \}/, 'runFixRound 正常路径须返回 halted:false + concerns/concernsHint/filesChanged')
+  // 调用方须用 tk 作 taskKey 实参（loop 内局部变量）
+  assert.match(runSrc, /await runFixRound\(tk, plan, task, round, spec, qual, hunt, state, cfg, implCtx, model, maxRounds, concerns, concernsHint\)/, 'review 循环须调用 runFixRound(tk, ...)（taskKey 实参用 loop 局部 tk）')
+  // 调用方 result handling 还原原 inline return 语义
+  assert.match(runSrc, /if \(fixResult\.reason\) return \{ halted: true, reason: fixResult\.reason, diag: fixResult\.impl\.diagnostics \}/, '调用方 blocked/failed/needs_context 须 return { halted, reason, diag }（还原原 inline）')
+  assert.match(runSrc, /return fixResult\.impl/, '调用方 impl.halted 须 return fixResult.impl（还原原 return impl）')
+  assert.match(runSrc, /filesChanged = fixResult\.filesChanged \|\| filesChanged/, '调用方须用 fixResult.filesChanged || filesChanged 保留 fallback（还原原 || filesChanged）')
 })
 
 // ===== HIGH-1 (2026-07-07): lesson_categories bootstrap 提取链（源码字面量断言）=====

@@ -424,6 +424,8 @@ commit agent 在 step 2.6 用 `git diff HEAD --numstat` 检测 `deleted_code` / 
 
 **实施 plan**：`docs/superpowers/workflow-plans/2026-07-06-review-v3-oscillation-findings-lessons.md`。
 
+**S2 runtime 胶水抽取（2026-07-07，Task 12-14）**：review 循环的可测纯决策已先后抽进 `recordReviewRound`（每轮 state 四件更新）+ `decideReviewOutcome`（10-action 决策），二者进 lib.js 受单测覆盖。剩下 fix-round 的 dispatch + 状态检查是 runtime 胶水（调 `dispatchImpl` → `agent()`），按 §4.3 分层只能留 run-plans.js（lib.js 是纯模块不能调 runtime 全局）。Task 14 抽 `runFixRound(taskKey, plan, task, round, spec, qual, hunt, state, cfg, implCtx, model, maxRounds, concerns, concernsHint)` 封装该胶水：`collectReviewFindings` → `formatCrossReviewerNote` → `formatFindingsHistory` → `dispatchImpl(fixModel, 'opus')` + `impl.halted` / `blocked`/`failed`/`needs_context` halt / `done_with_concerns` concerns 更新。**D16**：不用 `checkImplStatus`——fix-round 的 `blocked`/`failed`/`needs_context` 都直接 halt（语义不同于初始 dispatch 的升级链），inline 判断 `if (impl.status === 'blocked' || ...)` 返回 `{ impl, halted: true, reason }`。函数返回 `{ impl, halted, reason?, concerns, concernsHint, filesChanged }`，调用方据 `halted` + `reason` 还原原 inline return 语义（`reason` 缺失 → `return fixResult.impl`；`reason` 存在 → `return { halted: true, reason, diag: fixResult.impl.diagnostics }`；正常 → 回写 `concerns`/`concernsHint`/`filesChanged`）。`concerns`/`concernsHint` 是闭包变量，通过返回值传出（不能像原代码直接 mutate 闭包）。**D17**：不加新单测——可测逻辑已在 lib.js 纯函数覆盖，runFixRound 是胶水，靠 `sync.test.js` 存在性断言 + 全量回归兜底。
+
 
 ### 5.6 W1 移植改进（2026-07-07：从 OTC-Fund-SIP-Strategy 仓库移植 5 项通用改进）
 
