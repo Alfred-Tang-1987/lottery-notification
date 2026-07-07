@@ -881,12 +881,16 @@ test('S2 decideReviewOutcome: else → fix', () => { /* 正常未收敛 → acti
 
 ### Step 13.2 — GREEN：lib.js + run-plans.js 实现
 
-- [ ] `docs/superpowers/workflows/lib.js` 加函数（10 个 action 分支，逐字对齐原 reason + diag，参照 run-plans.js:1329-1398）：
+- [ ] `docs/superpowers/workflows/lib.js` 加函数（10 个 action 分支，逐字对齐原 reason + diag，参照 run-plans.js:1416-1485）：
+
+> **控制流修正（2026-07-07，实施前复核）**：原函数体（D15）在 `osc.oscillating` 块内对 escalate/continue 路径 `return`，跳过了 budget guard。核查当前代码（run-plans.js:1448-1485）：osc.oscillating 块（escalate 或 alreadyEscalated）**fall through 到 budget guard**（1476-1485），budget guard 是无限模式兜底（resolveReviewBudget 注释明确：「升 opus 后继续跑直到 budget 耗尽」）。若 escalate/continue 早 return，无限模式下持续振荡（已升 opus + 新 findings 不收敛）会无限跑。修正：escalate/continue 不 return，用 `let action = 'fix'` 累积，fall through 到 budget guard 后再决定 return action。
 
 ```javascript
 // decideReviewOutcome（S2, 2026-07-07）：review 循环决策抽取，10 个 action 分支。
 // 6 halt 子类（reason 区分）+ 4 非 halt（break/escalate/continue/fix）。
 // 函数内不 mutate state（escalate 时 opus_escalated/oscillation_escalated_at_round 由调用方做）。
+// 控制流修正：osc.oscillating 的 escalate/continue 不早 return——须 fall through 到 budget guard
+// （无限模式兜底，resolveReviewBudget 注释「升 opus 后继续跑直到 budget 耗尽」）。
 export function decideReviewOutcome(state, taskKey, round, spec, qual, hunt, model, maxRounds, cfg, reviewReason, emptyFailedReason) {
   if (reviewReason) return { action: 'halt', reason: reviewReason, diag: { spec: spec?.diagnostics, qual: qual?.diagnostics, hunt: hunt?.diagnostics } }
   if (emptyFailedReason) return { action: 'halt', reason: emptyFailedReason, diag: { spec: spec?.diagnostics, qual: qual?.diagnostics, hunt: hunt?.diagnostics } }
@@ -895,10 +899,15 @@ export function decideReviewOutcome(state, taskKey, round, spec, qual, hunt, mod
   const flipFlop = isFlipFlop(state.perTask[taskKey].review_history || [])
   const regressed = hasRegressed(state.perTask[taskKey].findings_history || [])
   if (regressed) return { action: 'halt', reason: 'OSCILLATING', diag: { ...osc, flipFlop, regressed, regressedFindings: state.perTask[taskKey].findings_history.filter(h => h.status === 'regressed'), model } }
+  let action = 'fix'
   if (osc.oscillating) {
     if (flipFlop) return { action: 'halt', reason: 'OSCILLATING', diag: { ...osc, flipFlop, regressed, model } }
-    if (shouldEscalateOnOscillation(model, state.perTask[taskKey].opus_escalated)) return { action: 'escalate', model: 'opus' }
-    return { action: 'continue' }
+    if (shouldEscalateOnOscillation(model, state.perTask[taskKey].opus_escalated)) {
+      action = 'escalate'
+    } else {
+      action = 'continue'
+    }
+    // 不 return——fall through 到 budget guard（无限模式兜底）
   }
   if (maxRounds === 0) {
     const budget = resolveReviewBudget(cfg)
@@ -906,7 +915,7 @@ export function decideReviewOutcome(state, taskKey, round, spec, qual, hunt, mod
   } else if (round === maxRounds) {
     return { action: 'halt', reason: 'review max rounds', diag: { round, findings_history: state.perTask[taskKey].findings_history, spec: spec.diagnostics, qual: qual.diagnostics, hunt: hunt.diagnostics } }
   }
-  return { action: 'fix' }
+  return action === 'escalate' ? { action, model: 'opus' } : { action }  // 'fix' / 'escalate'(含 model) / 'continue'
 }
 ```
 

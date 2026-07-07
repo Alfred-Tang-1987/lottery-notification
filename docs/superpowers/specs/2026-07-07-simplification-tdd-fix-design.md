@@ -611,10 +611,16 @@ export function decideReviewOutcome(
   //   - 'continue' (osc + flipFlop=false + alreadyEscalated)
   //   - 'fix' (else)
   // 共 10 个 action 分支（6 halt + 4 非 halt）
+  //
+  // 控制流修正（2026-07-07，实施前复核）：escalate/continue 不在 osc.oscillating 块内早 return——
+  // 须 fall through 到 budget guard（无限模式兜底，resolveReviewBudget 注释「升 opus 后继续跑直到 budget
+  // 耗尽」）。原 D15 伪代码（块内 return escalate/continue）会跳过 budget guard → 无限模式下持续振荡
+  // （已升 opus + 新 findings 不收敛）会无限跑。修正后用 `let action` 累积，budget guard 判 halt 后
+  // 才 return 非 halt action（escalate 附 model:'opus'）。详见 plan Task 13 完整函数体。
 }
 ```
 
-**替换** run-plans.js:1329-1398（~70 行决策逻辑 → 1 函数调用 + switch）。
+**替换** run-plans.js:1416-1485（~70 行决策逻辑 → 1 函数调用 + switch）。
 
 函数内不 mutate state（escalate 时 setting opus_escalated/oscillation_escalated_at_round 由调用方做，保持纯决策）。
 
