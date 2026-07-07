@@ -1098,3 +1098,18 @@ test('finalReport prompt per_task includes v3 fields', () => {
   }
 })
 
+// ===== HIGH-1 (2026-07-07): lesson_categories bootstrap 提取链（源码字面量断言）=====
+
+test('HIGH-1: bootstrap prompt step 3 含 lesson_categories 提取说明', () => {
+  const boot = promptBody(libSrc, 'bootstrap')
+  assert.ok(boot.includes('lesson_categories'),
+    'bootstrap prompt 须指示提取 lesson_categories（当前未指示 → category 精确匹配分支端到端不可达）')
+})
+
+test('HIGH-1: bootstrap Return schema tasks 含 lesson_categories 字段', () => {
+  const boot = promptBody(libSrc, 'bootstrap')
+  // Return schema 在 prompt 文本内描述为 tasks:[{id, model, title, ...}]
+  assert.match(boot, /tasks:\[\{[^}]*lesson_categories/,
+    'bootstrap Return schema tasks 须含 lesson_categories 字段')
+})
+

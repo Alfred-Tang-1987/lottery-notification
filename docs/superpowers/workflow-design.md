@@ -364,7 +364,7 @@ commit agent 在 step 2.6 用 `git diff HEAD --numstat` 检测 `deleted_code` / 
 **动机（历史数据）**：plan-06 跑 T6f/T6g/T7 三次 OSCILLATING halt，全为 `flipFlop=false`（每轮全新 findings = 真补充 = 在推进），纯因「同文件被改 ≥3 轮」的纯计数误 halt。其中 T6g r4 spec 已 ok、T7 r4 spec+quality 已 ok，仅剩 1-2 个 finding，升 opus 后多跑 1-2 轮本可收敛——计数 halt 浪费了 opus 升级后的推进力。
 
 **改进 A+B（lessons 两层注入）**：旧逻辑 bootstrap 按 lesson `title/detail` 关键词与 task `title` 重叠匹配，通用纪律（silent-failure 5 条）只在关键词撞上时才注入。改进：
-- **A. category 匹配**：lesson frontmatter 的 `category`（silent-failure / test-strategy / dependency 等）升为一等公民。task 在 plan frontmatter 可声明 `lesson_categories: [silent-failure, test-strategy]`（可选，未声明 fallback 到 title 关键词）。
+- **A. category 匹配**：lesson frontmatter 的 `category`（silent-failure / test-strategy / dependency 等）升为一等公民。task 在 plan frontmatter 可声明 `lesson_categories: [silent-failure, test-strategy]`（可选，未声明 fallback 到 title 关键词）。> **HIGH-1 修复（2026-07-07）**：plan frontmatter 可声明 `lesson_categories` 启用精确匹配；未声明时 fallback 到 title 关键词匹配（向后兼容）。此前 bootstrap prompt 不指示提取 `lesson_categories` 且 Return schema 不声明该字段 → `formatDomainLessons` 的 category 精确匹配分支端到端不可达（仅 title 关键词 fallback 生效）。现 bootstrap step 3 加提取说明 + Return schema `tasks:[{id, model, title, lesson_categories}]` 补字段，提取链闭合。
 - **B. 两层注入**：Tier 1（`category: silent-failure` 始终注入每个 implementor/fix prompt——项目最高优先级纪律不靠关键词撞运气）+ Tier 2（其余 category 按 task 声明匹配，cap 5 条，同 plan 优先）。`formatLessons` 拆成 `formatUniversalLessons + formatDomainLessons`。
 
 **改进 E'（findings 状态机）**：旧逻辑 fix round 仅注入当前轮 findings，implementor 不知道前 N 轮已 flag 过什么 → 易「修 A 引发 B，下轮修 B 又回到 A」回归循环。改进：`state.perTask[taskKey].findings_history` 累积全历史，每条 finding 带状态 `open | fixed | regressed`：
