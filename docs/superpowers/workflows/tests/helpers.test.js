@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, isQuotaError, errStr, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound, resolveMaxRounds, detectOscillation, distillLessonInput, applyLessonDecisions, formatLessonsForDistill, validateAmendResult, validateCheckoutResult, groupFindingsByFile, formatCrossReviewerNote, bareTaskId, taskKey, dropParentTasks, extractCompletedFromSubjects, extractTaskKey, shouldEscalateOnOscillation, resolveReviewBudget, isFlipFlop, formatLessons, formatUniversalLessons, formatDomainLessons, updateFindingsHistory, formatFindingsHistory, hasRegressed, normalizeFilePath, REVIEW_SOURCES } from '../lib.js'
+import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, isQuotaError, errStr, makeHalt, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound, resolveMaxRounds, detectOscillation, distillLessonInput, applyLessonDecisions, formatLessonsForDistill, validateAmendResult, validateCheckoutResult, groupFindingsByFile, formatCrossReviewerNote, bareTaskId, taskKey, dropParentTasks, extractCompletedFromSubjects, extractTaskKey, shouldEscalateOnOscillation, resolveReviewBudget, isFlipFlop, formatLessons, formatUniversalLessons, formatDomainLessons, updateFindingsHistory, formatFindingsHistory, hasRegressed, normalizeFilePath, REVIEW_SOURCES } from '../lib.js'
 
 const ok = { status: 'ok', diagnostics: { files_touched: ['a.py'] } }
 const ok2 = { status: 'ok', diagnostics: { files_touched: ['b.py'] } }
@@ -75,6 +75,19 @@ test('errStr extracts message safely', () => {
   assert.equal(errStr(undefined), '')
   assert.equal(errStr({}), '[object Object]')
   assert.equal(errStr(new Error('x'.repeat(300))).length, 200)
+})
+
+test('S9 makeHalt: 构造 halt 对象', () => {
+  const h = makeHalt('model_unavailable', 'opus', new Error('quota'))
+  assert.equal(h.halted, true)
+  assert.equal(h.reason, 'model_unavailable')
+  assert.equal(h.diag.model, 'opus')
+  assert.equal(h.diag.error, 'quota')
+})
+
+test('S9 makeHalt: error 为 null/字符串', () => {
+  assert.equal(makeHalt('x', 'm', null).diag.error, '')
+  assert.equal(makeHalt('x', 'm', 'msg').diag.error, 'msg')
 })
 
 // —— matchesPlanFilter（Bug 10 修复）——

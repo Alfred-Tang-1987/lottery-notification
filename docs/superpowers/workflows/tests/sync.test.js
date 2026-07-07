@@ -30,7 +30,7 @@ for (const role of ROLES) {
 test('run-plans.js inlines the new conditional-render helpers', () => {
   // QC-3: formatLessonsForDistill / applyLessonDecisions / renderLessonEntry 不再 inline
   // （SH2 后 distiller 自读写盘，orchestrator 不调用这些函数）。lib.js 真源保留。
-  for (const fn of ['formatReferencePaths', 'formatSilentFailureContext', 'formatFailedApproaches', 'formatLessons', 'formatUniversalLessons', 'formatDomainLessons', 'formatWriteFilesScope', 'formatSchemaCheck', 'languageChecklist', 'LANGUAGE_CHECKLISTS', 'gateCommands', 'collectReviewFindings', 'formatFindings', 'matchesPlanFilter', 'classifyThrown', 'reviewHaltReason', 'reviewHaltForEmptyFailed', 'haltLikelySource', 'fixModelForRound', 'resolveMaxRounds', 'resolveLessonsAutoDistill', 'distillLessonInput', 'summarizeReviewRound', 'groupFindingsByFile', 'formatCrossReviewerNote', 'updateFindingsHistory', 'formatFindingsHistory', 'hasRegressed', 'resolveReviewBudget']) {
+  for (const fn of ['formatReferencePaths', 'formatSilentFailureContext', 'formatFailedApproaches', 'formatLessons', 'formatUniversalLessons', 'formatDomainLessons', 'formatWriteFilesScope', 'formatSchemaCheck', 'languageChecklist', 'LANGUAGE_CHECKLISTS', 'gateCommands', 'collectReviewFindings', 'formatFindings', 'matchesPlanFilter', 'classifyThrown', 'makeHalt', 'reviewHaltReason', 'reviewHaltForEmptyFailed', 'haltLikelySource', 'fixModelForRound', 'resolveMaxRounds', 'resolveLessonsAutoDistill', 'distillLessonInput', 'summarizeReviewRound', 'groupFindingsByFile', 'formatCrossReviewerNote', 'updateFindingsHistory', 'formatFindingsHistory', 'hasRegressed', 'resolveReviewBudget']) {
     assert.match(runSrc, new RegExp(`function ${fn}|const ${fn}`), `missing helper: ${fn}`)
   }
 })
@@ -55,7 +55,7 @@ test('QC-4: 关键 helper 函数体 lib.js ↔ run-plans.js 字节一致', () =>
   // Q9（第 4 轮新增）: findingsOf / summarizeFinding 内部 helper 也 inline 复制，须字节守护
   const fns = [
     'fixModelForRound', 'resolveMaxRounds', 'haltLikelySource', 'reviewHaltReason',
-    'reviewHaltForEmptyFailed', 'detectOscillation', 'classifyThrown',
+    'reviewHaltForEmptyFailed', 'detectOscillation', 'classifyThrown', 'makeHalt',
     // Q7 新增：影响 halt 路由 / commit 识别 / plan 过滤 / 反馈聚合 / distiller 输入
     'isQuotaError', 'commitSubject', 'normalizeCompleted', 'matchesPlanFilter',
     'collectReviewFindings', 'summarizeReviewRound', 'formatFindings',
@@ -802,8 +802,8 @@ test('P0-4（第 6 轮）: dispatchImpl 非 quota 异常须封装 agent_error（
   assert.ok(dispatchMatch, '须有 dispatchImpl 函数')
   // 不得有 throw e（非 quota 异常不得抛出）
   assert.doesNotMatch(dispatchMatch[0], /if \(isQuotaError\(e\)\) return[\s\S]*?else throw e|throw e\s*$/, 'dispatchImpl 非 quota 异常不得 throw（P0-4）')
-  // 须返回 agent_error
-  assert.match(dispatchMatch[0], /reason: 'agent_error'/, 'dispatchImpl 非 quota 异常须封装 agent_error（P0-4）')
+  // 须返回 agent_error（S9 后经 makeHalt('agent_error', ...) 构造，原 reason 字面量移入 makeHalt）
+  assert.match(dispatchMatch[0], /makeHalt\('agent_error'/, 'dispatchImpl 非 quota 异常须封装 agent_error（P0-4，S9 后经 makeHalt）')
 })
 
 test('P1-5（第 6 轮）: commit/simplify/contextFetcher 须硬编码 sonnet（least-powerful-model）', () => {

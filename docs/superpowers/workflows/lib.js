@@ -224,6 +224,11 @@ export function errStr(e) {
   return String(e?.message || e || '').slice(0, 200)
 }
 
+// makeHalt（S9, 2026-07-07）：统一 halt 对象构造，消除 dispatchImpl 内 catch 块重复。
+export function makeHalt(reason, model, error) {
+  return { halted: true, reason, diag: { model, error: errStr(error) } }
+}
+
 // 把 agent() 抛出的异常归类为 review 语义 status：限额→model_unavailable，其余→agent_error。
 // 封装 review catch 里重复的三元判断（safeAgent 用）。
 export function classifyThrown(e) {

@@ -277,6 +277,10 @@ function isQuotaError(e) {
 function errStr(e) {
   return String(e?.message || e || '').slice(0, 200)
 }
+// makeHalt（S9, 2026-07-07）：统一 halt 对象构造，消除 dispatchImpl 内 catch 块重复。 —— inline 自 lib.js
+function makeHalt(reason, model, error) {
+  return { halted: true, reason, diag: { model, error: errStr(error) } }
+}
 // 把 agent() 抛出的异常归类为 review 语义 status —— inline 自 lib.js
 function classifyThrown(e) {
   return isQuotaError(e) ? 'model_unavailable' : 'agent_error'
@@ -410,8 +414,8 @@ async function dispatchImpl(prompt, opts, model, retryModel = null) {
     // P0-4（第 6 轮）: 非 quota 异常须封装 agent_error 返回（不 throw）。
     //   旧代码 throw e → 被顶层 catch 捕获误判为 model_unavailable → 用户无效 resume。
     //   quota → model_unavailable；其余 → agent_error（TypeError/ReferenceError 等真实 bug）。
-    if (isQuotaError(e)) return { halted: true, reason: 'model_unavailable', diag: { model, error: errStr(e) } }
-    return { halted: true, reason: 'agent_error', diag: { model, error: errStr(e) } }
+    if (isQuotaError(e)) return makeHalt('model_unavailable', model, e)
+    return makeHalt('agent_error', model, e)
   }
   if (impl?.status === 'model_unavailable') return { halted: true, reason: 'model_unavailable', diag: impl.diagnostics }
   // agent() 返回 null：可能是限额耗尽（router 中文错误如"已达到 5 小时的使用上限"常被 runtime
@@ -430,9 +434,9 @@ async function dispatchImpl(prompt, opts, model, retryModel = null) {
           return impl
         }
       } catch (e) {
-        if (isQuotaError(e)) return { halted: true, reason: 'model_unavailable', diag: { model: retryModel, error: errStr(e) } }
+        if (isQuotaError(e)) return makeHalt('model_unavailable', retryModel, e)
         // P0-4（第 6 轮）: retry 路径同样封装 agent_error（不 throw）
-        return { halted: true, reason: 'agent_error', diag: { model: retryModel, error: errStr(e) } }
+        return makeHalt('agent_error', retryModel, e)
       }
     }
     // Q6（第 5 轮）: 消息须根据是否有 retryModel 分支——无 retry 时说 "retry exhausted" 误导（从未 retry）。
