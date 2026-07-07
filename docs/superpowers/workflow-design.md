@@ -324,6 +324,14 @@ review 全绿 → COMMIT → SIMPLIFY → git status --porcelain subagent 检查
 
 **状态机守卫不变**：simplify review 轮同样接 `reviewHaltReason` + `reviewHaltForEmptyFailed` 双守卫（同主 review 轮，复用 `runReviewRound` helper）。
 
+**B3-2 S3 三 helper 抽取（2026-07-07，Task 15）**：simplify 三阶段（diff/amend/checkout）原 inline 在 `runTask` 中（commit 后 ~50 行），抽成 3 个 runtime helper 供可读性 + 后续复用：
+
+- `checkSimplifyChanges(taskId)` — 跑 `git status --porcelain` subagent，返回 `{error:false, changed, files}` 或 `{error:true, reason:'simplify diff check failed', diag}`（diff null/格式错/changed=true 时 files 非 array → error，不静默降级）。
+- `amendSimplifyCommit(taskId, commitSha)` — review 全绿时 `git add -A && git commit --amend --no-edit` + `git rev-parse HEAD`，经 `validateAmendResult` 校验 40 位 hex，返回 `{error:false, sha}` 或 `{error:true, reason:'simplify amend failed', diag}`。
+- `revertSimplifyChanges(taskId, commitSha)` — review 失败时 `git reset --hard HEAD && git clean -fd` + `git status --porcelain` 兜底，经 `validateCheckoutResult` 校验 porcelain 空，返回 `{error:false}` 或 `{error:true, reason:'simplify checkout failed', diag}`。
+
+3 helper 是 `safeAgent` 胶水调用（调 `agent()` runtime 全局，只能留 run-plans.js，§4.3 分层）；可测逻辑已在 lib.js 纯函数（`validateAmendResult`/`validateCheckoutResult`，helpers.test 覆盖失败分支）。D17 不加新单测，靠 sync.test 存在性断言 + 全量回归兜底（与 `runFixRound` 同策略）。返回 shape 用 `{error:true/false,...}`（非 halted-shaped）——Task 16 在 runTask 调用点用 3 helper 替换 inline 块时，把 `{error:true}` 翻译回 `{halted:true, reason, diag}`（原 inline return shape）。safeAgent prompt 字符串须与原 inline 逐字一致（改 prompt 会改 agent 行为）。
+
 ### 5.2.1 Destructive Change Detection（commit 后额外 review round）
 
 commit agent 在 step 2.6 用 `git diff HEAD --numstat` 检测 `deleted_code` / `file_deletion` / `signature_change`，写入 `diagnostics.destructive_changes`。非空 → 触发 spec+quality+hunter 并行额外 review（`runReviewRound` helper，`:destructive` label）。

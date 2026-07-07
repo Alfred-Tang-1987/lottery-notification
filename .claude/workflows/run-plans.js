@@ -1379,6 +1379,48 @@ async function runFixRound(taskKey, plan, task, round, spec, qual, hunt, state, 
   return { impl, halted: false, concerns, concernsHint, filesChanged: impl.evidence.files_changed }
 }
 
+// —— B3-2 S3 simplify 三 helper（Task 15 抽取，2026-07-07）——
+// §5.2 方案 C 的 simplify 三阶段（diff/amend/checkout）原 inline 在 runTask 中（line ~1541-1591），
+//   抽成 3 个 runtime helper 供 Task 16 在 runTask 调用点替换 inline 块。
+// D17: 不加新单测——可测逻辑（validateAmendResult/validateCheckoutResult）已是 lib.js 纯函数，
+//   helpers.test 已覆盖失败分支；3 helper 剩余只是 safeAgent 胶水调用，靠 sync.test 存在性断言 +
+//   全量回归兜底（与 runFixRound 同策略）。
+// 返回 shape 用 {error:true/false, ...}（非 halted-shaped）——Task 16 在调用点把 {error:true}
+//   翻译回 {halted:true, reason, diag}（原 inline 的 return shape）。Task 15 仅定义不调用，
+//   故 inline 块仍跑，无行为变化。
+// safeAgent prompt 字符串须与原 inline（line 1542/1569/1586）逐字一致——改 prompt 会改 agent 行为。
+async function checkSimplifyChanges(taskId) {
+  const diffSchema = { type: 'object', required: ['changed', 'files'], properties: { changed: { type: 'boolean' }, files: { type: 'array', items: { type: 'string' } } } }
+  const diffResult = await safeAgent('Run `git status --porcelain` in the current working directory. If output is empty, return {"changed": false, "files": []}. Otherwise return {"changed": true, "files": [<list of file paths from porcelain output>]}.', { schema: diffSchema, label: `diff:${taskId}` })
+  // Q4/Q8: diff 返回 null/异常/格式错 / changed=true 时 files 非 array → error（不静默降级为空，防漏审 simplify 改动）
+  if (!diffResult || typeof diffResult !== 'object' || typeof diffResult.changed !== 'boolean' || (diffResult.changed === true && !Array.isArray(diffResult.files))) {
+    return { error: true, reason: 'simplify diff check failed', diag: { task: taskId, diffResult: diffResult || null } }
+  }
+  return { error: false, changed: diffResult.changed === true, files: Array.isArray(diffResult.files) ? diffResult.files : [] }
+}
+
+async function amendSimplifyCommit(taskId, commitSha) {
+  const amendSchema = { type: 'object', required: ['ok'], properties: { ok: { type: 'boolean' }, sha: { type: 'string' }, error: { type: 'string' } } }
+  const amendResult = await safeAgent('Run `git add -A && git commit --amend --no-edit`. Then run `git rev-parse HEAD` and return JSON {"ok": true, "sha": "<40-char-hex>"}. If amend failed (e.g. pre-commit hook blocked), return {"ok": false, "sha": "", "error": "<message>"}.', { schema: amendSchema, label: `amend:${taskId}` })
+  const amendCheck = validateAmendResult(amendResult)
+  // Q1/Q2/Q8: amend 失败或 SHA 格式错 → error（防 gate 在旧 SHA 跑漏检 simplify 改动）
+  if (!amendCheck.valid) {
+    return { error: true, reason: 'simplify amend failed', diag: { task: taskId, amendError: amendCheck.error, commitSha } }
+  }
+  return { error: false, sha: amendCheck.sha }
+}
+
+async function revertSimplifyChanges(taskId, commitSha) {
+  const checkoutSchema = { type: 'object', required: ['ok'], properties: { ok: { type: 'boolean' }, porcelain: { type: 'string' }, error: { type: 'string' } } }
+  const checkoutResult = await safeAgent('Run `git reset --hard HEAD && git clean -fd` to discard simplify changes (both tracked modifications, staged changes, and untracked new files). Then run `git status --porcelain` to verify the working tree is clean. Return JSON {"ok": true, "porcelain": "<porcelain output>"} on success or {"ok": false, "porcelain": "<output>", "error": "<message>"} on failure.', { schema: checkoutSchema, label: `checkout:${taskId}` })
+  const checkoutCheck = validateCheckoutResult(checkoutResult)
+  // Q3/Q4/Q8: checkout 失败或兜底验证工作树仍脏 → error（simplify 改动残留，不谎报 simplify_reverted）
+  if (!checkoutCheck.valid) {
+    return { error: true, reason: 'simplify checkout failed', diag: { task: taskId, checkoutError: checkoutCheck.error, commitSha } }
+  }
+  return { error: false }
+}
+
 async function runTask(plan, task) {
   state.currentTask = task.id
   const cfg = state.config

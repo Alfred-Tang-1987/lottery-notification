@@ -1177,6 +1177,19 @@ test('Task 14: runFixRound runtime helper 存在 + 关键分支源码字面量�
   assert.match(runSrc, /filesChanged = fixResult\.filesChanged \|\| filesChanged/, '调用方须用 fixResult.filesChanged || filesChanged 保留 fallback（还原原 || filesChanged）')
 })
 
+// ===== Task 15 (2026-07-07): B3-2 S3 simplify 三 helper 存在性断言 =====
+// S3/D17: 3 个 simplify runtime helper（checkSimplifyChanges/amendSimplifyCommit/
+//   revertSimplifyChanges）是 safeAgent 胶水调用（调 agent() runtime 全局），只能留
+//   run-plans.js（lib.js 纯模块不能调 runtime，§4.3 分层）。可测逻辑已被 lib.js 纯函数
+//   覆盖（validateAmendResult/validateCheckoutResult，helpers.test 已覆盖失败分支），
+//   3 helper 剩余只是胶水——靠 sync 存在性断言 + 全量回归兜底（D17 不加新单测，与 runFixRound 同策略）。
+//   Task 16 将在 runTask 调用点用这 3 helper 替换 inline 块（line ~1584/1611/1628）。
+test('Task 15: B3-2 S3 simplify 三 helper 存在', () => {
+  assert.match(runSrc, /async function checkSimplifyChanges\(/, 'checkSimplifyChanges 存在')
+  assert.match(runSrc, /async function amendSimplifyCommit\(/, 'amendSimplifyCommit 存在')
+  assert.match(runSrc, /async function revertSimplifyChanges\(/, 'revertSimplifyChanges 存在')
+})
+
 // ===== HIGH-1 (2026-07-07): lesson_categories bootstrap 提取链（源码字面量断言）=====
 
 test('HIGH-1: bootstrap prompt step 3 含 lesson_categories 提取说明', () => {
