@@ -23,6 +23,8 @@
 
 **全 16 项根治**。S13（dispatchImpl 改名）保持不改（13 处调用点风险高，收益仅命名美化），不在 16 项内。
 
+> **复核补充（2026-07-07）**：除审计 16 项外，新增 **B1-10 通用性守护断言**（sync.test 加一条防项目耦合断言，见 §4.10）——这是复核"保持 workflow 通用性"诉求时新增的防御项，**不计入审计 16 项**，是额外的通用性护栏。实施时并入 Batch 1 commit 2。
+
 ### 1.3 关键约束（§4.3 分层）
 
 - **纯决策/纯构造函数**（不调 `agent()`）→ 必须进 lib.js + 同步 run-plans.js inline 副本，sync.test 字节守护
@@ -40,7 +42,7 @@
 | D1 | 修复范围 | 全 16 项根治 | 彻底闭环审计报告 |
 | D2 | HIGH-1 方案 | A. 补全提取链 | spec §5.5 改进 A 设计了该能力，v3 plan 要求 bootstrap 提取但实现未完成，是 bug |
 | D3 | HIGH-1 范围 | 只补提取链 + schema，不动现有 plan frontmatter | 数据迁移留给 plan 作者按需 opt-in |
-| D4 | MEDIUM-1 防御 | 加 3 个 trip-wire 守护断言 | TDD 导向，代价小于 AST 重构 |
+| D4 | MEDIUM-1 防御 | 加 2 个 trip-wire 守护断言（删脆弱点 1 的 trip-wire） | 见 D4 复核修正 |
 | D5 | LOW-1 `?? 3` | 保留死路径作防御性兜底 | helpers.test 可能直接调 fixModelForRound 不传 maxRounds |
 | D6 | S13 改名 | 不改名 | 13 处调用点风险高，收益仅命名美化 |
 | D7 | S14 处理 | 标 @deprecated | 有 helpers.test 覆盖说明曾为公共 API，软过渡 |
@@ -48,16 +50,39 @@
 | D9 | B2-3 errStr | 提升到 lib.js | makeHalt 内部调 errStr，调用方更简洁 |
 | D10 | B2-4 checkImplStatus reason | 逐字对齐原实现 | 防止 reason 字符串变化破坏现有日志/诊断 |
 | D11 | B2-5 formatBulletSection outro | 支持多行 string | 原 6 个 format* 的 outro 有单行也有多行 |
-| D12 | B2-7 buildPrompt 默认注入 | 内置 quotaHaltNote 默认值 | 调用方不需显式传 |
+| D12 | B2-7 buildPrompt 默认注入 | 内置 quotaHaltNote 默认值 | 调用方不需显式传（opt-out 见 buildPrompt defaults 语义注） |
 | D13 | B2-8 LESSONS_EXEMPTION_NOTE | 函数，调用方传参 | applicableDimensions 随 reviewer 变化 |
-| D14 | B2-8 STATIC_READONLY_NOTE | 进 buildPrompt 默认 | 3 个 reviewer 文本一致 |
-| D15 | B3-1 decideReviewOutcome action | 9 个 action 枚举 | halt 的 5 个子类用 reason 区分，action 顶层用 halt 统一 |
+| D14 | B2-8 STATIC_READONLY_NOTE | 进 buildPrompt 默认 | 3 个 reviewer 文本一致（opt-out 见 buildPrompt defaults 语义注） |
+| D15 | B3-1 decideReviewOutcome action | 10 个 action 枚举 | halt 的 6 个子类用 reason 区分，action 顶层用 halt 统一；非 halt 4 个（break/escalate/continue/fix）。详见 D15 复核修正 |
 | D16 | B3-1 runFixRound | 不用 checkImplStatus | fix-round 的 blocked/failed/needs_context 都是 halt，语义不同于初始 dispatch |
-| D17 | B3-2 测试策略 | 不加新单测 | runtime 函数调 safeAgent，mock 成本高，靠 sync.test 存在性断言 + 全量回归 |
+| D17 | B3-2 测试策略 | 不加新单测 | 可测逻辑已被 lib.js 纯函数测试覆盖，剩余只是胶水调用（详见 D17 复核修正） |
 | D18 | Batch 1 commit | 3 个分项 | HIGH-1 / MEDIUM-1+LOW / S11-S14 清理 |
-| D19 | Batch 2 commit | 5 个分项 | B2-1/2/3/6 低风险合一，B2-4/5/7/8 各一 |
+| D19 | Batch 2 commit | 8 个分项 | 复核修正：B2-1/2/3/6 独立无依赖，拆为各自 commit 保回滚粒度（初稿 5 个合一削弱回滚）；B2-4/5/7/8 各一 |
 | D20 | Batch 3 commit | 5 个分项 | recordReviewRound / decideReviewOutcome / runFixRound / S3 三 helper 合一 / 主流程集成 |
 | D21 | 执行顺序 | 严格串行 Batch 1 → 2 → 3 | 每批次全绿后才进下一批 |
+
+> **D4 复核修正（2026-07-07 复核）**：初稿列出 3 个 trip-wire，复核发现 **trip-wire 1（PROMPTS 反引号成对性）对当前代码就 FAIL 且守住不了一致目标**，删除。理由：
+>
+> 1. **对当前代码 FAIL**：PROMPTS 是多行模板字面量，每个 `role: \`多行...\`` 起始行只有一个开反引号（奇数），闭合反引号在数行后 `RED FLAG:...\`` 行。按行断言 `rawBackticks % 2 === 0` 对每个 `role:` 行必然 FAIL（实测 24 行奇数）。
+> 2. **根因是误译**：MEDIUM-1 脆弱点 1 是"单个 prompt 模板内出现**成对内嵌反引号**（如 `` `${var}` ``）导致 `[\s\S]*?` 过早闭合"，而非"每行反引号成对"。多行模板字面量的正常形态就是跨行成对。
+> 3. **方案 A（按 `promptBody` 正文断言反引号计数 == 0）也有假阳性**：若 prompt 真含成对内嵌反引号，`promptBody` 的非贪婪正则在第一个内嵌反引号处闭合，截断后正文反引号计数为 0 → 假绿通过。
+>
+> **结论**：脆弱点 1 的根治只能靠 AST 解析（D4 已排除 AST 重构），trip-wire 守不住。删 trip-wire 1，保留 trip-wire 2（纯函数体大括号平衡）/ trip-wire 3（SCHEMAS 结尾 `\n}`），代价更小且两者确实有效。
+
+> **D15 复核修正（2026-07-07 复核）**：初稿称"9 个 action 枚举（halt 的 5 个子类 + ...）"。追踪 review 循环（`run-plans.js:1330-1397`）halt 子类实际是 **6 个**（不是 5 个）：
+>
+> | # | 路径 | reason |
+> |---|---|---|
+> | 1 | reviewReason halt | `reviewReason` |
+> | 2 | emptyFailed halt | `emptyFailedReason` |
+> | 3 | regressed halt | `'OSCILLATING'` (regressed) |
+> | 4 | flipFlop halt | `'OSCILLATING'` (flipFlop) |
+> | 5 | budget guard halt（maxRounds=0） | `'review_not_converging'` |
+> | 6 | maxRounds halt（有限模式） | `'review max rounds'` |
+>
+> 外加 4 个非 halt action：`break` / `escalate` / `continue` / `fix`。**总计 10 个 action 分支**（6 halt + 4 非 halt）。§6.1.2 伪代码已含 budget/maxRounds 分支（逻辑正确），仅 action 枚举计数漏列。budget guard（`maxRounds === 0`）与 `round === maxRounds`（有限模式）是 `if/else if` 互斥分支，decideReviewOutcome 必须都覆盖。
+
+> **D17 复核修正（2026-07-07 复核）**：决策本身保留（B3-2 不加新单测），但理由从"mock 成本高"改为更准确的论证：simplify 三个 helper 的可测逻辑分层为——schema 定义（纯字面量，sync.test 存在性断言可守）、`validateAmendResult`/`validateCheckoutResult` 调用（**已是 lib.js 纯函数，helpers.test 已覆盖失败分支**）、`{error:true,...}` 构造（纯构造，可源码字面量断言）、`safeAgent()` 调用（runtime，唯一难测点）。**真正未测的只是胶水调用，可测逻辑已被 lib.js 纯函数测试覆盖**。本项目已有 `dispatchImpl-retry.test.js` 用源码字面量断言绕过 mock 的先例，"runtime 一律不测"是误解。
 
 ---
 
@@ -108,9 +133,11 @@ Batch 3 (高风险) — runtime 循环拆分
 | 批次 | 新测试 | sync.test 新断言 | 累计测试数 |
 |---|---|---|---|
 | 基线 | — | — | 307 |
-| Batch 1 | +5 | +0 | 312 |
-| Batch 2 | +17 | +8 + prompt 基线更新 | 329 |
-| Batch 3 | +12 | +5 | 341 |
+| Batch 1 | +6 | +0 | 313 |
+| Batch 2 | +17 | +8 + prompt 基线更新 | 330 |
+| Batch 3 | +13 | +5 | 343 |
+
+> **复核修正说明**：初稿 Batch 1 +5（MEDIUM-1 +3）/ Batch 3 +12（decideReviewOutcome 9 用例）。复核后 Batch 1 +6（MEDIUM-1 删 trip-wire 1 → +2，新增 B1-10 通用性守护 +1，净 +6）；Batch 3 +13（decideReviewOutcome halt 子类 6 个 → 10 用例，+1）。累计终点 307+6+17+13 = 343。
 
 ---
 
@@ -124,32 +151,25 @@ Batch 3 (高风险) — runtime 循环拆分
 |---|---|---|
 | run-plans.js + lib.js | bootstrap prompt step 3 | 末尾加：「Also extract `lesson_categories` from frontmatter if present (format: `lesson_categories:\n  - silent-failure\n  - test-strategy`). Return per task as `lesson_categories` array (absent → empty array).」 |
 | run-plans.js + lib.js | bootstrap Return schema (line 802) | `tasks:[{id, model, title}]` → `tasks:[{id, model, title, lesson_categories}]` |
-| helpers.test.js | 新增端到端数据流测试 | 断言 bootstrap 返回的 task 对象含 `lesson_categories` 字段（默认 `[]`，frontmatter 声明时按声明值） |
+| sync.test.js | 新增源码字面量断言 | 断言 bootstrap prompt 文本含 `lesson_categories` 提取说明 **且** Return schema 字符串含 `lesson_categories` 字段（见下方 TDD 流程说明） |
 
 **TDD 流程**：
-1. RED：写测试断言 bootstrap schema 含 lesson_categories（当前 undefined → fail）
-2. GREEN：改 prompt + schema + 测试 stub
+1. RED：sync.test 加源码字面量断言——`promptBody(runSrc, 'bootstrap')` 含 `lesson_categories` + bootstrap Return schema 字符串含 `lesson_categories`（当前两处均缺 → fail）
+2. GREEN：改 prompt + schema + run-plans.js inline 同步
 3. SYNC：workflow-design.md §5.5 加注「plan frontmatter 可声明 lesson_categories 启用精确匹配；未声明时 fallback 到 title 关键词匹配」
 4. FULL：307 + 1 测试
 
+**测试性质说明（复核修正）**：本测试是**源码字面量断言**（断言 prompt 文本/schema 字符串含字段名），**不是端到端数据流测试**。helpers.test 测的是 lib.js 纯函数，bootstrap 是 runtime（调 agent），helpers.test 无法测真实 bootstrap 返回值。审计报告 HIGH-1 的"分层测试盲区"**未真正闭合**——只是把盲区从"字段缺失"移到"字段名存在于 prompt/schema 文本"。真正的端到端数据流测试需要 mock agent 返回（成本高，留作未来改进）。本测试的价值在于：防止后续重构误删 prompt 提取说明或 schema 字段（这类回归可被捕获）。
+
 **范围说明**：只补提取链 + schema。不在范围：批量给现有 plan frontmatter 添加 lesson_categories 声明（数据迁移留给 plan 作者按需 opt-in）。
+
+> **prompt 文案风格注（复核补充，低优先级）**：增量文案 "Also extract `lesson_categories`..." 是中英混杂，与周围 bootstrap prompt 现状（step 5 的 "Workflow artifact changes" / "lessons.md" 等已是中英混杂）一致。跟随现状即可——若未来统一 prompt 语言风格，再一并处理，不在本次范围。
 
 ### 4.2 B1-2: MEDIUM-1 sync.test 守护断言
 
-**改动 1 处**（sync.test.js 顶部加 3 个 trip-wire 测试）：
+**改动 1 处**（sync.test.js 顶部加 2 个 trip-wire 测试；初稿列 3 个，复核后删 trip-wire 1，理由见 D4 复核修正）：
 
 ```js
-test('MEDIUM-1 守护：PROMPTS 不得含内嵌反引号（破坏 promptBody 非贪婪提取）', () => {
-  const src = readFileSync(libPath, 'utf8')
-  const m = src.match(/const PROMPTS = \{[\s\S]*?\n\}/)
-  assert.ok(m, 'PROMPTS 块存在')
-  const lines = m[0].split('\n')
-  for (const line of lines) {
-    const rawBackticks = (line.match(/(?<!\\)`/g) || []).length
-    assert.equal(rawBackticks % 2, 0, `PROMPTS 行含奇数反引号（破坏提取）: ${line.slice(0, 80)}`)
-  }
-})
-
 test('MEDIUM-1 守护：纯函数体不得含顶层 \\n} 子模式（破坏 extractFunctionBody）', () => {
   const src = readFileSync(libPath, 'utf8')
   const fnRegex = /export function (\w+)\([\s\S]*?\{([\s\S]*?)\n\}/g
@@ -172,7 +192,9 @@ test('MEDIUM-1 守护：SCHEMAS 块结尾必须是 \\n}（防 extractSchemas 截
 })
 ```
 
-**TDD 流程**：直接 GREEN（断言当前代码已满足）。
+**TDD 流程**：直接 GREEN（断言当前代码已满足，实测 55 个 `export function` 大括号均平衡、SCHEMAS 块以 `\n}` 结尾）。
+
+**不再包含的 trip-wire 1**（PROMPTS 反引号成对性）：对当前代码就 FAIL（多行模板字面量每行反引号不成对），且即使改为按 `promptBody` 正文断言也有假阳性（非贪婪正则遇内嵌反引号截断后正文反引号计数为 0）。脆弱点 1 只能靠 AST 解析根治，trip-wire 守不住，见 D4 复核修正。
 
 ### 4.3 B1-3: LOW-1 fixModelForRound 注释矛盾
 
@@ -264,9 +286,39 @@ USAGE.md 同步加 headVerifier 角色说明（若有）。
 +  */
 ```
 
-### 4.10 Batch 1 测试与 commit
+### 4.10 B1-10: 通用性守护断言（新增，复核补充）
 
-- **新测试**：+5（HIGH-1 +1, MEDIUM-1 +3, LOW-4 +1）
+**动机**：该 workflow 设计为跨项目复用的通用工具，需防止项目耦合（本项目专有路径/文件名）混入 PROMPTS。一旦耦合，移植到其他项目即失效。
+
+**改动 1 处**（sync.test.js 加 1 个断言，并入 B1-2 的 MEDIUM-1 守护区）：
+
+```js
+test('通用性守护：PROMPTS 不得含本项目专有路径/文件名', () => {
+  const src = readFileSync(libPath, 'utf8')
+  const m = src.match(/const PROMPTS = \{[\s\S]*?\n\}/)
+  assert.ok(m, 'PROMPTS 块存在')
+  // 项目耦合黑名单（lottery-notification 专有）。项目特定内容应靠 config 驱动注入，
+  // 不应硬编码进通用 workflow 的 PROMPTS。
+  const blacklist = [
+    'lottery', 'notification',           // 仓库名/项目名
+    'lessons.md',                         // 本项目 lessons 文件名（应靠 config.lessons_path）
+  ]
+  for (const bad of blacklist) {
+    assert.ok(!m[0].toLowerCase().includes(bad.toLowerCase()),
+      `PROMPTS 含本项目专有词 "${bad}"——项目耦合，应改 config 驱动注入`)
+  }
+})
+```
+
+**TDD 流程**：直接 GREEN（断言当前 PROMPTS 不含黑名单词；实测 bootstrap prompt 用 `{{configPath}}`/`{{plansDir}}` 占位符，无硬编码路径）。
+
+**说明**：黑名单是保守起点，实施时若发现已耦合项可补。本断言防止未来重构（尤其 B2-7/B2-8 prompt 改动）误把项目内容硬编码进通用 PROMPTS。
+
+### 4.11 Batch 1 测试与 commit
+
+- **新测试**：+6（HIGH-1 +1, MEDIUM-1 +2[删 trip-wire 1 后], LOW-4 +1, 通用性守护 +1, 见 §4.11）
+
+> 注：初稿列 +5（MEDIUM-1 +3），复核删 trip-wire 1（MEDIUM-1 → +2）+ 新增 B1-10 通用性守护（+1）= 净 +6。
 - **commit 粒度**：3 个分项 commit
   1. HIGH-1 补链 + 测试
   2. MEDIUM-1 守护 + LOW-1/2/3/4 文档/修正
@@ -395,13 +447,13 @@ export function formatBulletSection(heading, intro, items, renderItem, outro = '
 
 outro 支持多行 string（D11 决策）。
 
-**重构 6 个 format* 为 wrapper**：
+**重构 6 个 format* 为 wrapper**（复核修正：**5→1 + 1 复杂 wrapper**，非"6→1"）：
 - formatReferencePaths
 - formatSilentFailureContext
 - formatFailedApproaches
 - formatLessons
 - formatUniversalLessons
-- formatDomainLessons
+- formatDomainLessons（**复杂 wrapper**：含过滤 silent-failure + category 匹配/title fallback + 同 plan 优先 sort + cap 5 业务逻辑，formatBulletSection 只负责最后渲染 bullet lines，前 4 步留在 wrapper）
 
 **TDD 流程**：
 1. RED：helpers.test 加 formatBulletSection 3 个用例（空数组 / 基本渲染 / 含 intro+outro）
@@ -451,6 +503,8 @@ export function buildPrompt(role, ctx = {}) {
 }
 ```
 
+> **buildPrompt defaults opt-out 语义（D12/D14 统一注，复核补充）**：`{ ...defaults, ...ctx }` 合并意味着调用方可传 `quotaHaltNote: ''`（或 B2-8 的 `staticReadonlyNote: ''`）**显式关闭默认注入**（覆盖默认值，注入空串）。这是通用性的关键——默认开（多数 reviewer 需要）、可 opt-out（未来某 reviewer 不需要限额 halt 说明时可关）。spec 此处点明 opt-out 路径，避免未来读者误以为默认注入是不可关闭的硬约束。
+
 **TDD 流程**：
 1. RED：helpers.test 加 `buildPrompt('implementor', {})` 输出含限额说明文本
 2. GREEN：lib.js 加常量 + buildPrompt 默认 + 7 prompt 替换占位符；run-plans.js inline
@@ -484,12 +538,17 @@ function LESSONS_EXEMPTION_NOTE(applicableDimensions) {
 ### 5.9 Batch 2 测试与 commit
 
 - **新测试**：+17
-- **commit 粒度**：5 个分项 commit（D19 决策）
-  1. B2-1/2/3/6 低风险合一
-  2. B2-4 checkImplStatus
-  3. B2-5 formatBulletSection
-  4. B2-7 QUOTA_HALT_NOTE
-  5. B2-8 STATIC_READONLY_NOTE
+- **commit 粒度**：8 个分项 commit（复核修正：初稿 5 个，B2-1/2/3/6 合一削弱回滚粒度，拆为各自独立）
+  1. B2-1 taskKey
+  2. B2-2 REVIEW_SOURCES
+  3. B2-3 makeHalt + errStr
+  4. B2-6 formatFindingItem
+  5. B2-4 checkImplStatus
+  6. B2-5 formatBulletSection
+  7. B2-7 QUOTA_HALT_NOTE
+  8. B2-8 STATIC_READONLY_NOTE + LESSONS_EXEMPTION_NOTE
+
+**拆分理由**：B2-1/2/3/6 四项互相独立、无依赖（taskKey 是字符串拼接，REVIEW_SOURCES 是常量，makeHalt 是错误构造，formatFindingItem 是 finding 格式化）。合一 commit 唯一好处是省 commit 动作，但若 B2-3 引入回归，回滚会连带 B2-1/2/6（都是好改动）。本项目 commit 历史偏好细粒度单主题。
 
 ---
 
@@ -530,12 +589,13 @@ export function decideReviewOutcome(
   model, maxRounds, cfg, reviewReason, emptyFailedReason
 ) {
   // 返回 { action, reason?, diag?, model? }
-  // action 枚举（D15 决策）：
-  //   - 'halt' (reason 区分 5 子类: reviewReason/emptyFailed/regressed/flipFlop/budget/maxRounds)
+  // action 枚举（D15 决策，详见 D15 复核修正）：
+  //   - 'halt' (reason 区分 6 子类: reviewReason/emptyFailed/regressed/flipFlop/budget/maxRounds)
   //   - 'break' (allGreen)
   //   - 'escalate' (osc + flipFlop=false + shouldEscalate)
   //   - 'continue' (osc + flipFlop=false + alreadyEscalated)
   //   - 'fix' (else)
+  // 共 10 个 action 分支（6 halt + 4 非 halt）
 }
 ```
 
@@ -595,16 +655,16 @@ concerns/concernsHint 是闭包变量，通过返回值传出（不能像原代�
 **TDD 流程**：
 1. RED：
    - helpers.test 加 recordReviewRound 3 个用例
-   - helpers.test 加 decideReviewOutcome 9 个用例（覆盖 9 个 action 分支）
+   - helpers.test 加 decideReviewOutcome 10 个用例（覆盖 10 个 action 分支：6 halt 子类 + break/escalate/continue/fix，详见 D15 复核修正）
    - runFixRound 不写单测（runtime 靠回归）
 2. GREEN：
    - lib.js 加 recordReviewRound + decideReviewOutcome；run-plans.js inline
    - run-plans.js 加 runFixRound；主循环改为调用 3 函数
 3. SYNC：sync.test 加 2 纯函数字节断言；spec §5.5 加 3 函数说明
-4. FULL：307 + 12 测试 + 现有 review 循环测试全绿
+4. FULL：307 + 13 测试 + 现有 review 循环测试全绿
 
 **风险（高）**：
-- decideReviewOutcome 9 分支需逐字对齐原 reason + diag
+- decideReviewOutcome 10 分支需逐字对齐原 reason + diag（6 halt 子类 + 4 非 halt，详见 D15 复核修正）
 - runFixRound concerns/concernsHint 闭包变量改返回值传出
 - 主循环改写后需手动 trace r1/r2/r3 + OSCILLATING + budget guard 路径
 
@@ -708,7 +768,7 @@ if (diffCheck.changed) {
 
 ### 6.6 Batch 3 测试与 commit
 
-- **新测试**：+12
+- **新测试**：+13（recordReviewRound +3, decideReviewOutcome +10, runFixRound 0）
 - **commit 粒度**：5 个分项 commit（D20 决策）
   1. recordReviewRound
   2. decideReviewOutcome
@@ -724,9 +784,10 @@ if (diffCheck.changed) {
 
 1. **sync.test 字节断言**：所有 lib.js 纯函数 inline 副本一致性（前移到 Batch 2 每项落地时补）
 2. **helpers.test 纯函数测试**：每个 helper 的行为契约
-3. **MEDIUM-1 trip-wire**：PROMPTS 无内嵌反引号 / 纯函数体平衡 / SCHEMAS 结尾正确
-4. **HIGH-1 数据流测试**：bootstrap schema 含 lesson_categories（闭合分层测试盲区）
-5. **现有 307 测试**：核心控制流守护
+3. **MEDIUM-1 trip-wire**：纯函数体大括号平衡 / SCHEMAS 结尾正确（2 个，trip-wire 1 已删，见 D4 复核修正）
+4. **HIGH-1 数据流测试**：bootstrap prompt/schema 文本含 lesson_categories（源码字面量断言；非端到端，盲区未完全闭合，见 B1-1 测试性质说明）
+5. **通用性守护**（B1-10）：PROMPTS 不得含本项目专有路径/文件名（防项目耦合）
+6. **现有 307 测试**：核心控制流守护
 
 ### 7.2 CRLF 修复
 
@@ -734,6 +795,8 @@ if (diffCheck.changed) {
 ```bash
 perl -i -pe 's/(?<!\r)\n/\r\n/g' <file>
 ```
+
+> **本项目特定约束注（复核补充）**：CRLF 强制是 lottery-notification 仓库的本地约定（`.gitattributes` 注明 Windows 项目 + sync.test promptBody 正则对行尾敏感），**不是通用 workflow 的约束**。若本 workflow 被其他项目（非 Windows、用 LF）复用，此步骤应删除或改为跟随目标仓库的行尾约定。移植者注意：sync.test 的 promptBody 行尾一致性断言依赖固定行尾——若目标仓库用 LF，相应断言也需调整。
 
 ### 7.3 全量回归命令
 
@@ -761,7 +824,7 @@ node --test docs/superpowers/workflows/tests/*.test.js
 | TDD 流程每项有 RED→GREEN→SYNC→FULL | ✓ | runtime 函数（B3-2）靠回归，无 RED，已说明理由 |
 | sync.test 字节断言覆盖所有新纯函数 | ✓ | Batch 2 每项 + Batch 3 recordReviewRound/decideReviewOutcome |
 | spec 同步更新 | ✓ | §4.4/§5.2/§5.5/§6.2/§13b 各项对应 |
-| commit 粒度合理 | ✓ | 3+5+5=13 个 commit，便于回滚 |
+| commit 粒度合理 | ✓ | 3+8+5=16 个 commit，便于回滚（复核修正：初稿 3+5+5=13，Batch 2 拆分后 8 个） |
 | 风险递增顺序 | ✓ | 低→中→高，每批建立保护网后再进下一批 |
 
 ### 8.2 潜在风险与缓解
@@ -770,7 +833,7 @@ node --test docs/superpowers/workflows/tests/*.test.js
 |---|---|
 | B2-5 formatBulletSection 重构输出不一致 | 用 diff 验证 6 个 wrapper 输出逐字节一致 |
 | B2-7/B2-8 prompt 变化破坏 sync.test 基线 | 同步更新 prompt 断言基线 |
-| B3-1 decideReviewOutcome 9 分支 reason 不对齐 | 逐字对照原实现，9 个用例覆盖 |
+| B3-1 decideReviewOutcome 10 分支 reason 不对齐 | 逐字对照原实现，10 个用例覆盖（6 halt 子类 + 4 非 halt，详见 D15 复核修正） |
 | B3-1 runFixRound concerns 闭包变量丢失 | 通过返回值传出，调用方更新 |
 | B3-2 simplify helper error 判断遗漏 | 手动 trace 4 条路径 |
 | CRLF 行尾不一致 | 每批次 commit 前 perl 修复 |
@@ -779,7 +842,7 @@ node --test docs/superpowers/workflows/tests/*.test.js
 
 - S13 dispatchImpl 改名（D6 决策，不改）
 - 现有 plan frontmatter 批量添加 lesson_categories（D3 决策，留给 plan 作者）
-- AST 重构 sync.test（D4 决策，用 trip-wire 代替）
+- AST 重构 sync.test（D4 决策，用 2 个 trip-wire 代替；脆弱点 1 的 trip-wire 已删，见 D4 复核修正）
 - B3-2 runtime 函数单测（D17 决策，靠回归）
 
 ---
@@ -790,17 +853,20 @@ node --test docs/superpowers/workflows/tests/*.test.js
 
 计划结构（建议）：
 - Task 1: Batch 1 commit 1（HIGH-1 补链）
-- Task 2: Batch 1 commit 2（MEDIUM-1 + LOW-1/2/3/4）
+- Task 2: Batch 1 commit 2（MEDIUM-1 守护[含 B1-10 通用性守护] + LOW-1/2/3/4）
 - Task 3: Batch 1 commit 3（S11/S12/S14 清理）
-- Task 4: Batch 2 commit 1（B2-1/2/3/6 低风险合一）
-- Task 5: Batch 2 commit 2（B2-4 checkImplStatus）
-- Task 6: Batch 2 commit 3（B2-5 formatBulletSection）
-- Task 7: Batch 2 commit 4（B2-7 QUOTA_HALT_NOTE）
-- Task 8: Batch 2 commit 5（B2-8 STATIC_READONLY_NOTE）
-- Task 9: Batch 3 commit 1（recordReviewRound）
-- Task 10: Batch 3 commit 2（decideReviewOutcome）
-- Task 11: Batch 3 commit 3（runFixRound）
-- Task 12: Batch 3 commit 4（S3 三 helper）
-- Task 13: Batch 3 commit 5（主流程集成）
+- Task 4: Batch 2 commit 1（B2-1 taskKey）
+- Task 5: Batch 2 commit 2（B2-2 REVIEW_SOURCES）
+- Task 6: Batch 2 commit 3（B2-3 makeHalt + errStr）
+- Task 7: Batch 2 commit 4（B2-6 formatFindingItem）
+- Task 8: Batch 2 commit 5（B2-4 checkImplStatus）
+- Task 9: Batch 2 commit 6（B2-5 formatBulletSection）
+- Task 10: Batch 2 commit 7（B2-7 QUOTA_HALT_NOTE）
+- Task 11: Batch 2 commit 8（B2-8 STATIC_READONLY_NOTE + LESSONS_EXEMPTION_NOTE）
+- Task 12: Batch 3 commit 1（recordReviewRound）
+- Task 13: Batch 3 commit 2（decideReviewOutcome）
+- Task 14: Batch 3 commit 3（runFixRound）
+- Task 15: Batch 3 commit 4（S3 三 helper）
+- Task 16: Batch 3 commit 5（主流程集成）
 
-每个 Task 严格 TDD 4 阶段，全量回归后 commit。
+> **复核修正**：初稿 13 个 Task，Batch 2 拆分后 16 个 Task（3+8+5）。每个 Task 严格 TDD 4 阶段，全量回归后 commit。
