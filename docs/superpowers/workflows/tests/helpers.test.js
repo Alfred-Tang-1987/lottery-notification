@@ -1476,3 +1476,25 @@ test('S2 decideReviewOutcome: else (正常未收敛, 无 osc) → fix', () => {
   assert.equal(out.action, 'fix')
   assert.equal(out.model, undefined)
 })
+
+test('S2 decideReviewOutcome: osc + alreadyEscalated + 无限模式 round>=budget → halt review_not_converging (fall-through 关键路径)', () => {
+  // 锁定 Task 13 控制流修正的关键不变式：osc.oscillating 块内 escalate/continue
+  // 不早 return，须 fall through 到 budget guard。否则无限模式下持续振荡（已升 opus
+  // + 新 findings 不收敛）会无限跑（resolveReviewBudget 注释：升 opus 后跑直到 budget 耗尽）。
+  // 此用例：osc=true + flipFlop=false + alreadyEscalated(opus) + maxRounds=0(无限) + round>=budget(5)
+  // 期望：halt review_not_converging（非 continue）。若有人「简化」回早 return，此测试 FAIL。
+  const state = mkState({
+    filesTouched: [['a.ts'], ['a.ts'], ['a.ts']],
+    reviewHistory: [
+      { round: 1, spec: { status: 'failed', findings: [{ title: 'X' }] } },
+      { round: 2, spec: { status: 'failed', findings: [{ title: 'Y' }] } },
+      { round: 3, spec: { status: 'failed', findings: [{ title: 'Z' }] } },
+    ],
+    opusEscalated: true,
+  })
+  const out = decideReviewOutcome(state, 'plan-01/T1', 5, failedSpec, failedSpec, failedSpec, 'opus', 0, {}, null, null)
+  assert.equal(out.action, 'halt', 'fall-through 到 budget guard 须 halt，非 continue')
+  assert.equal(out.reason, 'review_not_converging')
+  assert.equal(out.diag.budget, 5)
+  assert.equal(out.diag.round, 5)
+})
