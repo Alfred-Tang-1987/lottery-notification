@@ -240,6 +240,16 @@ test('W1 修复: Q-F1 Exemption 编号格式 + Q-F2 implementor 标编号 + H-F1
   //   空串 → git status --porcelain 查全工作树 → 误 commit 全工作树
   assert.match(runSrc, /empty.*skip|lessonsPath.*empty|若.*lessonsPath.*为空|skip this step/i,
     'finalReport step 6 须有空 lessonsPath 防御（H-F3：空则跳过）')
+
+  // H-F4 (2026-07-07): reviewer Exemption 须有空 lessonsPath 防御
+  //   空串 → reviewer 读空路径文件不存在 → Exemption 永远 fall through 到"仍按 EXTRA 报告"
+  assert.match(runSrc, /empty.*N\/A|lessonsPath.*empty.*skip|若.*lessonsPath.*为空.*跳过/i,
+    'reviewer Exemption 须有空 lessonsPath 防御（H-F4：空则 Exemption N/A）')
+
+  // H-F7 (2026-07-07): finalReport manifest 须含 lessons_committed 字段
+  //   否则下次 bootstrap 无从知晓 lessons.md 是否真被 commit → 静默退化
+  assert.match(runSrc, /lessons_committed/i,
+    'finalReport manifest 须含 lessons_committed 字段（H-F7：供下次 bootstrap 检查）')
 })
 
 test('S3: lessonsText must not call formatLessons (replaced by Tier 1 + Tier 2)', () => {

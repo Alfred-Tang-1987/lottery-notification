@@ -786,6 +786,41 @@ test('normalizeFilePath is case-insensitive on whitelist dirs', () => {
   assert.equal(normalizeFilePath('/x/Tests/test.py'), 'Tests/test.py')
 })
 
+// —— Minor 修复（2026-07-07 三维复核）——
+
+test('Q-F3/H-F5: normalizeFilePath 白名单须含 scripts/bin/tools/config 等常见目录', () => {
+  // 当前白名单遗漏 scripts/bin/tools/config/public/static/templates/utils/api/server/client/web/.github
+  // reviewer 返回绝对路径如 C:\proj\scripts\run.sh → 不匹配 → 原样返回带绝对前缀
+  // cross-reviewer 重叠检测把 C:/.../scripts/run.sh 和 scripts/run.sh 当不同文件 → 漏报
+  assert.equal(normalizeFilePath('C:\\proj\\scripts\\run.sh'), 'scripts/run.sh',
+    'scripts/ 须在白名单（Q-F3/H-F5）')
+  assert.equal(normalizeFilePath('/home/proj/bin/tool'), 'bin/tool',
+    'bin/ 须在白名单')
+  assert.equal(normalizeFilePath('/x/tools/gen.py'), 'tools/gen.py',
+    'tools/ 须在白名单')
+  assert.equal(normalizeFilePath('/x/config/app.yml'), 'config/app.yml',
+    'config/ 须在白名单')
+  assert.equal(normalizeFilePath('/x/.github/workflows/ci.yml'), '.github/workflows/ci.yml',
+    '.github/ 须在白名单')
+})
+
+test('Q-F5: normalizeFilePath 多白名单嵌套路径取第一个（非贪婪）', () => {
+  // /home/src/old/src/app.py → 非贪婪 .*? 取第一个 /src/ → src/old/src/app.py
+  assert.equal(normalizeFilePath('/home/src/old/src/app.py'), 'src/old/src/app.py',
+    '多白名单嵌套须取第一个（非贪婪）')
+})
+
+test('H-F6: normalizeFilePath 对非字符串 falsy（0/false/NaN）原样返回不强制 String 化', () => {
+  // 当前 if (!p) return p 对 0/false/NaN 返回原值（truthy 检查误当 falsy）
+  // 严格化后 typeof p !== 'string' → 原样返回（不强制 String(0)='0'）
+  assert.equal(normalizeFilePath(0), 0, '0 原样返回（非字符串不强制 String 化）')
+  assert.equal(normalizeFilePath(false), false, 'false 原样返回')
+  assert.ok(Number.isNaN(normalizeFilePath(NaN)), 'NaN 原样返回')
+  // 对象/数组也不强制 String 化（避免 [object Object] 污染 groupFindingsByFile）
+  const obj = { x: 1 }
+  assert.equal(normalizeFilePath(obj), obj, '对象原样返回（不 String 化为 [object Object]）')
+})
+
 // —— formatCrossReviewerNote ——
 
 test('formatCrossReviewerNote produces output when ≥2 sources flag same file', () => {

@@ -109,8 +109,10 @@ export function unionFiles(...reviews) {
 // 白名单覆盖常见顶层目录（src/tests/docs/data/logs/lib/app/internal/cmd/.claude），
 // 匹配首个白名单目录后保留相对路径；无匹配则原样返回（防误裁剪）。
 export function normalizeFilePath(p) {
-  if (!p) return p
-  return String(p).replace(/\\/g, '/').replace(/^.*?\/(src|tests|docs|data|logs|lib|app|internal|cmd|\.claude)\//i, '$1/')
+  // H-F6 (2026-07-07): typeof 严格检查，非字符串原样返回（不强制 String 化，避免 0→'0' / 对象→[object Object] 污染 groupFindingsByFile）
+  if (typeof p !== 'string' || !p) return p
+  // Q-F3/H-F5 (2026-07-07): 白名单扩展 scripts/bin/tools/config/public/static/templates/utils/api/server/client/web/.github
+  return p.replace(/\\/g, '/').replace(/^.*?\/(src|tests|docs|data|logs|lib|app|internal|cmd|\.claude|scripts|bin|tools|config|public|static|templates|utils|api|server|client|web|\.github)\//i, '$1/')
 }
 
 // 已被 collectReviewFindings 取代（orchestrator fix-round 用）；保留为通用工具 + 向后兼容。
@@ -947,7 +949,8 @@ Conversely, if the implementor adds methods/tests NOT in this task's plan sectio
 
 ## Lessons Learned Exemption (防 reviewer ↔ implementor 振荡)
 W1-5e (2026-07-07): workflow 自主学习闭环——implementor 按 {{lessonsPath}} 中记录的 lesson 加固代码时，该加固虽不在 plan section 字面要求内，但 NOT EXTRA。否则 reviewer 报 EXTRA → implementor 删 → 下轮 implementor 又按 lesson 加回来 → OSCILLATING halt。
-判定流程（疑似 EXTRA 时执行）：
+**若 {{lessonsPath}} 为空（未配置 lessons_path）→ Exemption N/A，跳过 L-xxx 查找，正常报告**（H-F4, 2026-07-07：空 lessonsPath 无法读 lessons.md 核对，Exemption 判定流程无意义）。
+判定流程（疑似 EXTRA 且 {{lessonsPath}} 非空时执行）：
 1. 查 commit message / 代码注释是否有 L-<timestamp> 编号（如 L-20260701T103320Z，与 lessons.md 中 ## L-<ts> 条目格式一致）。
 2. 有 L-xxx 编号 → 读 {{lessonsPath}} 中该 lesson 条目，核对加固是否 minimal 且 on-target（只修 lesson 描述的问题，未越界扩展）。
 3. minimal + on-target → NOT EXTRA（lessons learned 闭环修复）。
@@ -983,7 +986,8 @@ W1-5e (2026-07-07): implementor 按 {{lessonsPath}} 中记录的 lesson 加固�
 - over-engineering / single-use helper（lesson 加固常加 helper）
 - 函数超 50 行（lesson 加固常让函数变长）
 - helper / abstraction 数量（lesson 加固常引入新抽象）
-判定流程（疑似上述维度 finding 时执行）：
+**若 {{lessonsPath}} 为空（未配置 lessons_path）→ Exemption N/A，正常报告所有维度**（H-F4, 2026-07-07）。
+判定流程（疑似上述维度 finding 且 {{lessonsPath}} 非空时执行）：
 1. 查 commit message / 代码注释是否有 L-xxx 编号。
 2. 有 L-xxx 编号 → 读 {{lessonsPath}} 核对加固是否 minimal 且 on-target → 满足则**不报**该维度 finding。
 3. 无 L-xxx 编号 / 加固超出 lesson 范围 → 正常报告。
@@ -1124,7 +1128,7 @@ Inputs: mode={{mode}} state={{stateJson}} blockedInfo={{blockedInfo}} runsDir={{
 
 Steps:
 1. mkdir -p {{runsDir}}.
-2. Write {{runsDir}}/manifest.json = {run_ts:{{runTs}}, mode:{{mode}}, plans:[...], per_task:{<taskKey>:{status,model,review_rounds,files_touched_per_round,review_history,findings_history,oscillation_escalated_at_round,opus_escalated,commit_sha,simplify_reverted,simplify_review_findings,destructive_review_failed,destructive_review_findings,concerns,blocked_info}}, result}. per_task.<task> 必须保留 stateJson 中 per_task 的**全部字段**（含 v3 新增字段 findings_history / oscillation_escalated_at_round / opus_escalated），不得以清单未列为由 strip 任何字段；清单仅作可读说明。findings_history 是 findings 状态机轨迹 [{title, status, first_seen, last_seen, rounds, fixed_at_round}]；oscillation_escalated_at_round 是 opus 升级轮 round 数或 null；opus_escalated 是布尔值。
+2. Write {{runsDir}}/manifest.json = {run_ts:{{runTs}}, mode:{{mode}}, plans:[...], per_task:{<taskKey>:{status,model,review_rounds,files_touched_per_round,review_history,findings_history,oscillation_escalated_at_round,opus_escalated,commit_sha,simplify_reverted,simplify_review_findings,destructive_review_failed,destructive_review_findings,concerns,blocked_info}}, lessons_committed:false, result}. per_task.<task> 必须保留 stateJson 中 per_task 的**全部字段**（含 v3 新增字段 findings_history / oscillation_escalated_at_round / opus_escalated），不得以清单未列为由 strip 任何字段；清单仅作可读说明。findings_history 是 findings 状态机轨迹 [{title, status, first_seen, last_seen, rounds, fixed_at_round}]；oscillation_escalated_at_round 是 opus 升级轮 round 数或 null；opus_escalated 是布尔值。**lessons_committed**（H-F7, 2026-07-07）：布尔值，初始 false；step 6 成功 commit lessons.md 后须重写 manifest.json 将此字段改为 true。供下次 bootstrap 检查 lessons.md 是否真被持久化（防 best-effort 失败后静默退化）。
 3. If mode=halted: write .workflow/blocked.md from {{blockedInfo}} (the blocked task's blocked_info JSON — render EACH field human-readably: plan, task, reason, category, last_error, suggested_fix, quota_exhausted, likely_source, failed_approach). For failed_approach, render as: "Failed Approach: <failed_approach.task_id>: <failed_approach.reason> — <failed_approach.error>". If blocked_info contains \`regressedFindings\` (v3 findings state machine detected regressions), render separately as a readable list: each item showing title + first_seen + last_seen + fixed_at_round + file + fix, to help locate regression points quickly. Do NOT hunt for these fields in state — they are provided inline in blockedInfo.
    S3（第 4 轮）: blocked.md 路径固定为 .workflow/blocked.md（§8.2），独立于 {{runsDir}}——
    blocked.md 是用户接手入口，路径须稳定可预测（runsDir 会随 runTs 变化，用户难定位）。
@@ -1133,7 +1137,7 @@ Steps:
    If output is empty, append "## Working Tree (clean)" — no uncommitted changes（likely_source=gate restored 时预期如此）。
    Also include: if the halt was due to a failed review round (not model_unavailable/agent_error/gate/commit), add a "## Cross-Reviewer Findings (grouped by file)" section to blocked.md: group all findings from the halted task's blocked_info by file, and highlight files where ≥2 reviewers reported findings with ⚠ CROSS-REVIEWER markers. This helps spot reviewer disagreements at a glance. Use the blockedInfo.raw field to extract reviewer findings — the raw field contains the diagnostics from spec/quality/hunter reviews.
 5. Lessons ({{lessonsAutoDistill}}): If lessonsAutoDistill=true AND mode=halted: lesson-distiller agent has ALREADY been invoked by orchestrator before this finalReport call — it read lessonsPath, extracted reusable root causes, and updated lessons.md itself. You do NOT need to touch lessonsPath. If distiller failed (quota/error), orchestrator logged it and proceeded — lessonsPath may be stale but manifest write must proceed. If lessonsAutoDistill=false or mode=done: lessonsPath untouched.
-6. Commit lessons.md (W1-1, 2026-07-07): If mode=halted AND {{lessonsPath}} is non-empty (H-F3 2026-07-07: 空 lessonsPath 则 skip this step entirely — no lessonsPath configured → nothing to commit; 空 lessonsPath 会让 git status --porcelain 查全工作树 → 误 commit 全工作树), after step 5, check if {{lessonsPath}} has uncommitted changes: run "git status --porcelain {{lessonsPath}}". If output is non-empty → git commit -m "chore(workflow): auto-commit lessons.md from run {{runTs}}" {{lessonsPath}} (H-F2: 用 git commit <path> 一步到位不预 staged). This ensures the knowledge base is persisted (bootstrap reads it to inject implementor). BEST-EFFORT — if git commit fails, do NOT block manifest write; record the error in summary.
+6. Commit lessons.md (W1-1, 2026-07-07): If mode=halted AND {{lessonsPath}} is non-empty (H-F3 2026-07-07: 空 lessonsPath 则 skip this step entirely — no lessonsPath configured → nothing to commit; 空 lessonsPath 会让 git status --porcelain 查全工作树 → 误 commit 全工作树), after step 5, check if {{lessonsPath}} has uncommitted changes: run "git status --porcelain {{lessonsPath}}". If output is non-empty → git commit -m "chore(workflow): auto-commit lessons.md from run {{runTs}}" {{lessonsPath}} (H-F2: 用 git commit <path> 一步到位不预 staged). This ensures the knowledge base is persisted (bootstrap reads it to inject implementor). BEST-EFFORT — if git commit fails, do NOT block manifest write; record the error in summary. H-F7 (2026-07-07): if commit succeeded (git commit exit code 0) → rewrite {{runsDir}}/manifest.json with lessons_committed:true (overwrite the false default from step 2). If step 6 was skipped (mode=done / empty lessonsPath / no uncommitted changes / commit failed) → leave lessons_committed:false.
 7. Print a digest summary (counts: done/blocked, total tasks, per-plan gate result).
 
 Return {evidence:{manifest_path}, summary: <digest>}.

@@ -447,11 +447,13 @@ specReview prompt 新增 `## Task Scope Boundary` 段落：FUTURE tasks 的方�
 **W1-5b normalizeFilePath 路径归一**（1 函数 + 3 处调用，通用）：
 ```javascript
 function normalizeFilePath(p) {
-  if (!p) return p
-  return String(p).replace(/\\/g, '/').replace(/^.*?\/(src|tests|docs|data|logs|lib|app|internal|cmd|\.claude)\//i, '$1/')
+  // H-F6 (2026-07-07): typeof 严格检查，非字符串原样返回（不强制 String 化，避免 0→'0' / 对象→[object Object] 污染 groupFindingsByFile）
+  if (typeof p !== 'string' || !p) return p
+  // Q-F3/H-F5 (2026-07-07): 白名单扩展 scripts/bin/tools/config/public/static/templates/utils/api/server/client/web/.github
+  return p.replace(/\\/g, '/').replace(/^.*?\/(src|tests|docs|data|logs|lib|app|internal|cmd|\.claude|scripts|bin|tools|config|public|static|templates|utils|api|server|client|web|\.github)\//i, '$1/')
 }
 ```
-白名单 `(src|tests|docs|data|logs|lib|app|internal|cmd|.claude)` 覆盖 JS/Go/Python 项目常见顶层目录。`unionFiles` / `findingsOf` / `groupFindingsByFile` 3 处调用归一化，防 cross-reviewer 重叠检测漏报（§13j）。
+白名单 `(src|tests|docs|data|logs|lib|app|internal|cmd|.claude|scripts|bin|tools|config|public|static|templates|utils|api|server|client|web|.github)` 覆盖 JS/Go/Python/前端项目常见顶层目录。`unionFiles` / `findingsOf` / `groupFindingsByFile` 3 处调用归一化，防 cross-reviewer 重叠检测漏报（§13j）。Q-F5（2026-07-07）：多白名单嵌套路径取第一个匹配（非贪婪 `.*?`），如 `/home/src/old/src/app.py` → `src/old/src/app.py`。
 
 **W1-5e Lessons Learned Exemption**（2 段 prompt + lessonsPath 注入，高度通用）：
 - **specReview 端**：`## Lessons Learned Exemption` 段落——implementor 按 `{{lessonsPath}}` 中 lesson 加固（commit message / 代码注释含 `L-<timestamp>` 编号，如 `L-20260701T103320Z`，与 lessonDistiller 的 `## L-<ts>` 格式一致）NOT EXTRA。判定流程：查 L-编号 → 读 lessons.md 核对 minimal + on-target → 满足则豁免，否则仍按 EXTRA 报告。**implementor prompt 配套指引**（Q-F2, 2026-07-07）：加固时在代码注释中标 `// L-<ts>: ...` 让 reviewer 可定位。
@@ -474,6 +476,13 @@ function normalizeFilePath(p) {
 - **H-F1**：orchestrator bootstrap 返回后加 `if (boot.evidence?.dirty_tree) halt(...)` 守卫，防脏工作树上跑 implementor 混入残留改动。
 - **H-F2**：bootstrap step 5a 从 `git add && git commit` 改为 `git commit <path>`（一步到位不预 staged），防 add 成功 commit 失败后 5b reset --hard 清除 staging。
 - **H-F3**：finalReport step 6 加空 lessonsPath 防御（空则 skip），防空串让 `git status --porcelain` 查全工作树 → 误 commit 全工作树。
+
+**W1 Minor 修复（2026-07-07 三维复核第二轮，TDD 根治 5 项）**：
+- **Q-F3/H-F5**：`normalizeFilePath` 白名单扩展 `scripts|bin|tools|config|public|static|templates|utils|api|server|client|web|.github`——原 9 项白名单漏常见目录（如 `.github/workflows/ci.yml` 归一化失败 → cross-reviewer 漏报）。
+- **Q-F5**：多白名单嵌套路径取第一个匹配（非贪婪 `.*?` 已实现）——如 `/home/src/old/src/app.py` → `src/old/src/app.py`（非 `src/app.py`），保留 path 上下文便于 reviewer 定位。新增测试覆盖。
+- **H-F6**：`normalizeFilePath` 加 `typeof p !== 'string'` 严格检查——非字符串原样返回（不强制 `String(p)` 化），避免 `0` → `'0'` / `false` → `'false'` / 对象 → `'[object Object]'` 污染 `groupFindingsByFile` 分组 key。
+- **H-F4**：specReview + qualityReviewer Exemption 加空 lessonsPath 防御——空 `{{lessonsPath}}` → Exemption N/A（跳过 L-xxx 查找，正常报告），防 reviewer 读空路径文件不存在 → Exemption fall through 到"仍按 EXTRA 报告"（与未配 lessons_path 的项目语义对齐）。
+- **H-F7**：finalReport manifest 加 `lessons_committed: bool` 字段——step 2 默认 `false`，step 6 commit 成功后重写 manifest 为 `true`。供下次 bootstrap 检查 lessons.md 是否真被持久化（防 best-effort commit 失败后静默退化，bootstrap 误以为已 commit 而跳过补 commit）。
 
 
 ### 5.4 lesson 自动提炼（distiller agent，2026-07-03）
@@ -555,12 +564,12 @@ orchestrator 三层处理（§13k bootstrap task 识别防御）:
 ### 6.2 半提交状态清理（DX5 + W1-1/W1-4 分类处理）
 
 崩溃在 implementor 完成但 commit 未执行时，working tree 有半成品。**native resume 会重跑未完成的 implementor**，TDD 重写自然覆盖半成品，无需显式 `git reset`。兜底：bootstrap agent 检测 `dirty_tree=true` → **分类自愈**（W1-1/W1-4, 2026-07-07，§5.6；orchestrator 无 shell，bootstrap agent 有 Bash 访问）：
-- **lessons.md 改动** → `git add && git commit`（保留知识库，best-effort）
+- **lessons.md 改动** → `git commit <path>`（H-F2, 2026-07-07：一步到位不预 staged，防 add 成功 commit 失败后 5b reset --hard 清除 staging；保留知识库，best-effort）
 - **runs/ + .workflow/ 改动** → `git checkout --`（丢弃，可再生）
 - **剩余（implementor 半成品）** → `git reset --hard HEAD`（清理）
-- re-run `git status --porcelain` 确认 clean，设 `dirty_tree=false`；任一步失败则保留 `dirty_tree=true` 并在 summary 记录错误。
+- re-run `git status --porcelain` 确认 clean，设 `dirty_tree=false`；任一步失败则保留 `dirty_tree=true` 并在 summary 记录错误。**orchestrator 守卫**（H-F1, 2026-07-07）：bootstrap 返回后检查 `boot.evidence?.dirty_tree`，残留 true 则 halt（防脏工作树上跑 implementor 混入残留改动）。
 
-**commit 是状态原子转换**：commit subagent 返回 `{commit_sha}` 即 git commit 已落盘；崩在此点之后 → git log 有 commit → 视为 completed 跳过。**finalReport step 6**（W1-1）在 halt 后主动 commit lessons.md（best-effort），确保下次 bootstrap 能读到最新 lessons 注入 implementor。
+**commit 是状态原子转换**：commit subagent 返回 `{commit_sha}` 即 git commit 已落盘；崩在此点之后 → git log 有 commit → 视为 completed 跳过。**finalReport step 6**（W1-1）在 halt 后主动 commit lessons.md（best-effort），确保下次 bootstrap 能读到最新 lessons 注入 implementor。**manifest `lessons_committed` 字段**（H-F7, 2026-07-07）：step 6 commit 成功 → 重写 manifest 为 `lessons_committed:true`，供下次 bootstrap 检查 lessons.md 是否真被持久化（防 best-effort 失败后静默退化）。
 
 ## 7. 串行调度
 
