@@ -88,6 +88,9 @@ test('QC-4: 关键 helper 函数体 lib.js ↔ run-plans.js 字节一致', () =>
     'decideReviewOutcome',
     // W1-5b 路径归一 (2026-07-07): 防 reviewer 返回不同路径格式致 cross-reviewer 重叠检测漏报
     'normalizeFilePath', 'unionFiles',
+    // Task 3 (2026-07-08): buildPrompt 默认参数含 auditDirective: ''（fix-round/retry 路径经 implCtx 调用）
+    //   默认值若两端漂移 → {{auditDirective}} 残留进 prompt。须字节守护。
+    'buildPrompt',
   ]
   for (const fn of fns) {
     const libBody = extractFunctionBody(libSrc, fn)
@@ -1317,6 +1320,8 @@ test('AUDIT bootstrap: Return schema tasks 含 audit_required 字段', () => {
 
 test('AUDIT runTask: 初始 dispatch 据 audit_required 传 auditDirective + runtime fallback 正则', () => {
   assert.match(runSrc, /auditDirective.*AUDIT_DIRECTIVE/, 'runTask 初始 dispatch 须传 AUDIT_DIRECTIVE')
-  assert.match(runSrc, /AUDIT_REFACTOR_KEYWORDS/, 'runTask 须含 runtime fallback 正则（D15）')
+  const runTaskBody = extractFunctionBody(runSrc, 'runTask')
+  assert.ok(runTaskBody, 'runTask function must exist')
+  assert.match(runTaskBody, /AUDIT_REFACTOR_KEYWORDS/, 'runTask 须含 runtime fallback 正则（D15）')
 })
 
