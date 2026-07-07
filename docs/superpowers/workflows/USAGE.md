@@ -157,7 +157,12 @@ get-ts（取时间戳）
 ### 手动中断 / 崩溃
 同样见 §7.1——用全新跑续跑。崩在 implementor 后/commit 前的半成品，全新跑会重跑该 task 覆盖。
 
-> **⚠️ dirty_tree 自愈警告（第 7 轮）**：若上次 run 崩在 implementor 完成但 commit 未执行，工作树会残留半成品。bootstrap agent 检测到 `dirty_tree=true` 时会**自动执行 `git reset --hard HEAD`** 清理（§6.2 半提交自愈），**会静默丢弃工作树中所有未提交改动**——包括**非工作流的用户改动**（如手动编辑未 commit 的文件）。续跑前请确认工作树无重要未提交内容，或用 `git stash` 暂存。
+> **⚠️ dirty_tree 自愈警告（W1-1/W1-4 改进, 2026-07-07）**：若上次 run 崩在 implementor 完成但 commit 未执行，工作树会残留半成品。bootstrap agent 检测到 `dirty_tree=true` 时会**分类处理**（非一律 reset）：
+> - **lessons.md 改动** → auto-commit 保留（知识库不丢，commit message `chore(workflow): auto-commit lessons.md from interrupted run`）
+> - **runs/ + .workflow/ 改动** → discard（可再生，`git checkout --`）
+> - **剩余（implementor 半成品 + 非工作流用户改动）** → `git reset --hard HEAD` 清理
+>
+> **会静默丢弃工作树中所有未提交的非 lessons.md 改动**——包括**非工作流的用户改动**。续跑前请确认工作树无重要未提交内容，或用 `git stash` 暂存。
 
 ## 7.1 续跑：用「全新跑」，不要用 resumeFromRunId（重要）
 
@@ -288,6 +293,8 @@ plan frontmatter 的 `model` 字段决定 implementor 用 sonnet 还是 opus：
 - **首次跑会修改所有 plan 文件**（加 frontmatter，幂等，已加的不重写）
 - **业务代码必须可测**——`test_command` 跑不通时 implementor/gate 会失败（项目未初始化时 bootstrap 容忍，但 implementor 跑测试需要 pyproject.toml 等就绪）
 - **commit convention**：`feat(plan-X/T-Y): <title>`——**全新跑**靠 git log 识别已完成 task 并跳过（这是续跑的单一体机制，见 §7.1）
+- **implementor 禁 commit**（W1-2, 2026-07-07）：implementor agent 不会自行 `git commit`/`git add`，只写代码 + 测试留工作树，由独立 commit agent 在 review 通过后提交。若 implementor 报 blocked 且需要 commit 才能继续，说明 plan 设计有误。
+- **lessons learned 编号约定**（W1-5e, 2026-07-07）：implementor 按 `lessons.md` 中 lesson 加固代码时，须在 commit message / 代码注释中标注 `L-YYYYMMDD-NN` 编号（如 `L-2026-07-07-002`）。specReview 据此编号判定加固 NOT EXTRA（防 reviewer 报 EXTRA → implementor 删 → 振荡）；qualityReviewer 对 lesson 加固的 over-engineering / 函数超 50 行 / helper 数量 3 维度豁免（命名/类型/错误处理等不豁免）。
 - **不降级继续**：限额 halt 后不会用弱 model 继续开发，只保存进度等恢复（§2.4 核心原则）
 - **错误恢复**：bootstrap/get-ts/implementor/review/simplify/commit/gate/finalReport **所有** agent 路径都有 quota 捕获 + 兜底，不会裸 crash 丢进度
 

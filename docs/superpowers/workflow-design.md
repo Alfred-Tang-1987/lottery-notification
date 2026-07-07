@@ -424,6 +424,51 @@ commit agent 在 step 2.6 用 `git diff HEAD --numstat` 检测 `deleted_code` / 
 **实施 plan**：`docs/superpowers/workflow-plans/2026-07-06-review-v3-oscillation-findings-lessons.md`。
 
 
+### 5.6 W1 移植改进（2026-07-07：从 OTC-Fund-SIP-Strategy 仓库移植 5 项通用改进）
+
+**背景**：OTC-Fund-SIP-Strategy 仓库在 W1 批次对 run-plans workflow 做了 8 项改进，其中 5 项通用适用于本仓库（W1-3 历史错误提交修复是项目特定一次性操作，不移植；W1-5c silent_failure_context + W1-5d lesson_categories 本仓库 v3 已有）。W1-3 的根因（implementor 自主 commit）已被 W1-2 从源头堵住，不单独做回滚机制（预防优于补救）。
+
+**5 项改进汇总**：
+
+| 编号 | 改进 | 解决的问题 | 实现位置 |
+|---|---|---|---|
+| W1-2 | implementor Discipline 禁提交 | implementor 自主 commit 绕过 commit agent 的 pre-commit 检测（out_of_scope/destructive_changes），导致半成品固化、状态混乱 | implementor prompt 顶部 Discipline 段落 |
+| W1-5a | specReview Task Scope Boundary | 多 task plan 中 reviewer 来回报"缺失未来 task 的接口 / 过度实现未来 task 的功能"导致 OSCILLATING halt | specReview prompt Task Scope Boundary 段落 |
+| W1-5b | normalizeFilePath 路径归一 | reviewer 返回不同路径格式（Windows 绝对路径/反斜杠/大小写）致 groupFindingsByFile 按字符串比对失效，cross-reviewer 重叠检测漏报 | normalizeFilePath 函数 + unionFiles/findingsOf/groupFindingsByFile 3 处调用 |
+| W1-5e | Lessons Learned Exemption | implementor 按 lessons 加固 → reviewer 报 EXTRA → implementor 删 → 下轮又加回 → OSCILLATING halt（lessons 闭环与 reviewer 审查自相矛盾） | specReview + qualityReviewer prompt Exemption 段落 + lessonsPath 注入 |
+| W1-1/W1-4 | 分类 dirty_tree + lessons.md commit | 中断后 bootstrap 一律 `git reset --hard HEAD` 全清，误删 lessons.md 知识库 + runs/ 运行记录 + .workflow/blocked.md | bootstrap step 5 分类处理 + finalReport step 6 commit lessons.md |
+
+**W1-2 implementor Discipline**（3 行 prompt，完全通用）：
+implementor prompt 顶部新增 `## Discipline (HARD REQUIREMENTS)` 段落：DO NOT run `git commit` or `git add`。commit 是独立 agent 的状态原子转换（§6.2），implementor 自行 commit 会导致 review 还没过就固化半成品。同时通用化 W1-3 根因。
+
+**W1-5a specReview Task Scope Boundary**（1 段 prompt，完全通用）：
+specReview prompt 新增 `## Task Scope Boundary` 段落：FUTURE tasks 的方法/接口/字段不算 MISSING（属于各自未来 task），implementor 越界加的算 EXTRA。防多 task plan 中 reviewer 与 implementor 在"当前 task 范围 vs 未来 task 范围"边界振荡。
+
+**W1-5b normalizeFilePath 路径归一**（1 函数 + 3 处调用，通用）：
+```javascript
+function normalizeFilePath(p) {
+  if (!p) return p
+  return String(p).replace(/\\/g, '/').replace(/^.*?\/(src|tests|docs|data|logs|lib|app|internal|cmd|\.claude)\//i, '$1/')
+}
+```
+白名单 `(src|tests|docs|data|logs|lib|app|internal|cmd|.claude)` 覆盖 JS/Go/Python 项目常见顶层目录。`unionFiles` / `findingsOf` / `groupFindingsByFile` 3 处调用归一化，防 cross-reviewer 重叠检测漏报（§13j）。
+
+**W1-5e Lessons Learned Exemption**（2 段 prompt + lessonsPath 注入，高度通用）：
+- **specReview 端**：`## Lessons Learned Exemption` 段落——implementor 按 `{{lessonsPath}}` 中 lesson 加固（commit message / 代码注释含 L-YYYYMMDD-NN 编号）NOT EXTRA。判定流程：查 L-编号 → 读 lessons.md 核对 minimal + on-target → 满足则豁免，否则仍按 EXTRA 报告。
+- **qualityReviewer 端**：`## Lessons Learned Exemption (限定维度硬性豁免)` 段落——lesson 加固的"合理副作用"3 维度不报 finding：over-engineering / single-use helper、函数超 50 行、helper/abstraction 数量。不豁免的维度（lesson 加固不应损害）：命名清晰度、类型注解、错误处理、深层嵌套、mutation、硬编码值。
+- **lessonsPath 注入**：`runReviewRound` 的 specReview / qualityReviewer `buildPrompt` 调用新增 `lessonsPath: cfg.lessons_path` 参数。
+- **hunter 不改**：lesson 加固与 hunter 目标同向（都是防静默失败），不会振荡。
+
+**W1-1/W1-4 分类 dirty_tree + lessons.md commit**（bootstrap + finalReport 改动，高度通用）：
+- **bootstrap step 5**：见脏不再一律 `git reset --hard HEAD`，分三类处理：
+  - lessons.md 改动 → `git add && git commit`（保留知识库，best-effort）
+  - runs/ + .workflow/ 改动 → `git checkout --`（丢弃，可再生）
+  - 剩余（implementor 半成品）→ `git reset --hard HEAD`（清理）
+- **finalReport step 6**：halt 后主动 commit lessons.md（best-effort，不阻塞 manifest 写入）。确保下次 bootstrap 能读到最新 lessons 注入 implementor。
+
+**测试守护**：sync.test 新增 W1 移植结构性断言（Discipline 段落 / Task Scope Boundary / Exemption 段落 / lessonsPath 注入 / 分类 dirty_tree / finalReport commit lessons.md）+ QC-4 字节守护扩展 `normalizeFilePath` / `unionFiles`。helpers.test 新增 5 个 normalizeFilePath 单元测试。
+
+
 ### 5.4 lesson 自动提炼（distiller agent，2026-07-03）
 
 **问题**：旧版"halt 时自动写 lesson"产生废条目（title/detail 均为 halt reason 如 `OSCILLATING`），污染知识库；2026-07-01 改为"完全不自动写、靠人工复盘"，但人工复盘成本高、可复用知识流失。
@@ -500,9 +545,15 @@ orchestrator 三层处理（§13k bootstrap task 识别防御）:
 
 > **提交 scope 区分（infra vs business）**：bootstrap 的 `extractTaskKey` 识别 `feat|fix|refactor(plan-XX/TY):` 前缀作为"已完成业务 task"（§6.1 识别约定；2026-07-05 扩展认 fix|refactor——plan-06/T6d 既有 feat `b08e3e7` 也有 fix `ac28750`，只认 feat 会漏识别）。workflow 自身基建改动（lib.js / run-plans.js / tests / workflow.config.json）**不得**用 `feat(plan-` 前缀——否则会被误识别为同号业务 plan 的已完成 task → bootstrap 跳过 → 漏做。基建提交约定用 `chore(workflow-NN/TN):`：`extractTaskKey` 对此前缀返回 `null` → 对 bootstrap 不可见，零碰撞风险。此约定是 `extractTaskKey` 单一识别源的对称面（emission ↔ recognition）。
 
-### 6.2 半提交状态清理（DX5）
+### 6.2 半提交状态清理（DX5 + W1-1/W1-4 分类处理）
 
-崩溃在 implementor 完成但 commit 未执行时，working tree 有半成品。**native resume 会重跑未完成的 implementor**，TDD 重写自然覆盖半成品，无需显式 `git reset`。兜底：bootstrap agent 检测 `dirty_tree=true` → **自愈**（orchestrator 无 shell，bootstrap agent 有 Bash 访问，执行 `git reset --hard HEAD` 清理后 re-run `git status --porcelain` 确认 clean，设 `dirty_tree=false`）；git reset 失败则保留 `dirty_tree=true` 并在 summary 记录错误。**commit 是状态原子转换**：commit subagent 返回 `{commit_sha}` 即 git commit 已落盘；崩在此点之后 → git log 有 commit → 视为 completed 跳过。
+崩溃在 implementor 完成但 commit 未执行时，working tree 有半成品。**native resume 会重跑未完成的 implementor**，TDD 重写自然覆盖半成品，无需显式 `git reset`。兜底：bootstrap agent 检测 `dirty_tree=true` → **分类自愈**（W1-1/W1-4, 2026-07-07，§5.6；orchestrator 无 shell，bootstrap agent 有 Bash 访问）：
+- **lessons.md 改动** → `git add && git commit`（保留知识库，best-effort）
+- **runs/ + .workflow/ 改动** → `git checkout --`（丢弃，可再生）
+- **剩余（implementor 半成品）** → `git reset --hard HEAD`（清理）
+- re-run `git status --porcelain` 确认 clean，设 `dirty_tree=false`；任一步失败则保留 `dirty_tree=true` 并在 summary 记录错误。
+
+**commit 是状态原子转换**：commit subagent 返回 `{commit_sha}` 即 git commit 已落盘；崩在此点之后 → git log 有 commit → 视为 completed 跳过。**finalReport step 6**（W1-1）在 halt 后主动 commit lessons.md（best-effort），确保下次 bootstrap 能读到最新 lessons 注入 implementor。
 
 ## 7. 串行调度
 
@@ -642,6 +693,7 @@ frontmatter 是机器读，正文是人读，单文件不分离。
 - **绝不**并行派发多个 implementor（serial，尊重 upstream Red Flag L242）
 - **绝不**静默降级 modelHint（unknown → fail loud）
 - **绝不**无限 BLOCKED 升级（opus 仍 BLOCKED → halt）
+- **绝不**让 implementor 跑 `git commit`/`git add`（W1-2，§5.6；commit 是独立 agent 的状态原子转换，§6.2）
 
 ## 13. 待细化
 
@@ -748,16 +800,16 @@ return {result: 'done', perTask: state.perTask}
 
 | role | prompt 核心职责 | model | evidence 必填（§13c） |
 |---|---|---|---|
-| `bootstrap` | 读 config（§11.1）+ plan files（§13e 生成 frontmatter、叶子优先解析）+ git log（completed）+ dirty_tree（自愈 `git reset --hard HEAD`，§6.2）+ in_progress（扫 `runs/*/manifest.json`，§13c） | sonnet | config, plans[], completed[], dirty_tree, in_progress, failed_approaches[], task_lessons[], task_write_files[] |
-| `implementor` | TDD（RED→GREEN→REFACTOR），跑 `test_command`，self-review；**`build_command` 非空时 GREEN 前跑构建验证可构建性**（P1-11，§11.1 build_command 字段）；BLOCKED 时填 diagnostics；done_with_concerns 时填 concerns[] | task.model\|\|sonnet | tests_exit_code, files_changed[], pytest_summary |
-| `specReviewer` | 代码 vs spec（`spec_path`）逐行比对，记 files_touched | opus | status, issues[] |
-| `qualityReviewer` | 质量/架构/边界/类型/不可变性，记 files_touched | opus | status, issues[] |
+| `bootstrap` | 读 config（§11.1）+ plan files（§13e 生成 frontmatter、叶子优先解析）+ git log（completed）+ dirty_tree（**分类自愈** W1-1/W1-4 §5.6：lessons.md commit / runs+.workflow discard / implementor 半成品 reset）+ in_progress（扫 `runs/*/manifest.json`，§13c） | sonnet | config, plans[], completed[], dirty_tree, in_progress, failed_approaches[], task_lessons[], task_write_files[] |
+| `implementor` | TDD（RED→GREEN→REFACTOR），跑 `test_command`，self-review；**Discipline 禁 git commit/add**（W1-2，§5.6）；**`build_command` 非空时 GREEN 前跑构建验证可构建性**（P1-11，§11.1 build_command 字段）；BLOCKED 时填 diagnostics；done_with_concerns 时填 concerns[] | task.model\|\|sonnet | tests_exit_code, files_changed[], pytest_summary |
+| `specReviewer` | 代码 vs spec（`spec_path`）逐行比对，记 files_touched；**Task Scope Boundary**（W1-5a，§5.6：future task 不算 MISSING）；**Lessons Learned Exemption**（W1-5e，§5.6：lesson 加固 NOT EXTRA） | opus | status, issues[] |
+| `qualityReviewer` | 质量/架构/边界/类型/不可变性，记 files_touched；**Lessons Learned Exemption 限定维度硬性豁免**（W1-5e，§5.6：over-engineering/函数超 50 行/helper 数量豁免；命名/类型/错误处理/嵌套/mutation/硬编码不豁免） | opus | status, issues[] |
 | `hunter` | 静默失败/吞错/bad fallback（ECC silent-failure-hunter 语义），记 files_touched。**只读审查**：禁止跑 pytest/ruff/build（那是 implementor/gate 职责）；项目特定静默失败纪律经 `silent_failure_context` config 注入，hunter 优先核查 | sonnet | status, silent_failures[] |
 | `simplify` | 精简代码（ECC simplify 语义），**如实报 `changed(bool)`** | **sonnet**（硬编码，非 task model，P1-5） | changed, files_changed[] |
 | `commit` | status check → test → `git commit -m "feat(plan-X/T-Y): ..."`，返回 commit_sha；检测 out_of_scope / destructive_changes | **sonnet**（硬编码，非 task model，P1-5） | commit_sha, committed_files[], tests_at_commit |
 | `contextFetcher` | NEEDS_CONTEXT 兑现（grep/glob/LSP/读 spec/Context7/WebSearch） | **sonnet**（硬编码，非 task model，P1-5） | context |
 | `gate` | committed SHA 上 `git checkout <sha>` + 跑 `full_test_command` + **`git checkout -` 回原 HEAD**，真实 exit code（§3 独立 gate） | sonnet | tests_exit_code, pytest_summary |
-| `finalReport` | 读 orchestrator 传入的 in-memory state，写 `runs/<run-id>/manifest.json`（§13d），输出 digest | sonnet | — |
+| `finalReport` | 读 orchestrator 传入的 in-memory state，写 `runs/<run-id>/manifest.json`（§13d）；**halt 后 commit lessons.md**（W1-1 step 6，§5.6，best-effort）；输出 digest | sonnet | — |
 
 > 收敛后原 `state-updater` / `manifest-writer` 已并入 `finalReport`（§13h 砍逐事件写盘）。
 
@@ -930,7 +982,7 @@ halt 含义（2026-07-05 后）：**opus 也修不好**。看 `diag.flipFlop`：
 **方案**：v2.0 简化版（纯 surface，零自动化）。v1.0 完整共识矩阵（映射表+haiku判定+opus仲裁+自动改spec）经 CEO+Eng 双审查后否决——问题频率 ~2%（47 task 仅 1 次真正的 reviewer 冲突），投入产出比不对。
 
 **实现**：
-- `groupFindingsByFile(findings)` — 按 file 分组 findings 的纯函数
+- `groupFindingsByFile(findings)` — 按 file 分组 findings 的纯函数；**内部经 `normalizeFilePath` 归一化**（W1-5b, 2026-07-07，§5.6：统一 Windows 绝对路径/反斜杠/大小写为相对路径，防 reviewer 返回不同路径格式致同文件分到不同 group、cross-reviewer 重叠检测漏报）
 - `formatCrossReviewerNote(findings)` — 格式化跨 reviewer 重叠为 `⚠ CROSS-REVIEWER` 标记文本
 - 注入 fixIssues 末尾（review 循环中 `formatFindings(findings) + formatCrossReviewerNote(findings)`）
 - finalReport prompt 增强：halt 时 blocked.md 追加按文件分组的 findings + `⚠ CROSS-REVIEWER` 标记
