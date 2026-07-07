@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, formatFindingItem, isQuotaError, errStr, makeHalt, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound, resolveMaxRounds, detectOscillation, distillLessonInput, applyLessonDecisions, formatLessonsForDistill, validateAmendResult, validateCheckoutResult, groupFindingsByFile, formatCrossReviewerNote, bareTaskId, taskKey, dropParentTasks, extractCompletedFromSubjects, extractTaskKey, shouldEscalateOnOscillation, resolveReviewBudget, isFlipFlop, formatLessons, formatUniversalLessons, formatDomainLessons, updateFindingsHistory, formatFindingsHistory, hasRegressed, normalizeFilePath, REVIEW_SOURCES, checkImplStatus, formatBulletSection, buildPrompt, QUOTA_HALT_NOTE } from '../lib.js'
+import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, formatFindingItem, isQuotaError, errStr, makeHalt, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound, resolveMaxRounds, detectOscillation, distillLessonInput, applyLessonDecisions, formatLessonsForDistill, validateAmendResult, validateCheckoutResult, groupFindingsByFile, formatCrossReviewerNote, bareTaskId, taskKey, dropParentTasks, extractCompletedFromSubjects, extractTaskKey, shouldEscalateOnOscillation, resolveReviewBudget, isFlipFlop, formatLessons, formatUniversalLessons, formatDomainLessons, updateFindingsHistory, formatFindingsHistory, hasRegressed, normalizeFilePath, REVIEW_SOURCES, checkImplStatus, formatBulletSection, buildPrompt, QUOTA_HALT_NOTE, STATIC_READONLY_NOTE } from '../lib.js'
 
 const ok = { status: 'ok', diagnostics: { files_touched: ['a.py'] } }
 const ok2 = { status: 'ok', diagnostics: { files_touched: ['b.py'] } }
@@ -1293,4 +1293,24 @@ test('S7 QUOTA_HALT_NOTE: 调用方可 opt-out（传空串）', () => {
   const out = buildPrompt('specReview', { quotaHaltNote: '' })
   assert.ok(!out.includes('MARKER_QUOTA_TEST'), '传空串应关闭默认注入')
   assert.ok(!out.includes(QUOTA_HALT_NOTE), 'opt-out 后常量文本不应出现')
+})
+
+// —— S8 STATIC_READONLY_NOTE 函数 + buildPrompt 注入（2 reviewer 去重，2026-07-07）——
+// specReview/qualityReviewer 的 STATIC READ-ONLY 纪律段唯一差异是 reviewType
+// （'spec verification' / 'quality review'），抽 STATIC_READONLY_NOTE(reviewType) 函数复用。
+// hunter 文本不同（git status/git diff 顺序 + silent-failure hunting 措辞），不替换。
+// 三轮复核修正：原决策以为是 3 reviewer 共享常量；核查仅 specReview/qualityReviewer 近似。
+
+test('S8 STATIC_READONLY_NOTE: reviewType 插值', () => {
+  assert.equal(
+    STATIC_READONLY_NOTE('spec verification'),
+    `This is a STATIC READ-ONLY review. You may use 'git diff', 'git status', 'find', 'grep'/'rg', and read files to locate and inspect changes. Do NOT run the test suite, ruff, lint, or any build — spec verification is done by reading code, not by running it. Running tests/builds is the implementor's and gate's job, not yours.`
+  )
+  assert.ok(STATIC_READONLY_NOTE('quality review').includes('quality review is done by reading code'))
+})
+
+test('S8 STATIC_READONLY_NOTE: buildPrompt 注入（specReview target）', () => {
+  const out = buildPrompt('specReview', { staticReadonlyNote: STATIC_READONLY_NOTE('spec verification') })
+  assert.ok(out.includes('STATIC READ-ONLY'), 'specReview prompt 应含 STATIC READ-ONLY 段')
+  assert.ok(out.includes('spec verification'), '应含 reviewType 插值')
 })

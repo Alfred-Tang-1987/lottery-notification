@@ -477,8 +477,8 @@ async function runReviewRound(taskId, cfg, plan, fc, concernsHint, labelSuffix, 
   // Q7: 三处 opts 都设 phase（若 phaseLabel 非空）——/workflows UI 中 spec/qual/hunt 按阶段分组一致
   const commonOpts = phaseLabel ? { phase: phaseLabel } : {}
   const [spec, qual, hunt] = await parallel([
-    async () => safeAgent(buildPrompt('specReview', { taskId, specPath: cfg.spec_path, planFilePath: plan.file, filesChanged: fc, concernsHint, referencePaths: formatReferencePaths(cfg.reference_paths), lessonsPath: cfg.lessons_path || '' }), { schema: SCHEMAS.specReview, model: 'opus', ...commonOpts, label: `spec:${taskId}${labelSuffix}` }),
-    async () => safeAgent(buildPrompt('qualityReviewer', { taskId, filesChanged: fc, languageChecklist: languageChecklist(cfg.language), lessonsPath: cfg.lessons_path || '' }), { schema: SCHEMAS.qualityReviewer, model: 'opus', ...commonOpts, label: `qual:${taskId}${labelSuffix}` }),
+    async () => safeAgent(buildPrompt('specReview', { taskId, specPath: cfg.spec_path, planFilePath: plan.file, filesChanged: fc, concernsHint, referencePaths: formatReferencePaths(cfg.reference_paths), lessonsPath: cfg.lessons_path || '', staticReadonlyNote: STATIC_READONLY_NOTE('spec verification') }), { schema: SCHEMAS.specReview, model: 'opus', ...commonOpts, label: `spec:${taskId}${labelSuffix}` }),
+    async () => safeAgent(buildPrompt('qualityReviewer', { taskId, filesChanged: fc, languageChecklist: languageChecklist(cfg.language), lessonsPath: cfg.lessons_path || '', staticReadonlyNote: STATIC_READONLY_NOTE('quality review') }), { schema: SCHEMAS.qualityReviewer, model: 'opus', ...commonOpts, label: `qual:${taskId}${labelSuffix}` }),
     async () => safeAgent(buildPrompt('hunter', { taskId, filesChanged: fc, silentFailureContext: formatSilentFailureContext(cfg.silent_failure_context, cfg.silent_failure_intro) }), { schema: SCHEMAS.hunter, model: 'sonnet', ...commonOpts, label: `hunt:${taskId}${labelSuffix}` }),
   ])
   const haltReason = reviewHaltReason(spec, qual, hunt)
@@ -846,6 +846,13 @@ const SCHEMAS = {
 // implementor/lessonDistiller 是变体，不引用此常量。
 const QUOTA_HALT_NOTE = `若遇到 model 限额耗尽（quota/rate-limit/429 错误），返回 status:'model_unavailable'（非 failed），让 orchestrator halt 并保存进度。`
 
+// STATIC_READONLY_NOTE（S8, 2026-07-07）—— inline 自 lib.js（去 export）
+// STATIC READ-ONLY review 纪律段，2 个 reviewer 复用。reviewType 随 reviewer 变
+// （'spec verification' / 'quality review'）。hunter 文本不同，不复用。
+function STATIC_READONLY_NOTE(reviewType) {
+  return `This is a STATIC READ-ONLY review. You may use 'git diff', 'git status', 'find', 'grep'/'rg', and read files to locate and inspect changes. Do NOT run the test suite, ruff, lint, or any build — ${reviewType} is done by reading code, not by running it. Running tests/builds is the implementor's and gate's job, not yours.`
+}
+
 // ===== PROMPTS（inline 自 lib.js Task 6，增强版 bootstrap，去 export）=====
 const PROMPTS = {
   bootstrap: `You are the BOOTSTRAP agent for the workflow orchestrator. Read project state and return structured data. You MAY write YAML frontmatter to plan files that lack it (idempotent). Modify no other files.
@@ -951,7 +958,7 @@ Steps:
    c. MISUNDERSTANDING: requirement interpreted differently than intended? right feature wrong way?
 4. Record files_touched (files in the diff).
 
-This is a STATIC READ-ONLY review. You may use 'git diff', 'git status', 'find', 'grep'/'rg', and read files to locate and inspect changes. Do NOT run the test suite, ruff, lint, or any build — spec verification is done by reading code, not by running it. Running tests/builds is the implementor's and gate's job, not yours.
+{{staticReadonlyNote}}
 
 Return {status (ok|failed), diagnostics:{files_touched:[...], issues:[<dimension>: <spec requirement>: <code gap or over-build>]}, summary}.
 RED FLAG: ok 仅当三维度全清——逐条 spec 全符合 AND 无越界（lessons learned 修复经 Exemption 判定后不算越界）。绝不模糊通过。越界（spec 未要求的功能，尤其是合规红线禁止类如预测/推荐）必须 failed。issues 要具体（哪条 spec + 代码哪里不符/越界 + file:line）。{{quotaHaltNote}}`,
@@ -984,7 +991,7 @@ W1-5e (2026-07-07): implementor 按 {{lessonsPath}} 中记录的 lesson 加固�
 2. Check universal checks + the language-specific checklist above. (Note: architectural discipline like layer-purity is enforced automatically by the gate's lint commands — you focus on code a human must judge; do NOT invent layer rules not in the checklist.)
 3. Record files_touched.
 
-This is a STATIC READ-ONLY review. You may use 'git diff', 'git status', 'find', 'grep'/'rg', and read files to locate and inspect changes. Do NOT run the test suite, ruff, lint, or any build — quality review is done by reading code, not by running it. Running tests/builds is the implementor's and gate's job, not yours.
+{{staticReadonlyNote}}
 
 ## Calibration
 Categorize issues by ACTUAL severity — not everything is Critical. Acknowledge what was done well (strengths) before listing issues; accurate praise helps the implementer trust the rest.
