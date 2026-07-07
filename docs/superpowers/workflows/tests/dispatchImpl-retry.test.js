@@ -126,6 +126,25 @@ test('改进7.1: implementor dispatch 调用点须传 retryModel=opus（防 toke
   ].join('\n'))
 })
 
+// Task 2 (2026-07-08): AUDIT halt 分支源码字面量守护。
+// refactor 类 task AUDIT 阶段发现 brief 缺陷时返回 needs_audit_fix status，
+// dispatchImpl 须在 model_unavailable 之前 halt（更具体 status 先查），diag 含 audit_reason。
+// 注意：AUDIT_DIRECTIVE 常量（Task 1）已含 needs_audit_fix/audit_reason 字符串（prompt 文本），
+// 故须用 extractDispatchImpl 提取函数体后断言（而非全文件 grep）——否则假绿。
+test('AUDIT: dispatchImpl 对 needs_audit_fix 返回 halt + diag 含 audit_reason', () => {
+  const body = extractDispatchImpl(runSrc)
+  assert.match(body, /needs_audit_fix/, 'dispatchImpl 须处理 needs_audit_fix status（halt 分支）')
+  assert.match(body, /audit_reason/, 'dispatchImpl halt diag 须含 audit_reason 字段')
+  // 须在 model_unavailable 状态检查之前（更具体 status 先查）——定位 if 语句而非字符串
+  // （dispatchImpl 函数体内注释含 model_unavailable 字样，但那不是 status 检查）。
+  const auditCheckIdx = body.indexOf("impl?.status === 'needs_audit_fix'")
+  const muCheckIdx = body.indexOf("impl?.status === 'model_unavailable'")
+  assert.ok(auditCheckIdx > -1, 'dispatchImpl 须有 needs_audit_fix status 检查分支')
+  assert.ok(muCheckIdx > -1, 'dispatchImpl 须有 model_unavailable status 检查分支')
+  assert.ok(auditCheckIdx < muCheckIdx,
+    'dispatchImpl needs_audit_fix halt 分支必须在 model_unavailable 检查之前（更具体 status 先查）')
+})
+
 test('SH2: distiller 是 halt() 中独立 agent 调用（S5 第 5 轮：单次 agent 调用，非 agentWithFallback）', () => {
   // S5（第 5 轮）: spec §2.4 fallback 链 [opus,sonnet,haiku] 仅用于 finalReport 保存进度；
   //   distiller 是 lesson 提炼通道（非进度保存），改用单次 agent() 调用（model: 'opus'），

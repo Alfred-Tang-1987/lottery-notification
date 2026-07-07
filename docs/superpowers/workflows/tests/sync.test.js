@@ -1276,3 +1276,26 @@ test('B1-10 通用性守护：PROMPTS 不得含本项目专有路径/文件名',
   }
 })
 
+// Task 2 (2026-07-08): SCHEMAS.implementor needs_audit_fix + audit_reason 守护。
+// refactor 类 task AUDIT 阶段发现 brief 缺陷时返回 needs_audit_fix status + audit_reason 字段，
+// dispatchImpl 据 audit_reason halt；finalReport prompt 据 audit_reason 分类渲染 blocked.md。
+// 注意：AUDIT_DIRECTIVE 常量（Task 1）已含 needs_audit_fix/audit_reason 字符串（prompt 文本），
+// 故须用 extractSchemas 提取 SCHEMAS 块后断言（而非全文件 grep）——否则假绿。
+test('AUDIT: SCHEMAS.implementor 含 needs_audit_fix + audit_reason', () => {
+  function extractSchemas(src) {
+    const m = src.match(/(?:export\s+)?const SCHEMAS = \{[\s\S]*?\n\}/)
+    assert.ok(m, '须含 SCHEMAS 定义')
+    return m[0].replace(/^export\s+/, '')
+  }
+  const libSchemas = extractSchemas(libSrc)
+  const runSchemas = extractSchemas(runSrc)
+  // status enum 须含 needs_audit_fix
+  assert.match(libSchemas, /needs_audit_fix/, 'lib.js SCHEMAS.implementor status enum 须含 needs_audit_fix')
+  assert.match(runSchemas, /needs_audit_fix/, 'run-plans.js SCHEMAS.implementor status enum 须含 needs_audit_fix（inline 同步）')
+  // 顶层 audit_reason 字段 + 三个枚举值
+  assert.match(libSchemas, /audit_reason:\s*\{\s*type:\s*'string',\s*enum:\s*\['brief_defect',\s*'intentional_variant_unclear',\s*'tool_failure'\]\s*\}/,
+    'lib.js SCHEMAS.implementor 须含 audit_reason 顶层字段 + 三枚举值（brief_defect/intentional_variant_unclear/tool_failure）')
+  assert.match(runSchemas, /audit_reason:\s*\{\s*type:\s*'string',\s*enum:\s*\['brief_defect',\s*'intentional_variant_unclear',\s*'tool_failure'\]\s*\}/,
+    'run-plans.js SCHEMAS.implementor 须含 audit_reason 顶层字段 + 三枚举值（inline 同步）')
+})
+

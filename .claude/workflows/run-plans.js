@@ -481,6 +481,7 @@ async function dispatchImpl(prompt, opts, model, retryModel = null) {
     if (isQuotaError(e)) return makeHalt('model_unavailable', model, e)
     return makeHalt('agent_error', model, e)
   }
+  if (impl?.status === 'needs_audit_fix') return { halted: true, reason: 'audit fix needed', diag: { ...impl.diagnostics, audit_reason: impl.audit_reason, taskKey: impl.taskKey } }
   if (impl?.status === 'model_unavailable') return { halted: true, reason: 'model_unavailable', diag: impl.diagnostics }
   // agent() 返回 null：可能是限额耗尽（router 中文错误如"已达到 5 小时的使用上限"常被 runtime
   // 吞为空响应），可能是 thinking-only 空响应，也可能是模型能力不足（400 Repetitive tool calls 等
@@ -833,10 +834,11 @@ const SCHEMAS = {
   implementor: {
     type: 'object', required: ['status'], additionalProperties: true,
     properties: {
-      status: { type: 'string', enum: ['ok', 'done_with_concerns', 'failed', 'blocked', 'needs_context', 'model_unavailable'] },
+      status: { type: 'string', enum: ['ok', 'done_with_concerns', 'failed', 'blocked', 'needs_context', 'needs_audit_fix', 'model_unavailable'] },
       evidence: { type: 'object', required: ['tests_exit_code', 'files_changed', 'pytest_summary'],
         properties: { tests_exit_code: { type: 'integer' }, files_changed: { type: 'array' }, pytest_summary: { type: 'string' } } },
       diagnostics: { type: 'object', properties: { blocked_category: { type: 'string' }, last_error: { type: 'string' }, suggested_fix: { type: 'string' }, concerns: { type: 'array' } } },
+      audit_reason: { type: 'string', enum: ['brief_defect', 'intentional_variant_unclear', 'tool_failure'] },
       summary: { type: 'string' },
     },
   },
@@ -1196,6 +1198,10 @@ Steps:
 1. mkdir -p {{runsDir}}.
 2. Write {{runsDir}}/manifest.json = {run_ts:{{runTs}}, mode:{{mode}}, plans:[...], per_task:{<taskKey>:{planId,status,model,review_rounds,files_touched_per_round,review_history,findings_history,oscillation_escalated_at_round,opus_escalated,commit_sha,simplify_reverted,simplify_review_findings,destructive_review_failed,destructive_review_findings,concerns,blocked_info}}, lessons_committed:false, result}. per_task.<task> 必须保留 stateJson 中 per_task 的**全部字段**（含 v3 新增字段 findings_history / oscillation_escalated_at_round / opus_escalated），不得以清单未列为由 strip 任何字段；注：清单仅作可读说明，以 stateJson 全字段为准（ensurePerTaskDefaults 共 16 字段：planId/status/model/review_rounds/files_touched_per_round/review_history/findings_history/oscillation_escalated_at_round/commit_sha/opus_escalated/simplify_reverted/simplify_review_findings/destructive_review_failed/destructive_review_findings/concerns/blocked_info）。findings_history 是 findings 状态机轨迹 [{title, status, first_seen, last_seen, rounds, fixed_at_round}]；oscillation_escalated_at_round 是 opus 升级轮 round 数或 null；opus_escalated 是布尔值。**lessons_committed**（H-F7, 2026-07-07）：布尔值，初始 false；step 6 成功 commit lessons.md 后须重写 manifest.json 将此字段改为 true。供下次 bootstrap 检查 lessons.md 是否真被持久化（防 best-effort 失败后静默退化）。
 3. If mode=halted: write .workflow/blocked.md from {{blockedInfo}} (the blocked task's blocked_info JSON — render EACH field human-readably: plan, task, reason, category, last_error, suggested_fix, quota_exhausted, likely_source, failed_approach). For failed_approach, render as: "Failed Approach: <failed_approach.task_id>: <failed_approach.reason> — <failed_approach.error>". If blocked_info contains \`regressedFindings\` (v3 findings state machine detected regressions), render separately as a readable list: each item showing title + first_seen + last_seen + fixed_at_round + file + fix, to help locate regression points quickly. Do NOT hunt for these fields in state — they are provided inline in blockedInfo.
+   If blocked_info.reason === 'audit fix needed'（refactor task AUDIT 阶段发现 brief 缺陷）: 按 blocked_info.diag.audit_reason 分类渲染（追加到 blocked.md，紧跟基础字段后）：
+   - brief_defect: "## AUDIT: Brief 与现状代码不一致\n差异清单: <blocked_info.diag 中的差异项>。\nAction: 修正 plan brief 后 resume，bootstrap 会重读重审。"
+   - intentional_variant_unclear: "## AUDIT: 无法判定是否有意变体\n差异: <blocked_info.diag 中的差异项>。\nAction: 确认是有意变体（在 brief 标注理由）还是缺陷（修 brief），resume。"
+   - tool_failure: "## AUDIT: 核查工具执行失败\n失败原因: <blocked_info.diag>。\nAction: 检查文件系统/工具可用性后 resume。"
    S3（第 4 轮）: blocked.md 路径固定为 .workflow/blocked.md（§8.2），独立于 {{runsDir}}——
    blocked.md 是用户接手入口，路径须稳定可预测（runsDir 会随 runTs 变化，用户难定位）。
 4. If mode=halted: run "git status --porcelain" and "git diff --stat". BEST-EFFORT — if git fails (not a repo / index corrupt), skip this section (do NOT block manifest.json write).
