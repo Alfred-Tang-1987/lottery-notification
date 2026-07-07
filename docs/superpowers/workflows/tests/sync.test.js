@@ -92,6 +92,25 @@ test('QC-4: 关键 helper 函数体 lib.js ↔ run-plans.js 字节一致', () =>
   }
 })
 
+test('QC-4b: REVIEW_SOURCES 常量 lib.js ↔ run-plans.js 字节一致（S4 reviewer 三元组单一真源）', () => {
+  // S4 (2026-07-07): REVIEW_SOURCES 是 const 数组（非 function），extractFunctionBody 不适用，
+  // 故单独提取整块字面量做字节比较。lib.js 为 export const，run-plans.js 为 const，
+  // 去掉前导 export 后须字节一致——否则 collectReviewFindings/reviewHaltForEmptyFailed/
+  // summarizeReviewRound 三函数虽函数体一致，但所迭代的常量漂移仍会致行为发散。
+  function extractReviewSources(src) {
+    const m = src.match(/(?:export\s+)?const REVIEW_SOURCES = \[[\s\S]*?\n\]/)
+    assert.ok(m, '须含 REVIEW_SOURCES 常量定义')
+    return m[0].replace(/^export\s+/, '')
+  }
+  const libRS = extractReviewSources(libSrc)
+  const runRS = extractReviewSources(runSrc)
+  assert.equal(runRS, libRS, 'REVIEW_SOURCES 常量字节不一致——lib.js 改了必须同步 run-plans.js inline 副本')
+  // 存在性 + shape 守护（与 helpers.test.js 的行为测试互补，此处在源码字面量层守护）
+  assert.match(libRS, /\{ name: 'spec', key: 'issues' \}/, 'REVIEW_SOURCES 须含 spec/issues 三元组')
+  assert.match(libRS, /\{ name: 'quality', key: 'issues' \}/, 'REVIEW_SOURCES 须含 quality/issues 三元组')
+  assert.match(libRS, /\{ name: 'hunter', key: 'silent_failures' \}/, 'REVIEW_SOURCES 须含 hunter/silent_failures 三元组')
+})
+
 test('run-plans.js SCHEMAS mirror key changes', () => {
   // implementor enum 含 done_with_concerns；diagnostics 含 concerns
   assert.match(runSrc, /'done_with_concerns'/)

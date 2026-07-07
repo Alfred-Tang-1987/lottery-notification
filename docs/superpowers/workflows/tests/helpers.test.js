@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, isQuotaError, errStr, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound, resolveMaxRounds, detectOscillation, distillLessonInput, applyLessonDecisions, formatLessonsForDistill, validateAmendResult, validateCheckoutResult, groupFindingsByFile, formatCrossReviewerNote, bareTaskId, taskKey, dropParentTasks, extractCompletedFromSubjects, extractTaskKey, shouldEscalateOnOscillation, resolveReviewBudget, isFlipFlop, formatLessons, formatUniversalLessons, formatDomainLessons, updateFindingsHistory, formatFindingsHistory, hasRegressed, normalizeFilePath } from '../lib.js'
+import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, isQuotaError, errStr, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound, resolveMaxRounds, detectOscillation, distillLessonInput, applyLessonDecisions, formatLessonsForDistill, validateAmendResult, validateCheckoutResult, groupFindingsByFile, formatCrossReviewerNote, bareTaskId, taskKey, dropParentTasks, extractCompletedFromSubjects, extractTaskKey, shouldEscalateOnOscillation, resolveReviewBudget, isFlipFlop, formatLessons, formatUniversalLessons, formatDomainLessons, updateFindingsHistory, formatFindingsHistory, hasRegressed, normalizeFilePath, REVIEW_SOURCES } from '../lib.js'
 
 const ok = { status: 'ok', diagnostics: { files_touched: ['a.py'] } }
 const ok2 = { status: 'ok', diagnostics: { files_touched: ['b.py'] } }
@@ -1186,4 +1186,13 @@ test('S10 taskKey: 单位 seq padStart 为 01', () => {
 
 test('S10 taskKey: 双位 seq 不补零', () => {
   assert.equal(taskKey(10, 'T10a'), 'plan-10/T10a')
+})
+
+// —— S4 REVIEW_SOURCES 常量（消除 reviewer 三元组在 3 处硬编码，2026-07-07）——
+
+test('S4 REVIEW_SOURCES: 3 个 reviewer 来源', () => {
+  assert.ok(Array.isArray(REVIEW_SOURCES))
+  assert.equal(REVIEW_SOURCES.length, 3)
+  assert.deepEqual(REVIEW_SOURCES.map(s => s.name), ['spec', 'quality', 'hunter'])
+  assert.deepEqual(REVIEW_SOURCES.map(s => s.key), ['issues', 'issues', 'silent_failures'])
 })

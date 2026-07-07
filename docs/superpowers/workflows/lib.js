@@ -140,12 +140,21 @@ function findingsOf(r, source, key) {
   return out
 }
 
+// reviewer 来源三元组（S4, 2026-07-07）：消除 collectReviewFindings/reviewHaltForEmptyFailed/summarizeReviewRound 三处硬编码。
+// spec/quality 存 diagnostics.issues；hunter 存 diagnostics.silent_failures（不同 key！hunter 用 silent_failures）。
+export const REVIEW_SOURCES = [
+  { name: 'spec', key: 'issues' },
+  { name: 'quality', key: 'issues' },
+  { name: 'hunter', key: 'silent_failures' },
+]
+
 // 收集三类 review 的发现并归一化为结构化数组（orchestrator fix-round 反馈管道）。
 // spec/quality 存 diagnostics.issues；hunter 存 diagnostics.silent_failures（不同 key！
 // 旧 issuesFromReviews 只读 issues → hunter 发现被完全丢弃，Bug 2）。
 // items 可能是 string 或 object → 统一归一化为 {source, severity?, title, file?, fix?}。
 export function collectReviewFindings(spec, qual, hunt) {
-  return [...findingsOf(spec, 'spec', 'issues'), ...findingsOf(qual, 'quality', 'issues'), ...findingsOf(hunt, 'hunter', 'silent_failures')]
+  const reviews = [spec, qual, hunt]
+  return REVIEW_SOURCES.flatMap((s, i) => findingsOf(reviews[i], s.name, s.key))
 }
 
 // 格式化 implementor concerns 为 review prompt 的 focusHint 段落（Q11 抽出，消除两处重复模板）。
@@ -163,13 +172,11 @@ export function formatConcernsHint(concerns) {
 // review_failed_no_findings 是 agent 明确判 failed 却没给可执行发现（issues/silent_failures 空）。
 // 优先级在 reviewHaltReason 之后：先排除空 status，再查 failed-no-findings。
 export function reviewHaltForEmptyFailed(spec, qual, hunt) {
-  const checks = [
-    [spec, 'spec', 'issues'],
-    [qual, 'quality', 'issues'],
-    [hunt, 'hunter', 'silent_failures'],
-  ]
-  for (const [r, source, key] of checks) {
-    if (r && r.status === 'failed' && findingsOf(r, source, key).length === 0) return 'review_failed_no_findings'
+  const reviews = [spec, qual, hunt]
+  for (let i = 0; i < REVIEW_SOURCES.length; i++) {
+    const { name, key } = REVIEW_SOURCES[i]
+    const r = reviews[i]
+    if (r && r.status === 'failed' && findingsOf(r, name, key).length === 0) return 'review_failed_no_findings'
   }
   return null
 }
@@ -197,12 +204,11 @@ function summarizeFinding(r, source, key) {
 
 // 单轮三类 review 的摘要（进 manifest.per_task.<task>.review_history）。
 export function summarizeReviewRound(round, spec, qual, hunt) {
-  return {
-    round,
-    spec: summarizeFinding(spec, 'spec', 'issues'),
-    quality: summarizeFinding(qual, 'quality', 'issues'),
-    hunter: summarizeFinding(hunt, 'hunter', 'silent_failures'),
-  }
+  const reviews = [spec, qual, hunt]
+  return Object.fromEntries([
+    ['round', round],
+    ...REVIEW_SOURCES.map((s, i) => [s.name, summarizeFinding(reviews[i], s.name, s.key)]),
+  ])
 }
 
 // 判断错误是否 model 限额耗尽（§2.4 双重检测的捕获路径）
