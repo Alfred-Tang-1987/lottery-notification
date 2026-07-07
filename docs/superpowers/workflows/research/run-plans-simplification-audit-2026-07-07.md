@@ -2,7 +2,7 @@
 
 > **日期**: 2026-07-07
 > **调查者**: Claude（code-simplifier + Explore agent + 人工复核）
-> **范围**: `.claude/workflows/run-plans.js`（1738 行）+ `docs/superpowers/workflows/lib.js`（1194 行）+ `docs/superpowers/workflow-design.md`（1066 行）+ `docs/superpowers/workflow-plans/2026-07-07-workflow-consolidated.md`（1701 行）+ `docs/superpowers/workflows/tests/sync.test.js` + `helpers.test.js`
+> **范围**: `.claude/workflows/run-plans.js`（1737 行）+ `docs/superpowers/workflows/lib.js`（1194 行）+ `docs/superpowers/workflow-design.md`（1066 行）+ `docs/superpowers/workflow-plans/2026-07-07-workflow-consolidated.md`（1701 行）+ `docs/superpowers/workflows/tests/sync.test.js` + `helpers.test.js`
 > **基线**: 307 tests green（`node --test docs/superpowers/workflows/tests/*.test.js`）
 > **性质**: 只读调查，未修改任何代码
 
@@ -22,9 +22,9 @@
 
 ## 按影响排序的发现
 
-### 🔴 HIGH-1（已人工验证）：`lesson_categories` 端到端链路断裂 — §5.5 改进 A 实际是死代码
+### 🔴 HIGH-1（已人工验证）：`lesson_categories` 端到端链路断裂 — §5.5 改进 A category 精确匹配分支不可达
 
-**这是本次调查最重要的发现：单测全绿，但一个设计能力端到端从未生效。**
+**这是本次调查最重要的发现：单测全绿，但一个设计能力的 category 精确匹配分支端到端不可达（title fallback 仍工作，lessons 仍能注入，只是匹配精度退化为旧逻辑）。**
 
 #### 链路追踪
 
@@ -37,7 +37,7 @@
 
 #### 后果
 
-运行时 `task.lesson_categories` 永远是 `undefined` → `formatDomainLessons`（`lib.js:570-601`）永远走 `else if (taskTitle)` 的 **title 关键词 fallback**，**category 精确匹配分支（`helpers.test.js:952-964` 测的那条）端到端从不触发**。
+运行时 `task.lesson_categories` 永远是 `undefined` → `formatDomainLessons`（`lib.js:570-590`）永远走 `else if (taskTitle)` 的 **title 关键词 fallback**，**category 精确匹配分支（`helpers.test.js:952-963` 测的那条）端到端从不触发**。
 
 #### 为什么单测是绿的（"测试绿 ≠ 能力生效"的典型）
 
@@ -153,11 +153,11 @@ P1-1c（第 13 轮）新增的功能未回写设计文档。功能正确，降�
 | 设计章节 | 实现位置 | sync.test 守护 |
 |---|---|---|
 | §5.5 OSCILLATING 判定顺序（regressed → flipFlop → escalate → budget） | `run-plans.js:1340-1398` | sync.test:123-157（allGreen < detectOscillation 顺序、findings_history 更新顺序、regressed 分支、budget guard） |
-| §5.5 findings 状态机（open→fixed→regressed→fixed） | `lib.js:74-119` + `run-plans.js` inline | QC-4 字节比较 + helpers.test |
+| §5.5 findings 状态机（open→fixed→regressed→fixed） | `lib.js:599-681` + `run-plans.js` inline | QC-4 字节比较 + helpers.test |
 | §5.2 simplify 方案 C（commit→simplify→git status--porcelain→review→amend/checkout） | `run-plans.js:1434-1517` | sync.test:298-320（git status--porcelain / amend / reset--hard HEAD / checkout 验证 / halt reason） |
 | §3 gate 独立验证 + lastSha 反向查找 | `run-plans.js:1698-1728` | sync.test SCHEMAS gate evidence required |
 | §5.4 halt 流程（blocked_info → distiller best-effort → finalReport fallback） | `run-plans.js:1163-1211` | sync.test 结构断言 |
-| review 双守卫（reviewHaltReason + reviewHaltForEmptyFailed） | `lib.js:223-296` + run-plans inline | QC-4 + helpers.test |
+| review 双守卫（reviewHaltReason + reviewHaltForEmptyFailed） | `lib.js:161-171,235-241` + run-plans inline | QC-4 + helpers.test |
 | Task Scope Boundary / Lessons Learned Exemption（W1-5a/5e + H-F4） | PROMPTS specReview/qualityReviewer | sync.test prompt 逐字比对 |
 
 **结论**：核心控制流实现忠实于设计。问题集中在**数据流断裂**（HIGH-1）和**文档滞后**（LOW 系列），不在控制流逻辑。
@@ -167,6 +167,13 @@ P1-1c（第 13 轮）新增的功能未回写设计文档。功能正确，降�
 ## 简化机会清单（code-simplifier 发现）
 
 > **重要约束**：所有 `lib.js` 纯函数的改动，必须逐字同步到 `run-plans.js` 的 inline 副本，否则 sync.test 失败。PROMPT 模板修改可能改变 agent 行为，需 workflow 级验证。以下按收益排序。
+
+> **Claude Code Workflow spec §4.3 分层约束（实施时必须遵守）**：
+> - **纯决策 / 纯构造函数**（不调 `agent()`，如 S1 `checkImplStatus` / S4 `REVIEW_SOURCES` 常量 / S5 `formatBulletSection` / S6 `formatFindingItem` / S9 `makeHalt` / S10 `taskKey`）→ **必须进 lib.js**，同步 run-plans.js inline 副本，sync.test 字节守护
+> - **runtime 胶水**（调 `agent()` / `safeAgent` / `dispatchImpl`，如 S3 `checkSimplifyChanges` / `amendSimplifyCommit` / `revertSimplifyChanges` / S2 `runFixRound`）→ **只能留 run-plans.js**，lib.js 是纯模块不能调 runtime 全局
+> - **PROMPT 片段常量**（S7 `QUOTA_HALT_NOTE` / S8 `STATIC_READONLY_NOTE`）→ 进 lib.js `PROMPTS` 真源 + run-plans.js inline，`buildPrompt` 注入（§13c prompt 内联契约）
+> - **所有简化不得引入 fs / subprocess / Date.now / Math.random**（§4.3 orchestrator sandbox 约束）
+> - **所有简化不得改变 agent 调用数**（§4.3 agent 上限估算，每 task ≈6 agent）
 
 ### 高收益（结构性重构）
 
@@ -182,7 +189,7 @@ P1-1c（第 13 轮）新增的功能未回写设计文档。功能正确，降�
 
 `1263-1269` 与 `1283-1289` 几乎逐行镜像，仅 reason 字符串不同（`'opus BLOCKED'` vs `'opus BLOCKED after context-fetch'`）。
 
-**建议**: 抽 `checkImplStatus(impl, allowed, reasonPrefix)` helper：
+**建议**: 抽 `checkImplStatus(impl, allowed, reasonPrefix)` helper（**纯决策函数，按 §4.3 进 lib.js + 同步 run-plans.js inline**，sync.test 守护）：
 ```js
 function checkImplStatus(impl, allowed = ['ok', 'done_with_concerns'], reasonPrefix = 'implementor') {
   if (impl.halted) return impl
@@ -203,10 +210,10 @@ function checkImplStatus(impl, allowed = ['ok', 'done_with_concerns'], reasonPre
 
 **问题**: 循环同时负责：调 runReviewRound、更新三个 state 数组、处理 review halt、allGreen 检查、OSCILLATING/flipFlop/regressed 判断、模型升级、budget guard、fix-round dispatch、fix-round 后状态处理、更新 filesChanged。这是 `runTask` 340 行中最复杂的部分。
 
-**建议**: 拆三个函数：
-- `recordReviewRound(taskKey, round, spec, qual, hunt)` — 更新 state.perTask
-- `decideReviewOutcome(taskKey, round, spec, qual, hunt, model)` — 返回 `{ break, halted, reason, diag }`
-- `runFixRound(taskKey, plan, task, round, findings, model)` — 封装 fix-round dispatch + 状态检查
+**建议**: 拆三个函数（**runtime 胶水留 run-plans.js**，§4.3）：
+- `recordReviewRound(taskKey, round, spec, qual, hunt)` — 更新 state.perTask（**纯决策，可进 lib.js**）
+- `decideReviewOutcome(taskKey, round, spec, qual, hunt, model)` — 返回 `{ break, halted, reason, diag }`（**纯决策，可进 lib.js**）
+- `runFixRound(taskKey, plan, task, round, findings, model)` — 封装 fix-round dispatch + 状态检查（**runtime 胶水，留 run-plans.js**）
 
 主循环降到 ~40 行。
 
@@ -220,7 +227,7 @@ function checkImplStatus(impl, allowed = ['ok', 'done_with_concerns'], reasonPre
 
 **问题**: simplify 后流程含 dispatchImpl('simplify') + safeAgent(git status--porcelain) + diff 校验 + runReviewRound + safeAgent(amend) + validateAmendResult + safeAgent(reset/checkout) + validateCheckoutResult，且 schema（diffSchema/amendSchema/checkoutSchema）inline 在流程中。
 
-**建议**: 抽三个 runtime helper：
+**建议**: 抽三个 runtime helper（**调 safeAgent，按 §4.3 留 run-plans.js**）：
 - `async checkSimplifyChanges(taskId)` → `{ changed, files }`
 - `async amendSimplifyCommit(taskId, commitSha)` → `{ ok, sha }`
 - `async revertSimplifyChanges(taskId, commitSha)` → `{ ok }`
@@ -233,7 +240,7 @@ function checkImplStatus(impl, allowed = ['ok', 'done_with_concerns'], reasonPre
 
 #### S4. reviewer 来源三元组硬编码 3 处
 
-**位置**: `lib.js` 的 `collectReviewFindings`(203-205) / `reviewHaltForEmptyFailed`(223-233) / `summarizeReviewRound`(255-262)
+**位置**: `lib.js` 的 `collectReviewFindings`(143-145) / `reviewHaltForEmptyFailed`(161-171) / `summarizeReviewRound`(195-202)
 
 **问题**: 三处都硬编码 `['spec','issues'], ['quality','issues'], ['hunter','silent_failures']`。新增 reviewer（如 securityReviewer）需改三处，易遗漏。
 
@@ -255,7 +262,7 @@ const REVIEW_SOURCES = [
 
 #### S5. 6 个 `format*` 条件渲染 helper 结构重复
 
-**位置**: `lib.js:519-538`（formatReferencePaths）/ `530-538`（formatSilentFailureContext）/ `541-547`（formatFailedApproaches）/ `551-557`（formatLessons）/ `560-568`（formatUniversalLessons）/ `570-601`（formatDomainLessons）
+**位置**: `lib.js:499-505`（formatReferencePaths）/ `509-517`（formatSilentFailureContext）/ `521-527`（formatFailedApproaches）/ `531-537`（formatLessons）/ `546-557`（formatUniversalLessons）/ `559-590`（formatDomainLessons）
 
 **共同模式**:
 ```js
@@ -274,13 +281,13 @@ return `## ${heading}\n${intro}\n${lines}\n${outro}`
 
 #### S6. `formatFindings` 与 `formatCrossReviewerNote` 的 finding 格式化重复
 
-**位置**: `lib.js:238-246`（formatFindings）/ `673-686`（formatCrossReviewerNote）
+**位置**: `lib.js:176-184`（formatFindings）/ `757-770`（formatCrossReviewerNote）
 
 **问题**: 两处都拼 `[source|severity] title — fix: ...`，仅前缀和 file 处理不同：
 ```js
-// formatFindings
+// formatFindings (lib.js:179-182)
 const tag = f.severity ? `[${f.source}|${f.severity}]` : `[${f.source}]`
-// formatCrossReviewerNote
+// formatCrossReviewerNote (lib.js:766)
 out += `- [${f.source}${f.severity ? '|' + f.severity : ''}] ${f.title}...`
 ```
 
@@ -320,7 +327,7 @@ out += `- [${f.source}${f.severity ? '|' + f.severity : ''}] ${f.title}...`
 
 **问题**: 多次 `return { halted: true, reason, diag: { model, error: errStr(e) } }`，仅 reason/error 不同。
 
-**建议**: 抽 `makeHalt(reason, model, error)` helper（runtime，留 run-plans.js）。
+**建议**: 抽 `makeHalt(reason, model, error)` helper（**纯构造函数，按 §4.3 进 lib.js + 同步 run-plans.js inline**，sync.test 守护）。
 
 **收益**: ~6 处重复构造消除；错误对象标准化。
 
@@ -334,7 +341,7 @@ out += `- [${f.source}${f.severity ? '|' + f.severity : ''}] ${f.title}...`
 
 **风险**: `padStart` 位数不一致已是历史 bug 根因（P0-7 注释提到 plan.seq=1 → "plan-1" 查不到 "plan-01"）。
 
-**建议**: lib.js 加 `taskKey(seq, taskId)` 纯函数（与 commitSubject/bareTaskId 同源），同步 run-plans.js inline。
+**建议**: lib.js 加 `taskKey(seq, taskId)` 纯函数（与 commitSubject/bareTaskId 同源，**按 §4.3 进 lib.js + 同步 run-plans.js inline**），sync.test 守护。
 
 **收益**: 消除 6+ 处拼接；杜绝 padStart 位数不一致 bug。
 
@@ -397,7 +404,7 @@ impl = await dispatchImpl(...)
 
 | ID | 类型 | 严重度 | 位置 | 一句话 |
 |---|---|---|---|---|
-| **HIGH-1** | 数据流断裂 | 🔴 HIGH | run-plans.js:789,802,1256 | `lesson_categories` bootstrap 不提取 → §5.5 category 匹配端到端失效 |
+| **HIGH-1** | 数据流断裂 | 🔴 HIGH | run-plans.js:789,802,1256 | `lesson_categories` bootstrap 不提取 → §5.5 category 精确匹配分支不可达（title fallback 仍工作） |
 | **MEDIUM-1** | 测试盲区 | 🟡 MEDIUM | sync.test.js:14,41 | 正则提取脆弱，未来重构可能假阳性通过 |
 | LOW-1 | 文档滞后 | 🟢 LOW | run-plans.js:346 | fixModelForRound 注释"默认3"与实际"默认4"矛盾 |
 | LOW-2 | 文档滞后 | 🟢 LOW | workflow-design.md §13b | headVerifier 角色未记录 |
@@ -407,8 +414,8 @@ impl = await dispatchImpl(...)
 | S2 | 函数过长 | 高收益 | run-plans.js:1316-1432 | review 循环 ~120 行职责混合 |
 | S3 | 函数过长 | 高收益 | run-plans.js:1453-1517 | simplify 流程 ~65 行混杂 |
 | S4 | 数据重复 | 高收益 | lib.js 三处 | reviewer 来源三元组硬编码 |
-| S5 | 结构重复 | 中收益 | lib.js:519-601 | 6 个 format* helper 结构相同 |
-| S6 | 逻辑重复 | 中收益 | lib.js:238,673 | finding 格式化重复 |
+| S5 | 结构重复 | 中收益 | lib.js:499-590 | 6 个 format* helper 结构相同 |
+| S6 | 逻辑重复 | 中收益 | lib.js:176,757 | finding 格式化重复 |
 | S7 | 文本重复 | 中收益 | 7 个 PROMPT | 限额耗尽说明重复 |
 | S8 | 文本重复 | 中收益 | reviewer PROMPT | STATIC READ-ONLY + Exemption 段重复 |
 | S9 | 构造重复 | 中收益 | run-plans.js:397-437 | dispatchImpl halted 构造重复 |
@@ -424,7 +431,7 @@ impl = await dispatchImpl(...)
 
 **架构健康**：lib.js 纯函数 + run-plans.js runtime 胶水的分层清晰，sync.test 字节守护 + 307 测试是扎实的防护网。核心控制流（OSCILLATING 判定顺序、simplify 方案 C、gate、halt、findings 状态机）**与设计文档完全一致**。
 
-**唯一实质问题**是 HIGH-1（`lesson_categories` 链断裂）—— "单测绿但端到端失效"的典型。sync.test 守不了数据流，只守字节一致；helpers.test 守纯函数，不守 bootstrap 提取链。**这是分层测试的固有盲区**：每一层都正确，端到端却失效。值得作为后续修复优先项。
+**唯一实质问题**是 HIGH-1（`lesson_categories` 链断裂）—— "单测绿但 category 精确匹配分支端到端不可达"的典型。sync.test 守不了数据流，只守字节一致；helpers.test 守纯函数，不守 bootstrap 提取链。**这是分层测试的固有盲区**：每一层都正确，端到端却退化（title fallback 兜底，lessons 仍注入，但匹配精度下降）。值得作为后续修复优先项。
 
 **可维护性负担**主要在 runTask（340 行）和重复模式（S1-S10），但都是"可用、有测试保护"的状态，简化属改进非修复。建议优先级：
 1. **HIGH-1** 决策（补全链路 or 简化删除）—— 影响设计能力是否生效
