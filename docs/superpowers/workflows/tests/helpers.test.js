@@ -418,6 +418,12 @@ test('haltLikelySource: gate 路径 → gate restored（已 checkout 回原 HEAD
   assert.equal(haltLikelySource('plan gate failed'), 'gate restored')
 })
 
+test('LOW-4: haltLikelySource 对 head restore verification failed 返回 gate head mismatch', () => {
+  // headVerifier 验证 HEAD != restored_head → halt reason 'gate head restore verification failed'
+  // 此 reason 含 'gate' 子串，但语义是「验证失败」非「已恢复」——须在 gate 分支前单独归类为 gate head mismatch
+  assert.equal(haltLikelySource('gate head restore verification failed'), 'gate head mismatch')
+})
+
 test('haltLikelySource: bootstrap 路径 → bootstrap frontmatter', () => {
   assert.equal(haltLikelySource('bootstrap failed'), 'bootstrap frontmatter')
   assert.equal(haltLikelySource('bootstrap blocked'), 'bootstrap frontmatter')

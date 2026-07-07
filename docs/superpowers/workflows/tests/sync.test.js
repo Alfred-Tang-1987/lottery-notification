@@ -163,8 +163,8 @@ test('v3 runtime wiring: findings_history update + taskCategories declared + OSC
   assert.match(runSrc, /reason: 'review max rounds'[\s\S]{0,200}findings_history/, 'review max rounds halt diag 须含 findings_history')
 
   // H3: finalReport prompt per_task 清单须含 opus_escalated（防 manifest strip 导致重复升级）
-  const finalReportPerTaskIdx = libSrc.indexOf('per_task:{<taskKey>:{status,model,review_rounds,files_touched_per_round,review_history,findings_history,oscillation_escalated_at_round,opus_escalated')
-  assert.notEqual(finalReportPerTaskIdx, -1, 'lib.js finalReport prompt per_task 清单须含 opus_escalated')
+  const finalReportPerTaskIdx = libSrc.indexOf('per_task:{<taskKey>:{planId,status,model,review_rounds,files_touched_per_round,review_history,findings_history,oscillation_escalated_at_round,opus_escalated')
+  assert.notEqual(finalReportPerTaskIdx, -1, 'lib.js finalReport prompt per_task 清单须含 opus_escalated（LOW-3 补 planId 于清单首位）')
 
   // H4: formatUniversalLessons inline 副本须与 lib.js 字节一致（容错 silent-failure 变体）
   const libUniversalFn = extractFunctionBody(libSrc, 'function formatUniversalLessons')
@@ -1111,5 +1111,54 @@ test('HIGH-1: bootstrap Return schema tasks 含 lesson_categories 字段', () =>
   // Return schema 在 prompt 文本内描述为 tasks:[{id, model, title, ...}]
   assert.match(boot, /tasks:\[\{[^}]*lesson_categories/,
     'bootstrap Return schema tasks 须含 lesson_categories 字段')
+})
+
+// ===== Task 2 (2026-07-07): MEDIUM-1 trip-wire 守护 + B1-10 通用性守护 =====
+// 守护断言（直接 GREEN）：断言当前代码已满足，防未来回归而非验证当前行为（spec §4.2/§4.10 决策）。
+// extractFunctionBody（line 41-50）依赖 top-level 函数末尾 `\n}`（列 0 闭合大括号）+ SCHEMAS 块 `\n}` 结尾。
+// 若未来某 export function 体内出现 `\n}` 子模式（如嵌套对象字面量换行收尾），会破坏 extractFunctionBody →
+// QC-4 字节比较静默失效（lib.js 改了实现但字节比较漏检）。此守护提前捕获该漂移。
+//
+// 实现注记（D4 同类复核）：初稿 trip-wire 2 用单遍正则 `export function (\w+)\([\s\S]*?\{([\s\S]*?)\n\}`
+// 提取函数体，但对 `buildPrompt(role, ctx = {})` 这类含 `= {}` 默认形参的签名，非贪婪 `\{` 会误把形参
+// 空对象当函数体开括号 → 大括号"不平衡"假阳性（与已删 trip-wire 1 同类正则假阳性，见 D4 复核修正）。
+// 改用 QC-4 同款 extractFunctionBody 提取真实函数体后再校验大括号平衡——直接守护被测不变量，无假阳性。
+
+test('MEDIUM-1 守护：纯函数体不得含顶层 \\n} 子模式（破坏 extractFunctionBody）', () => {
+  // 用 QC-4 同款 extractFunctionBody 提取每个 export function 真实函数体，校验大括号平衡。
+  // 若函数体含 `\n}` 子模式，extractFunctionBody 会在该处提前截断 → 提取体大括号不平衡（depth != 0）。
+  const names = [...libSrc.matchAll(/export function (\w+)/g)].map(m => m[1])
+  assert.ok(names.length > 0, 'lib.js 须有 export function')
+  for (const name of names) {
+    const body = extractFunctionBody(libSrc, name)
+    assert.ok(body, `无法用 extractFunctionBody 提取函数 ${name}（可能含 \\n} 子模式破坏提取）`)
+    let depth = 0
+    for (const ch of body) {
+      if (ch === '{') depth++
+      else if (ch === '}') depth--
+    }
+    assert.equal(depth, 0, `函数 ${name} 体大括号不平衡（depth=${depth}，含 \\n} 子模式破坏 extractFunctionBody）`)
+  }
+})
+
+test('MEDIUM-1 守护：SCHEMAS 块结尾必须是 \\n}（防 extractSchemas 截断）', () => {
+  const m = libSrc.match(/const SCHEMAS = \{[\s\S]*?\n\}/)
+  assert.ok(m, 'SCHEMAS 块存在且以 \\n} 结尾')
+})
+
+test('B1-10 通用性守护：PROMPTS 不得含本项目专有路径/文件名', () => {
+  const m = libSrc.match(/const PROMPTS = \{[\s\S]*?\n\}/)
+  assert.ok(m, 'PROMPTS 块存在')
+  // 项目耦合黑名单（lottery-notification 专有）。项目特定内容应靠 config 驱动注入，
+  // 不应硬编码进通用 workflow 的 PROMPTS。
+  // 黑名单取项目专有 token：完整仓库名 'lottery-notification' + 彩种领域词 'lottery'。
+  // 不含 'notification'（通用英文，commit scope 示例 feat(notifications) 假阳性）/
+  // 'lessons.md'（通用文件名示例，非硬编码项目路径）。实施时已清掉 lessonDistiller 示例里的
+  // 彩种词 dlt_append（→ item_append），故当前 PROMPTS 无耦合。
+  const blacklist = ['lottery', 'lottery-notification']
+  for (const bad of blacklist) {
+    assert.ok(!m[0].toLowerCase().includes(bad.toLowerCase()),
+      `PROMPTS 含本项目专有词 "${bad}"——项目耦合，应改 config 驱动注入`)
+  }
 })
 

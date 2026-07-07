@@ -113,7 +113,7 @@ agent(model=opus/sonnet) 调用
    - **`dispatchImpl` 非 quota 异常须封装 agent_error 返回（不 throw）**（P0-4）：旧代码 `throw e` → 顶层 catch 一律标 `model_unavailable`（误判）。改：dispatchImpl catch 块按 `isQuotaError` 分流，封装 `{halted:true, reason:'agent_error'/'model_unavailable'}` 返回；顶层 catch 仅兜底 runtime 异常（同样按 quota 分流）。retry 路径同样封装 agent_error。
 5. **resume 走 §13h**：额度恢复后 `resumeFromRunId`，native resume 重跑中断 task（此时额度可用）。manifest 的 `quota_exhausted` 字段提醒用户确认恢复再续跑。`agent_error` halt 的 task 不建议直接 resume（须先修 bug）。
 
-**blocked_info + 工作树脏状态**：`halt()` 给 `blocked_info` 填 `likely_source`（基于 reason 的确定性映射：`implementor changes` / `gate restored` / `bootstrap frontmatter` / `unknown`——纯字符串映射，**非 dirty 推断**）。finalReport 写 `blocked.md` 时跑 `git status --porcelain` + `git diff --stat`（ground truth，best-effort 失败不阻塞 manifest），结果写 Working Tree 段 + 接手指引。`likely_source`（语义线索）与 git status（真实状态）并存：用户既有定位线索，也有真实脏状态。orchestrator 无 shell，git 探查委托 finalReport agent（与 gate/commit/bootstrap 跑命令同路径）。
+**blocked_info + 工作树脏状态**：`halt()` 给 `blocked_info` 填 `likely_source`（基于 reason 的确定性映射：`implementor changes` / `gate restored` / `gate head mismatch` / `bootstrap frontmatter` / `unknown`——纯字符串映射，**非 dirty 推断**）。注：`gate head restore verification failed` 单独归类为 `gate head mismatch`（headVerifier 验证 HEAD != restored_head，**验证失败，非已恢复**）——该 reason 含 'gate' 子串，但语义是验证失败，须在 `gate restored` 分支前单独匹配（LOW-4）。finalReport 写 `blocked.md` 时跑 `git status --porcelain` + `git diff --stat`（ground truth，best-effort 失败不阻塞 manifest），结果写 Working Tree 段 + 接手指引。`likely_source`（语义线索）与 git status（真实状态）并存：用户既有定位线索，也有真实脏状态。orchestrator 无 shell，git 探查委托 finalReport agent（与 gate/commit/bootstrap 跑命令同路径）。
 
 **UX 附带**（解决长任务中断根因）：bootstrap/implementor 跑长命令（uv sync/build）前 `log()` 打「预计 N 分钟」；`workflow.config.json` 可选加 `task_timeout`（超时 surface）。
 
@@ -825,6 +825,7 @@ return {result: 'done', perTask: state.perTask}
 | `commit` | status check → test → `git commit -m "feat(plan-X/T-Y): ..."`，返回 commit_sha；检测 out_of_scope / destructive_changes | **sonnet**（硬编码，非 task model，P1-5） | commit_sha, committed_files[], tests_at_commit |
 | `contextFetcher` | NEEDS_CONTEXT 兑现（grep/glob/LSP/读 spec/Context7/WebSearch） | **sonnet**（硬编码，非 task model，P1-5） | context |
 | `gate` | committed SHA 上 `git checkout <sha>` + 跑 `full_test_command` + **`git checkout -` 回原 HEAD**，真实 exit code（§3 独立 gate） | sonnet | tests_exit_code, pytest_summary |
+| `headVerifier` | gate 后独立验证 HEAD == restored_head | sonnet | gate 恢复后 1 次 |
 | `finalReport` | 读 orchestrator 传入的 in-memory state，写 `runs/<run-id>/manifest.json`（§13d）；**halt 后 commit lessons.md**（W1-1 step 6，§5.6，best-effort）；输出 digest | sonnet | — |
 
 > 收敛后原 `state-updater` / `manifest-writer` 已并入 `finalReport`（§13h 砍逐事件写盘）。

@@ -298,6 +298,7 @@ function reviewHaltReason(s, q, h) {
 // 与 finalReport 的 git status ground truth 并存：halt() 填 blocked_info.likely_source。
 function haltLikelySource(reason) {
   const r = String(reason || '')
+  if (r.includes('head restore')) return 'gate head mismatch'                   // headVerifier 验证 HEAD != restored_head（验证失败，非已恢复）
   if (r === 'plan gate failed' || r.includes('gate')) return 'gate restored'        // gate 已 checkout 回原 HEAD
   if (r.startsWith('bootstrap ')) return 'bootstrap frontmatter'                      // bootstrap 可能写了 plan frontmatter
   // P1-8（第 6 轮）: 显式 reason→source 映射（替代大正则，防误匹配 + 易维护）。
@@ -343,7 +344,7 @@ function validateCheckoutResult(result) {
 // fix-round implementor 的 model 选择（§5.1 难度递增：最后 1 轮 fix 用最强 model）—— inline 自 lib.js
 // 有限模式（maxRounds > 0）：round === maxRounds - 1 是最后 1 轮 fix，强制 opus（默认 maxRounds=4 → round=3 升级）。
 // 无限模式（maxRounds=0）：前 3 轮用 baseModel；round>=4 强制 opus（前 3 轮没修好说明问题复杂）。
-// maxRounds 未传（向后兼容）→ 默认 3（round=2 升级 opus）。已是 opus 返回 'opus'（语义等价）。
+// maxRounds 未传 → 默认 4（round=3 升级 opus）；?? 3 是防御性兜底，正常路径 resolveMaxRounds 总返回数字。已是 opus 返回 'opus'（语义等价）。
 function fixModelForRound(round, baseModel, maxRounds) {
   // P2-10（第 6 轮）: 删除 maxRounds 未传显式分支（resolveMaxRounds 总返回 number，死代码）。
   //   保留 ?? 3 容错（直接调用时默认 3，向后兼容 helpers.test.js）。
@@ -1045,7 +1046,7 @@ Inputs: mode={{mode}} state={{stateJson}} blockedInfo={{blockedInfo}} runsDir={{
 
 Steps:
 1. mkdir -p {{runsDir}}.
-2. Write {{runsDir}}/manifest.json = {run_ts:{{runTs}}, mode:{{mode}}, plans:[...], per_task:{<taskKey>:{status,model,review_rounds,files_touched_per_round,review_history,findings_history,oscillation_escalated_at_round,opus_escalated,commit_sha,simplify_reverted,simplify_review_findings,destructive_review_failed,destructive_review_findings,concerns,blocked_info}}, lessons_committed:false, result}. per_task.<task> 必须保留 stateJson 中 per_task 的**全部字段**（含 v3 新增字段 findings_history / oscillation_escalated_at_round / opus_escalated），不得以清单未列为由 strip 任何字段；清单仅作可读说明。findings_history 是 findings 状态机轨迹 [{title, status, first_seen, last_seen, rounds, fixed_at_round}]；oscillation_escalated_at_round 是 opus 升级轮 round 数或 null；opus_escalated 是布尔值。**lessons_committed**（H-F7, 2026-07-07）：布尔值，初始 false；step 6 成功 commit lessons.md 后须重写 manifest.json 将此字段改为 true。供下次 bootstrap 检查 lessons.md 是否真被持久化（防 best-effort 失败后静默退化）。
+2. Write {{runsDir}}/manifest.json = {run_ts:{{runTs}}, mode:{{mode}}, plans:[...], per_task:{<taskKey>:{planId,status,model,review_rounds,files_touched_per_round,review_history,findings_history,oscillation_escalated_at_round,opus_escalated,commit_sha,simplify_reverted,simplify_review_findings,destructive_review_failed,destructive_review_findings,concerns,blocked_info}}, lessons_committed:false, result}. per_task.<task> 必须保留 stateJson 中 per_task 的**全部字段**（含 v3 新增字段 findings_history / oscillation_escalated_at_round / opus_escalated），不得以清单未列为由 strip 任何字段；注：清单仅作可读说明，以 stateJson 全字段为准（ensurePerTaskDefaults 共 16 字段：planId/status/model/review_rounds/files_touched_per_round/review_history/findings_history/oscillation_escalated_at_round/commit_sha/opus_escalated/simplify_reverted/simplify_review_findings/destructive_review_failed/destructive_review_findings/concerns/blocked_info）。findings_history 是 findings 状态机轨迹 [{title, status, first_seen, last_seen, rounds, fixed_at_round}]；oscillation_escalated_at_round 是 opus 升级轮 round 数或 null；opus_escalated 是布尔值。**lessons_committed**（H-F7, 2026-07-07）：布尔值，初始 false；step 6 成功 commit lessons.md 后须重写 manifest.json 将此字段改为 true。供下次 bootstrap 检查 lessons.md 是否真被持久化（防 best-effort 失败后静默退化）。
 3. If mode=halted: write .workflow/blocked.md from {{blockedInfo}} (the blocked task's blocked_info JSON — render EACH field human-readably: plan, task, reason, category, last_error, suggested_fix, quota_exhausted, likely_source, failed_approach). For failed_approach, render as: "Failed Approach: <failed_approach.task_id>: <failed_approach.reason> — <failed_approach.error>". If blocked_info contains \`regressedFindings\` (v3 findings state machine detected regressions), render separately as a readable list: each item showing title + first_seen + last_seen + fixed_at_round + file + fix, to help locate regression points quickly. Do NOT hunt for these fields in state — they are provided inline in blockedInfo.
    S3（第 4 轮）: blocked.md 路径固定为 .workflow/blocked.md（§8.2），独立于 {{runsDir}}——
    blocked.md 是用户接手入口，路径须稳定可预测（runsDir 会随 runTs 变化，用户难定位）。
@@ -1097,7 +1098,7 @@ lesson 必须是可复用知识，非事件标签。
 - ❌ title: "halt" (too vague)
 - ✅ title: "同文件 ≥3 round 振荡时，检查 reviewer 是否对同一 spec 条款反向报" (reusable root cause)
 - ✅ title: "DB 写 split-commit（DrawResult + outbox）必须单事务，二次 commit 失败导致 outbox 永不补" (reusable root cause)
-- ✅ title: "前端字段名必须与后端 pydantic schema 一致（如 dlt_append vs append）" (reusable cross-layer contract)
+- ✅ title: "前端字段名必须与后端 pydantic schema 一致（如 item_append vs append）" (reusable cross-layer contract)
 
 title 应是可独立理解的结论；detail 含根因+场景+修法；source 是 task@run_ts 便于追溯。
 

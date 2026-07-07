@@ -8,7 +8,7 @@
 `run-plans` 是一个**自动执行 implementation plan 的编排器**。给它一份或多份 plan，它会：
 
 - **每 task**：派 implementor subagent（TDD RED→GREEN→REFACTOR）→ review chain 并行（spec 逐行比对 ‖ quality 架构 ‖ silent-failure-hunter）+ **cross-reviewer 文件重叠标记（`⚠ CROSS-REVIEWER`，≥2 reviewer 标记同文件时注入 fixIssues）** → git commit → 精简 simplify（git status 触发 re-review，全绿 amend / 失败 checkout 回退）
-- **plan 级**：独立 gate（在 committed SHA 上重跑 test + lint_command + extra_lint_commands，任一非 0 halt，不信 implementor 自报）
+- **plan 级**：独立 gate（在 committed SHA 上重跑 test + lint_command + extra_lint_commands，任一非 0 halt，不信 implementor 自报）+ gate 后 `headVerifier` 子 agent 独立验证 HEAD 已回原 SHA（防 `git checkout -` 未真回原 HEAD，与 gate `restored_head` 比对；不符 halt）
 - **全流程**：多 plan 串行、振荡检测、BLOCKED 升级链、限额容错（halt，恢复后用全新跑续跑，见 §7.1）
 
 它把"用 subagent-driven-development 手动跑 plan"自动化了——你就是用它替代手动 dispatch + review。
@@ -259,7 +259,7 @@ review 链 max-rounds halt 后，task 留在「未 commit」状态（implementor
       "destructive_review_failed": false,
       "destructive_review_findings": [],
       "concerns": [],
-      "blocked_info": { "reason": "...", "quota_exhausted": false, "last_error": "...", "suggested_fix": "...", "likely_source": "implementor changes | gate restored | bootstrap frontmatter | unknown" }
+      "blocked_info": { "reason": "...", "quota_exhausted": false, "last_error": "...", "suggested_fix": "...", "likely_source": "implementor changes | gate restored | gate head mismatch | bootstrap frontmatter | unknown" }
     }
   },
   "result": "done" | "halted"
@@ -267,7 +267,7 @@ review 链 max-rounds halt 后，task 留在「未 commit」状态（implementor
 ```
 崩溃/halt 后看它定位问题（非翻 transcript）。
 
-`runs/<run-ts>/blocked.md`（仅 mode=halted 时 finalReport 写）：人读摘要。finalReport 收到独立 `blockedInfo` 占位符（halted task 的 `blocked_info` JSON，无需从整个 state 里捞字段），渲染 each field：plan / task / reason / category / last_error / suggested_fix / quota_exhausted / **likely_source**（工作树脏状态来源语义：`implementor changes` / `gate restored` / `bootstrap frontmatter` / `unknown`）。再加 **Working Tree** 段——finalReport halt 时跑 `git status --porcelain` + `git diff --stat` 的 ground truth 输出（dirty 时附文件列表 + diff stat + 接手指引；clean 时标注，如 gate halt 已 restore HEAD）。若 halt 源自 review round 失败，还追加 **Cross-Reviewer Findings** 段——按文件分组 findings + `⚠ CROSS-REVIEWER` 标记突出 ≥2 reviewer 同时标记的文件，一眼看出 reviewer 分歧点。`likely_source` 是基于 reason 的确定性映射（非 dirty 推断），与 git status ground truth 并存。git 探查 best-effort，失败不阻塞 manifest 写入。
+`runs/<run-ts>/blocked.md`（仅 mode=halted 时 finalReport 写）：人读摘要。finalReport 收到独立 `blockedInfo` 占位符（halted task 的 `blocked_info` JSON，无需从整个 state 里捞字段），渲染 each field：plan / task / reason / category / last_error / suggested_fix / quota_exhausted / **likely_source**（工作树脏状态来源语义：`implementor changes` / `gate restored` / `gate head mismatch` / `bootstrap frontmatter` / `unknown`）。`gate head mismatch`：headVerifier 验证 HEAD != restored_head（验证失败，非已恢复，LOW-4）。再加 **Working Tree** 段——finalReport halt 时跑 `git status --porcelain` + `git diff --stat` 的 ground truth 输出（dirty 时附文件列表 + diff stat + 接手指引；clean 时标注，如 gate halt 已 restore HEAD）。若 halt 源自 review round 失败，还追加 **Cross-Reviewer Findings** 段——按文件分组 findings + `⚠ CROSS-REVIEWER` 标记突出 ≥2 reviewer 同时标记的文件，一眼看出 reviewer 分歧点。`likely_source` 是基于 reason 的确定性映射（非 dirty 推断），与 git status ground truth 并存。git 探查 best-effort，失败不阻塞 manifest 写入。
 
 ## 9. 常见场景
 
@@ -296,7 +296,7 @@ plan frontmatter 的 `model` 字段决定 implementor 用 sonnet 还是 opus：
 - **implementor 禁 commit**（W1-2, 2026-07-07）：implementor agent 不会自行 `git commit`/`git add`，只写代码 + 测试留工作树，由独立 commit agent 在 review 通过后提交。若 implementor 报 blocked 且需要 commit 才能继续，说明 plan 设计有误。
 - **lessons learned 编号约定**（W1-5e, 2026-07-07）：implementor 按 `lessons.md` 中 lesson 加固代码时，须在代码注释中标注 `L-<timestamp>` 编号（如 `// L-20260701T103320Z: guard null per lesson`，与 lessonDistiller 生成的 `## L-<ts>` 格式一致）。specReview 据此编号判定加固 NOT EXTRA（防 reviewer 报 EXTRA → implementor 删 → 振荡）；qualityReviewer 对 lesson 加固的 over-engineering / 函数超 50 行 / helper 数量 3 维度豁免（命名/类型/错误处理等不豁免）。
 - **不降级继续**：限额 halt 后不会用弱 model 继续开发，只保存进度等恢复（§2.4 核心原则）
-- **错误恢复**：bootstrap/get-ts/implementor/review/simplify/commit/gate/finalReport **所有** agent 路径都有 quota 捕获 + 兜底，不会裸 crash 丢进度
+- **错误恢复**：bootstrap/get-ts/implementor/review/simplify/commit/gate/headVerifier/finalReport **所有** agent 路径都有 quota 捕获 + 兜底，不会裸 crash 丢进度
 
 ## 12. 调试
 
