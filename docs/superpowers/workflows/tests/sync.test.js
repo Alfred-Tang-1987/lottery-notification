@@ -485,10 +485,10 @@ test('Q6: filesChanged.join 须用换行分隔（避免逗号/空格文件路径
   // changedHint 仅是聚焦提示，换行分隔更安全
   // Q3（第 4 轮）: destructive review 的 committed_files.join 也须换行分隔（三处统一）
   assert.doesNotMatch(runSrc, /filesChanged\.join\(','\)/, '不得用 join(",") 拼接文件列表（逗号歧义）')
-  assert.doesNotMatch(runSrc, /simpFiles\.join\(','\)/, 'simplify 文件列表不得用 join(",")')
   assert.doesNotMatch(runSrc, /committed_files.*\.join\(','\)/, 'destructive 文件列表不得用 join(",")（Q3）')
   assert.match(runSrc, /filesChanged\.join\('\\n'\)/, '主轮文件列表须用 join("\\n") 换行分隔')
-  assert.match(runSrc, /simpFiles\.join\('\\n'\)/, 'simplify 文件列表须用 join("\\n") 换行分隔')
+  // Task 16: simpFiles 已抽入 checkSimplifyChanges helper（返回 files 数组），调用点用 diffCheck.files.join('\n')
+  assert.match(runSrc, /diffCheck\.files\.join\('\\n'\)/, 'simplify 文件列表须用 join("\\n") 换行分隔（Task 16 后由 checkSimplifyChanges 返回 files，调用点 join）')
   assert.match(runSrc, /committed_files.*\.join\('\\n'\)/, 'destructive 文件列表须用 join("\\n") 换行分隔（Q3）')
 })
 

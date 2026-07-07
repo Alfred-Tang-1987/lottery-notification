@@ -1575,62 +1575,21 @@ async function runTask(plan, task) {
   // —— simplify（max 1，§5.2 方案 C：git diff 独立验证是否动代码）——
   const simp = await dispatchImpl(buildPrompt('simplify', { taskId: task.id, filesChanged: filesChanged.join('\n') }), { schema: SCHEMAS.simplify, label: `simp:${task.id}` }, 'sonnet')
   if (simp.halted) return simp
-  // commit 后工作树 clean → git status --porcelain 非空即 simplify 动了代码（不信任 simp.evidence.changed 自报）。
-  // Q5: 用 git status --porcelain 替代 git diff --stat——同时检测 staged + unstaged，
-  //   防 simplify 误 `git add` 后 staged 改动被 git diff --stat 漏检。
-  // Q6: 三个 subagent（diff/amend/checkout）均用 safeAgent 包装，异常归类为 sentinel 而非裸冒泡。
-  // Q4: diff 返回 null/异常 → halt（不静默跳过让 simplify 改动留工作树未 review 未回退）。
-  const diffSchema = { type: 'object', required: ['changed', 'files'], properties: { changed: { type: 'boolean' }, files: { type: 'array', items: { type: 'string' } } } }
-  const diffResult = await safeAgent('Run `git status --porcelain` in the current working directory. If output is empty, return {"changed": false, "files": []}. Otherwise return {"changed": true, "files": [<list of file paths from porcelain output>]}.', { schema: diffSchema, label: `diff:${task.id}` })
-  // Q4: diff subagent 返回 null/异常/格式错 → halt（不静默跳过）
-  // Q8（第 4 轮）: changed=true 时 files 须为 array——agent 偶发返回 {changed:true} 漏 files 字段，
-  //   旧代码用 Array.isArray(diffResult.files) ? diffResult.files : [] 静默降级为空 →
-  //   simpFiles=[] → review 收空 fc → 漏审 simplify 改动。须 halt 暴露问题而非掩盖。
-  if (!diffResult || typeof diffResult !== 'object' || typeof diffResult.changed !== 'boolean' || (diffResult.changed === true && !Array.isArray(diffResult.files))) {
-    return { halted: true, reason: 'simplify diff check failed', diag: { task: task.id, diffResult: diffResult || null } }
-  }
-  const simpChanged = diffResult.changed === true
-  const simpFiles = Array.isArray(diffResult.files) ? diffResult.files : []
-  if (simpChanged) {
-    const fc = simpFiles.join('\n')
+  const diffCheck = await checkSimplifyChanges(task.id)
+  if (diffCheck.error) return { halted: true, reason: diffCheck.reason, diag: diffCheck.diag }
+  if (diffCheck.changed) {
+    const fc = diffCheck.files.join('\n')
     const { spec: spec2, qual: qual2, hunt: hunt2, haltReason: simpReviewReason, emptyFailed: simpEmptyFailed } = await runReviewRound(task.id, cfg, plan, fc, '', ':simp', '')
-    if (simpReviewReason) {
-      // model_unavailable/agent_error/review_empty：不 amend 也不 checkout，直接 halt。
-      // simplify 改动留在工作树，blocked.md 记录脏状态 + likely_source=implementor changes。
-      return { halted: true, reason: simpReviewReason, diag: { spec2: spec2?.diagnostics, qual2: qual2?.diagnostics, hunt2: hunt2?.diagnostics } }
-    }
-    // 第二道守卫（同主 review 轮）：failed 但 0 findings → halt，防空诊断静默回退
-    if (simpEmptyFailed) {
-      return { halted: true, reason: simpEmptyFailed, diag: { spec2: spec2?.diagnostics, qual2: qual2?.diagnostics, hunt2: hunt2?.diagnostics } }
-    }
+    if (simpReviewReason) return { halted: true, reason: simpReviewReason, diag: { spec2: spec2?.diagnostics, qual2: qual2?.diagnostics, hunt2: hunt2?.diagnostics } }
+    if (simpEmptyFailed) return { halted: true, reason: simpEmptyFailed, diag: { spec2: spec2?.diagnostics, qual2: qual2?.diagnostics, hunt2: hunt2?.diagnostics } }
     if (allGreen(spec2, qual2, hunt2)) {
-      // review 全绿 → amend commit（合并 simplify 改动到 HEAD，保持原子性）
-      // Q1/Q8: amend 后用 git rev-parse HEAD 独立获取 SHA + validateAmendResult 纯函数校验
-      // Q2: amend 失败（pre-commit hook 阻断等）→ staged 区域可能残留 → halt（不静默继续用旧 SHA）
-      const amendSchema = { type: 'object', required: ['ok'], properties: { ok: { type: 'boolean' }, sha: { type: 'string' }, error: { type: 'string' } } }
-      const amendResult = await safeAgent('Run `git add -A && git commit --amend --no-edit`. Then run `git rev-parse HEAD` and return JSON {"ok": true, "sha": "<40-char-hex>"}. If amend failed (e.g. pre-commit hook blocked), return {"ok": false, "sha": "", "error": "<message>"}.', { schema: amendSchema, label: `amend:${task.id}` })
-      const amendCheck = validateAmendResult(amendResult)
-      if (!amendCheck.valid) {
-        // Q1/Q2/Q8: amend 失败或 SHA 格式错 → halt（防 gate 在旧 SHA 跑漏检 simplify 改动）
-        return { halted: true, reason: 'simplify amend failed', diag: { task: task.id, amendError: amendCheck.error, commitSha: commit.evidence.commit_sha } }
-      }
-      state.perTask[tk].commit_sha = amendCheck.sha
-      log(`✓ ${task.id} simplify review green — amended commit @ ${amendCheck.sha}`)
+      const amend = await amendSimplifyCommit(task.id, commit.evidence.commit_sha)
+      if (amend.error) return { halted: true, reason: amend.reason, diag: amend.diag }
+      state.perTask[tk].commit_sha = amend.sha
+      log(`✓ ${task.id} simplify review green — amended commit @ ${amend.sha}`)
     } else {
-      // review 失败 → git reset --hard HEAD + git clean -fd 回退 simplify 改动（HEAD 不变，保留原 commit）
-      // Q11（第 4 轮）: 须用 git reset --hard HEAD（非旧 git-checkout 回退）——同时清理 staged changes
-      //   （simplify 误 git add 时 staged 区域残留，旧 git-checkout 只回退 tracked 工作区修改不清理 staged）
-      // Q3: checkout 须同时 git clean -fd（处理 simplify 新建的 untracked 文件）
-      // Q4/Q8: checkout 后再跑 git status --porcelain 兜底验证工作树真 clean + validateCheckoutResult 纯函数校验
-      // Q3: checkout 失败或兜底验证非空 → halt（不无条件设 simplify_reverted=true 谎报已回退）
-      // Q3: simplify review findings 须持久化到 simplify_review_findings（不丢，用户无需考古 transcript）
-      const checkoutSchema = { type: 'object', required: ['ok'], properties: { ok: { type: 'boolean' }, porcelain: { type: 'string' }, error: { type: 'string' } } }
-      const checkoutResult = await safeAgent('Run `git reset --hard HEAD && git clean -fd` to discard simplify changes (both tracked modifications, staged changes, and untracked new files). Then run `git status --porcelain` to verify the working tree is clean. Return JSON {"ok": true, "porcelain": "<porcelain output>"} on success or {"ok": false, "porcelain": "<output>", "error": "<message>"} on failure.', { schema: checkoutSchema, label: `checkout:${task.id}` })
-      const checkoutCheck = validateCheckoutResult(checkoutResult)
-      if (!checkoutCheck.valid) {
-        // Q3/Q4/Q8: checkout 失败或兜底验证工作树仍脏 → halt（simplify 改动残留，不谎报 simplify_reverted）
-        return { halted: true, reason: 'simplify checkout failed', diag: { task: task.id, checkoutError: checkoutCheck.error, commitSha: commit.evidence.commit_sha } }
-      }
+      const revert = await revertSimplifyChanges(task.id, commit.evidence.commit_sha)
+      if (revert.error) return { halted: true, reason: revert.reason, diag: revert.diag }
       log(`⚠ ${task.id} simplify review NOT green — reverted simplify changes (HEAD unchanged @ ${commit.evidence.commit_sha})`)
       state.perTask[tk].simplify_reverted = true
       state.perTask[tk].simplify_review_findings = collectReviewFindings(spec2, qual2, hunt2)
