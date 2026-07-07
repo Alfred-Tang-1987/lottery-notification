@@ -748,6 +748,19 @@ export function formatFindingsHistory(history, currentRound) {
   return `## Findings History (全轮累积)\n${sections.join('\n\n')}`
 }
 
+// recordReviewRound（S2, 2026-07-07）：review 循环每轮 state 更新抽取。
+// state 是引用，函数内直接 mutate（与现有风格一致）。返回 currentFindings 供后续使用。
+export function recordReviewRound(state, taskKey, round, spec, qual, hunt) {
+  state.perTask[taskKey].review_rounds = round
+  state.perTask[taskKey].files_touched_per_round.push(unionFiles(spec, qual, hunt))
+  state.perTask[taskKey].review_history.push(summarizeReviewRound(round, spec, qual, hunt))
+  const currentFindings = collectReviewFindings(spec, qual, hunt)
+  state.perTask[taskKey].findings_history = updateFindingsHistory(
+    state.perTask[taskKey].findings_history, currentFindings, round
+  )
+  return { currentFindings }
+}
+
 // write_files 边界控制：plan frontmatter 可选声明 write_files，
 // commit agent 提交前检查 git diff 是否越界。不声明 → 空串 → 检查跳过。
 export function formatWriteFilesScope(files) {

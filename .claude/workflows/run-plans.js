@@ -150,6 +150,18 @@ function formatFindingsHistory(history, currentRound) {
   if (sections.length === 0) return ''
   return `## Findings History (全轮累积)\n${sections.join('\n\n')}`
 }
+// recordReviewRound（S2, 2026-07-07）：review 循环每轮 state 更新抽取。
+// state 是引用，函数内直接 mutate（与现有风格一致）。返回 currentFindings 供后续使用。
+function recordReviewRound(state, taskKey, round, spec, qual, hunt) {
+  state.perTask[taskKey].review_rounds = round
+  state.perTask[taskKey].files_touched_per_round.push(unionFiles(spec, qual, hunt))
+  state.perTask[taskKey].review_history.push(summarizeReviewRound(round, spec, qual, hunt))
+  const currentFindings = collectReviewFindings(spec, qual, hunt)
+  state.perTask[taskKey].findings_history = updateFindingsHistory(
+    state.perTask[taskKey].findings_history, currentFindings, round
+  )
+  return { currentFindings }
+}
 // —— v3 OSCILLATING budget guard（inline 自 lib.js）——
 function resolveReviewBudget(config) {
   const v = config?.review_budget
@@ -1392,18 +1404,15 @@ async function runTask(plan, task) {
   // —— review rounds（max 可配，默认 4；0=无限靠 detectOscillation 防线，§5）——
   const maxRounds = resolveMaxRounds(cfg)
   for (let round = 1; maxRounds === 0 ? true : round <= maxRounds; round++) {
-    state.perTask[tk].review_rounds = round
     const fc = filesChanged.join('\n')
     const { spec, qual, hunt, haltReason: reviewReason, emptyFailed: emptyFailedReason } = await runReviewRound(task.id, cfg, plan, fc, concernsHint, `:r${round}`, `Plan ${plan.id}`)
     // Q15（第 5 轮）: push 须在 halt 检查之前——halt 轮的 files_touched/review_history 也须持久化，
     //   否则 distiller 看不到 halt 轮 review 状态（如 review_failed_no_findings 的 failed-but-empty 信号）。
-    state.perTask[tk].files_touched_per_round.push(unionFiles(spec, qual, hunt))
-    state.perTask[tk].review_history.push(summarizeReviewRound(round, spec, qual, hunt))
     // v3: findings 状态机更新（在 halt 检查之前，halt 轮也须持久化）
-    const currentFindings = collectReviewFindings(spec, qual, hunt)
-    state.perTask[tk].findings_history = updateFindingsHistory(
-      state.perTask[tk].findings_history, currentFindings, round
-    )
+    // S2 (2026-07-07): review_rounds / files_touched_per_round / review_history / findings_history
+    //   四件 state 更新抽进 recordReviewRound（review_rounds 在 review 调用后才赋：runReviewRound
+    //   签名不含 state，不读取该字段 → 行为保持）。currentFindings 仍返回供后续使用（此处未使用，保留解构）。
+    const { currentFindings } = recordReviewRound(state, tk, round, spec, qual, hunt)
     if (reviewReason) {
       return { halted: true, reason: reviewReason, diag: { spec: spec?.diagnostics, qual: qual?.diagnostics, hunt: hunt?.diagnostics } }
     }

@@ -30,7 +30,7 @@ for (const role of ROLES) {
 test('run-plans.js inlines the new conditional-render helpers', () => {
   // QC-3: formatLessonsForDistill / applyLessonDecisions / renderLessonEntry 不再 inline
   // （SH2 后 distiller 自读写盘，orchestrator 不调用这些函数）。lib.js 真源保留。
-  for (const fn of ['formatBulletSection', 'formatReferencePaths', 'formatSilentFailureContext', 'formatFailedApproaches', 'formatLessons', 'formatUniversalLessons', 'formatDomainLessons', 'formatWriteFilesScope', 'formatSchemaCheck', 'languageChecklist', 'LANGUAGE_CHECKLISTS', 'gateCommands', 'collectReviewFindings', 'formatFindings', 'formatFindingItem', 'matchesPlanFilter', 'classifyThrown', 'checkImplStatus', 'makeHalt', 'reviewHaltReason', 'reviewHaltForEmptyFailed', 'haltLikelySource', 'fixModelForRound', 'resolveMaxRounds', 'resolveLessonsAutoDistill', 'distillLessonInput', 'summarizeReviewRound', 'groupFindingsByFile', 'formatCrossReviewerNote', 'updateFindingsHistory', 'formatFindingsHistory', 'hasRegressed', 'resolveReviewBudget']) {
+  for (const fn of ['formatBulletSection', 'formatReferencePaths', 'formatSilentFailureContext', 'formatFailedApproaches', 'formatLessons', 'formatUniversalLessons', 'formatDomainLessons', 'formatWriteFilesScope', 'formatSchemaCheck', 'languageChecklist', 'LANGUAGE_CHECKLISTS', 'gateCommands', 'collectReviewFindings', 'formatFindings', 'formatFindingItem', 'matchesPlanFilter', 'classifyThrown', 'checkImplStatus', 'makeHalt', 'reviewHaltReason', 'reviewHaltForEmptyFailed', 'haltLikelySource', 'fixModelForRound', 'resolveMaxRounds', 'resolveLessonsAutoDistill', 'distillLessonInput', 'summarizeReviewRound', 'groupFindingsByFile', 'formatCrossReviewerNote', 'updateFindingsHistory', 'formatFindingsHistory', 'hasRegressed', 'resolveReviewBudget', 'recordReviewRound']) {
     assert.match(runSrc, new RegExp(`function ${fn}|const ${fn}`), `missing helper: ${fn}`)
   }
 })
@@ -82,6 +82,8 @@ test('QC-4: 关键 helper 函数体 lib.js ↔ run-plans.js 字节一致', () =>
     'shouldEscalateOnOscillation', 'isFlipFlop',
     // v3 findings 状态机 + OSC budget (2026-07-06): E'
     'updateFindingsHistory', 'formatFindingsHistory', 'hasRegressed', 'resolveReviewBudget',
+    // S2 (2026-07-07): review 循环每轮 state 更新（review_rounds/files_touched/review_history/findings_history）
+    'recordReviewRound',
     // W1-5b 路径归一 (2026-07-07): 防 reviewer 返回不同路径格式致 cross-reviewer 重叠检测漏报
     'normalizeFilePath', 'unionFiles',
   ]
@@ -156,14 +158,13 @@ test('REGRESSION: allGreen break 在 detectOscillation 之前（防收敛误报 
 
 test('v3 runtime wiring: findings_history update + taskCategories declared + OSC regressed branch', () => {
   // findings_history 在 review loop 内更新，且必须在 halt 检查之前（同 Q15 review_history 顺序）
-  const reviewHistoryPushIdx = runSrc.indexOf('state.perTask[tk].review_history.push')
-  const findingsHistoryUpdateIdx = runSrc.indexOf('state.perTask[tk].findings_history = updateFindingsHistory')
+  // S2 (2026-07-07): review_history.push + findings_history 更新均抽进 recordReviewRound（参数 taskKey），
+  //   顺序不变量（push→findings→halt）改由 QC-4 字节守护函数体 + 此处守护调用位置。
+  const recordIdx = runSrc.indexOf('recordReviewRound(state, tk, round, spec, qual, hunt)')
   const reviewReasonIdx = runSrc.indexOf('if (reviewReason)')
-  assert.notEqual(reviewHistoryPushIdx, -1, 'run-plans.js 须有 review_history.push')
-  assert.notEqual(findingsHistoryUpdateIdx, -1, 'run-plans.js 须更新 findings_history')
+  assert.notEqual(recordIdx, -1, 'run-plans.js 须有 recordReviewRound 调用（S2 抽取后含 push/findings）')
   assert.notEqual(reviewReasonIdx, -1, 'run-plans.js 须有 reviewReason halt 检查')
-  assert.ok(reviewHistoryPushIdx < findingsHistoryUpdateIdx, 'findings_history 更新须在 review_history.push 之后')
-  assert.ok(findingsHistoryUpdateIdx < reviewReasonIdx, 'findings_history 更新须在 halt 检查之前')
+  assert.ok(recordIdx < reviewReasonIdx, 'recordReviewRound 须在 halt 检查之前（findings_history 更新顺序）')
 
   // taskCategories 必须在 formatDomainLessons 调用前定义（C1 级阻断：未定义 → ReferenceError）
   const taskCategoriesDeclIdx = runSrc.indexOf("const taskCategories = task.lesson_categories")
@@ -757,11 +758,13 @@ test('Q15（第 5 轮）: review_history.push 须在 halt 检查之前（halt �
   // Q15: review 循环中 push 在 halt 检查之后 → halt 轮的 files_touched/review_history 不持久化
   //   distiller 看不到 halt 轮的 review 状态（如 review_failed_no_findings 的 failed-but-empty 信号）
   //   修：push 移到 halt 检查之前（先记录再判断 halt）
-  const pushIdx = runSrc.indexOf('state.perTask[tk].files_touched_per_round.push(unionFiles(spec, qual, hunt))')
+  // S2 (2026-07-07): push/findings_history 抽进 recordReviewRound（参数名 taskKey，loop 内 tk），
+  //   Q15 不变量改为「recordReviewRound 调用必须在 halt 检查之前」——函数体内 push 顺序由 QC-4 字节守护。
+  const recordIdx = runSrc.indexOf('recordReviewRound(state, tk, round, spec, qual, hunt)')
   const reviewReasonIdx = runSrc.indexOf('if (reviewReason)')
-  assert.notEqual(pushIdx, -1, '须有 files_touched_per_round.push')
+  assert.notEqual(recordIdx, -1, '须有 recordReviewRound 调用（S2 抽取后 push/findings 在函数内）')
   assert.notEqual(reviewReasonIdx, -1, '须有 reviewReason halt 检查')
-  assert.ok(pushIdx < reviewReasonIdx, 'push 须在 halt 检查之前（Q15：halt 轮状态须持久化）')
+  assert.ok(recordIdx < reviewReasonIdx, 'recordReviewRound 须在 halt 检查之前（Q15：halt 轮状态须持久化）')
 })
 
 // ===== 第 6 轮 review 修复断言（P0/P1/P2，共 11 项修复 + 1 项 wontfix）=====

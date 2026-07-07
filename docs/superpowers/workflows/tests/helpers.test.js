@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, formatFindingItem, isQuotaError, errStr, makeHalt, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound, resolveMaxRounds, detectOscillation, distillLessonInput, applyLessonDecisions, formatLessonsForDistill, validateAmendResult, validateCheckoutResult, groupFindingsByFile, formatCrossReviewerNote, bareTaskId, taskKey, dropParentTasks, extractCompletedFromSubjects, extractTaskKey, shouldEscalateOnOscillation, resolveReviewBudget, isFlipFlop, formatLessons, formatUniversalLessons, formatDomainLessons, updateFindingsHistory, formatFindingsHistory, hasRegressed, normalizeFilePath, REVIEW_SOURCES, checkImplStatus, formatBulletSection, buildPrompt, QUOTA_HALT_NOTE, STATIC_READONLY_NOTE } from '../lib.js'
+import { allGreen, unionFiles, issuesFromReviews, collectReviewFindings, formatFindings, formatFindingItem, isQuotaError, errStr, makeHalt, matchesPlanFilter, classifyThrown, reviewHaltReason, reviewHaltForEmptyFailed, haltLikelySource, fixModelForRound, resolveMaxRounds, detectOscillation, distillLessonInput, applyLessonDecisions, formatLessonsForDistill, validateAmendResult, validateCheckoutResult, groupFindingsByFile, formatCrossReviewerNote, bareTaskId, taskKey, dropParentTasks, extractCompletedFromSubjects, extractTaskKey, shouldEscalateOnOscillation, resolveReviewBudget, isFlipFlop, formatLessons, formatUniversalLessons, formatDomainLessons, updateFindingsHistory, formatFindingsHistory, hasRegressed, normalizeFilePath, REVIEW_SOURCES, checkImplStatus, formatBulletSection, buildPrompt, QUOTA_HALT_NOTE, STATIC_READONLY_NOTE, recordReviewRound } from '../lib.js'
 
 const ok = { status: 'ok', diagnostics: { files_touched: ['a.py'] } }
 const ok2 = { status: 'ok', diagnostics: { files_touched: ['b.py'] } }
@@ -1313,4 +1313,31 @@ test('S8 STATIC_READONLY_NOTE: buildPrompt 注入（specReview target）', () =>
   const out = buildPrompt('specReview', { staticReadonlyNote: STATIC_READONLY_NOTE('spec verification') })
   assert.ok(out.includes('STATIC READ-ONLY'), 'specReview prompt 应含 STATIC READ-ONLY 段')
   assert.ok(out.includes('spec verification'), '应含 reviewType 插值')
+})
+
+// —— S2 recordReviewRound（review 循环每轮 state 更新抽取, 2026-07-07）——
+// run-plans.js review loop 内 12 行 state 更新（review_rounds/files_touched_per_round/review_history/
+// findings_history）抽成纯决策函数，lib.js 真源 + run-plans.js inline 副本。
+test('S2 recordReviewRound: state 正确更新', () => {
+  const state = { perTask: { 'plan-01/T1': { files_touched_per_round: [], review_history: [], findings_history: [] } } }
+  const spec = { status: 'ok', diagnostics: { files_touched: ['a.ts'], issues: [] } }
+  recordReviewRound(state, 'plan-01/T1', 1, spec, null, null)
+  assert.equal(state.perTask['plan-01/T1'].review_rounds, 1)
+  assert.equal(state.perTask['plan-01/T1'].files_touched_per_round.length, 1)
+  assert.equal(state.perTask['plan-01/T1'].review_history.length, 1)
+})
+
+test('S2 recordReviewRound: findings_history 通过 updateFindingsHistory 更新', () => {
+  const state = { perTask: { 'plan-01/T1': { files_touched_per_round: [], review_history: [], findings_history: [] } } }
+  const spec = { status: 'failed', diagnostics: { files_touched: [], issues: [{ title: 'bug', severity: 'critical' }] } }
+  recordReviewRound(state, 'plan-01/T1', 1, spec, null, null)
+  assert.ok(state.perTask['plan-01/T1'].findings_history.length > 0, 'findings_history 应被更新')
+})
+
+test('S2 recordReviewRound: 返回 currentFindings', () => {
+  const state = { perTask: { 'plan-01/T1': { files_touched_per_round: [], review_history: [], findings_history: [] } } }
+  const spec = { status: 'failed', diagnostics: { files_touched: [], issues: [{ title: 'bug' }] } }
+  const result = recordReviewRound(state, 'plan-01/T1', 1, spec, null, null)
+  assert.ok(Array.isArray(result.currentFindings))
+  assert.equal(result.currentFindings.length, 1)
 })
