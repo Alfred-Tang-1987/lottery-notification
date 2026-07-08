@@ -49,6 +49,14 @@ function extractFunctionBody(src, fnName) {
   return afterFn.slice(0, closeMatch.index + 2).trim()
 }
 
+// 提取 SCHEMAS 整块（lib.js 为 export const，run-plans.js 为 const，去 export 后字节一致）。
+// 多个 test 内联同名 helper，此处提升为 top-level 供新增 specReview schema 断言复用。
+function extractSchemas(src) {
+  const m = src.match(/(?:export\s+)?const SCHEMAS = \{[\s\S]*?\n\}/)
+  assert.ok(m, '须含 SCHEMAS 定义')
+  return m[0].replace(/^export\s+/, '')
+}
+
 test('QC-4: 关键 helper 函数体 lib.js ↔ run-plans.js 字节一致', () => {
   // Q7/S5: 扩展覆盖——影响路由/识别/反馈的关键决策函数须字节比较，不仅存在性正则
   // Q8（本轮新增）: validateAmendResult / validateCheckoutResult 纯函数化后纳入字节比较
@@ -170,6 +178,22 @@ test('run-plans.js inlines review_empty 空响应守卫 + review_failed_no_findi
   assert.match(libSrc, /'review_failed_no_findings'/)
   assert.match(libSrc, /function qualityReviewSchema/)
   assert.match(libSrc, /silent_failures:\s*\{\s*type:\s*'array',\s*items:/)
+  // specReview 拆出独立 schema（issues items 强制 {title,fix}，防 [object Object] 污染 findings_history）
+  assert.match(runSrc, /function specReviewSchema/, 'run-plans.js 须 inline specReviewSchema')
+  assert.match(libSrc, /function specReviewSchema/)
+  // SCHEMAS.specReview 须用 specReviewSchema() 而非 reviewSchema()
+  const specSchemaCall = extractSchemas(runSrc).match(/specReview:\s*(\w+)\(\)/)
+  assert.ok(specSchemaCall, 'SCHEMAS.specReview 须调用 schema 工厂函数')
+  assert.equal(specSchemaCall[1], 'specReviewSchema', 'SCHEMAS.specReview 须用 specReviewSchema()（非宽松 reviewSchema()）')
+  // issues items 须强制对象 + required title/fix + dimension 字段
+  // specReviewSchema 定义在 SCHEMAS 块外（与 qualityReviewSchema 同级 top-level 函数），
+  // 故从 runSrc 全文提取函数体（非 extractSchemas 作用域——SCHEMAS 块只含 specReviewSchema() 调用，不含定义）。
+  // 函数体内无 \n} 子模式（所有内层 } 均带缩进），非贪婪 [\s\S]*?\n\} 安全匹配到函数末尾列 0 闭合 }。
+  const specSchemaFn = runSrc.match(/function specReviewSchema\(\)\s*\{[\s\S]*?\n\}/)?.[0] || ''
+  assert.match(specSchemaFn, /issues:\s*\{\s*type:\s*'array',\s*items:\s*\{[\s\S]*?required:\s*\['title',\s*'fix'\]/,
+    'specReviewSchema issues items 须强制对象 + required title/fix')
+  assert.match(specSchemaFn, /dimension:\s*\{\s*type:\s*'string',\s*enum:\s*\['MISSING',\s*'EXTRA',\s*'MISUNDERSTANDING'\]/,
+    'specReviewSchema 须含 dimension 字段（MISSING/EXTRA/MISUNDERSTANDING 三维度）')
 })
 
 test('REGRESSION: allGreen break 在 detectOscillation 之前（防收敛误报 OSCILLATING）', () => {

@@ -803,6 +803,7 @@ function formatCrossReviewerNote(findings) {
 // 注意：'agent_error' 是 orchestrator-internal sentinel，由 safeAgent 的 catch 块构造、
 // 绕过 schema 校验（agent() 抛错时不走 schema），故不入下方 status enum。
 // orchestrator 用 reviewHaltReason() 显式判断 agent_error/model_unavailable。入 enum 反而放宽约束。
+// specReview 已迁出至 specReviewSchema()（S7, 2026-07-08），本函数暂无消费者，保留供未来通用 reviewer。
 function reviewSchema() {
   return { type: 'object', required: ['status'], additionalProperties: true,
     properties: {
@@ -822,6 +823,30 @@ function qualityReviewSchema() {
         issues: { type: 'array', items: {
           type: 'object', required: ['title', 'fix'],
           properties: { severity: { type: 'string', enum: ['critical', 'important', 'minor'] }, title: { type: 'string' }, file: { type: 'string' }, fix: { type: 'string' } },
+        } } } },
+      summary: { type: 'string' },
+    } }
+}
+
+// specReview 单独 schema（S7, 2026-07-08）：issues items 强制对象 {dimension, title, fix, severity?, file?}。
+// 旧实现用宽松 reviewSchema()（issues: {type:'array'} 无 items 约束）→ LLM 返缺 title/fix 对象不被 schema 拦截
+// → findingsOf 的 it.title||String(it) 兜底为 [object Object] → 畸形 finding 污染 findings_history
+// → formatFindingsHistory 渲染出 "-  [object Object] ★本轮新增"（用户 prompt 实测 2026-07-08）。
+// dimension 字段对应 specReview prompt 三维度 MISSING/EXTRA/MISUNDERSTANDING（L1039-1041）。
+function specReviewSchema() {
+  return { type: 'object', required: ['status'], additionalProperties: true,
+    properties: {
+      status: { type: 'string', enum: ['ok', 'failed', 'model_unavailable'] },
+      diagnostics: { type: 'object', properties: { files_touched: { type: 'array' },
+        issues: { type: 'array', items: {
+          type: 'object', required: ['title', 'fix'],
+          properties: {
+            dimension: { type: 'string', enum: ['MISSING', 'EXTRA', 'MISUNDERSTANDING'] },
+            severity: { type: 'string', enum: ['critical', 'important', 'minor'] },
+            title: { type: 'string' },
+            file: { type: 'string' },
+            fix: { type: 'string' },
+          },
         } } } },
       summary: { type: 'string' },
     } }
@@ -849,7 +874,7 @@ const SCHEMAS = {
       summary: { type: 'string' },
     },
   },
-  specReview: reviewSchema(),
+  specReview: specReviewSchema(),
   qualityReviewer: qualityReviewSchema(),
   hunter: { type: 'object', required: ['status'], additionalProperties: true,
     properties: { status: { type: 'string', enum: ['ok', 'failed', 'model_unavailable'] },
