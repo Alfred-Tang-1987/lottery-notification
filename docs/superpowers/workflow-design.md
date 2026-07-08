@@ -849,6 +849,9 @@ return {result: 'done', perTask: state.perTask}
 | `qualityReviewer` | 质量/架构/边界/类型/不可变性，记 files_touched；**Lessons Learned Exemption 限定维度硬性豁免**（W1-5e，§5.6：over-engineering/函数超 50 行/helper 数量豁免；命名/类型/错误处理/嵌套/mutation/硬编码不豁免） | opus | status, issues[] |
 | `hunter` | 静默失败/吞错/bad fallback（ECC silent-failure-hunter 语义），记 files_touched。**只读审查**：禁止跑 pytest/ruff/build（那是 implementor/gate 职责）；项目特定静默失败纪律经 `silent_failure_context` config 注入，hunter 优先核查 | sonnet | status, silent_failures[] |
 | `simplify` | 精简代码（ECC simplify 语义），**如实报 `changed(bool)`** | **sonnet**（硬编码，非 task model，P1-5） | changed, files_changed[] |
+| `diff:${taskId}` | simplify 后置独立验证——`git status --porcelain` 验证是否真改了代码（不信任 simplify 自报 changed） | sonnet（safeAgent 默认） | changed:bool, files:[] |
+| `amend:${taskId}` | simplify review green 后 `git add -A && git commit --amend --no-edit`，返回新 SHA | sonnet（safeAgent 默认） | ok:bool, sha:string |
+| `checkout:${taskId}` | simplify review NOT green 后 `git reset --hard HEAD && git clean -fd` 丢弃改动 + `git status --porcelain` 验证工作树干净 | sonnet（safeAgent 默认） | ok:bool, porcelain:string |
 | `commit` | status check → test → `git commit -m "feat(plan-X/T-Y): ..."`，返回 commit_sha；检测 out_of_scope / destructive_changes | **sonnet**（硬编码，非 task model，P1-5） | commit_sha, committed_files[], tests_at_commit |
 | `contextFetcher` | NEEDS_CONTEXT 兑现（grep/glob/LSP/读 spec/Context7/WebSearch） | **sonnet**（硬编码，非 task model，P1-5） | context |
 | `gate` | committed SHA 上 `git checkout <sha>` + 跑 `full_test_command` + **`git checkout -` 回原 HEAD**，真实 exit code（§3 独立 gate） | sonnet | tests_exit_code, pytest_summary |
