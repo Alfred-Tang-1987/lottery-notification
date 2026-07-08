@@ -40,6 +40,8 @@ audit_required = (task.Type === 'refactor') OR (brief 含 refactor 关键词)
 > **大小写归一化**：frontmatter 解析时，对 `Type` 字段值做 `trim().toLowerCase()` 后再比较。避免 `Refactor`、`REFACTOR` 因大小写失效。
 
 > **双层扫描职责区分**：第一层是 bootstrap agent 读取 `Type` 字段并扫描 brief 关键词（主路径，利用 LLM 理解能力）；第二层是 bootstrap 输出后的**确定性正则校验 guard**（运行时兜底，不依赖 LLM）。两者不是重复：前者负责生成结构化状态，后者负责验证前者没有被幻觉或 frontmatter 解析错误绕过。第二层只校验第一层的输出，不替代第一层的解析。
+>
+> **诚实边界（Code Review 2026-07-08）**：两层共享相同的关键词列表盲点（非标准措辞如「统一构造」代替「去重」会两层都漏）。runtime fallback 只扫 `task.title`/`task.model` 等 frontmatter 可得字段，**不扫 plan 文件 body 内的 brief**（实现 run-plans.js:1490-1491、workflow-design.md §13l 已记录）。故「独立」指职责分层（LLM vs 确定性正则），非覆盖面互补；brief body 含关键词但 title 不含的 case 主要靠 bootstrap LLM。
 
 ## 2. AUDIT 清单内容（implementor 现场核查的 5 项）
 
@@ -123,7 +125,7 @@ implementor 在 RED 前先把 AUDIT 结果写到 `.audit/<taskKey>.md`（与 man
 - bootstrap agent prompt（已解析 plan frontmatter 的那段）加一步：读每个 task 的 `Type` 字段（小写化后）、扫 brief refactor 关键词，按 §1 逻辑判定 `audit_required`，写进 `state.perTask[taskKey].audit_required`。
 - runTask dispatch implementor 时：`auditDirective: state.perTask[tk].audit_required ? AUDIT_DIRECTIVE : ''`。
 - 在 bootstrap 输出后加一道**确定性正则校验**：对 brief 文本用 `/(替换|去重|抽取|行为不变|逐字对齐|N 处可替换|refactor|extract)/i` 再扫一遍，命中但 `audit_required` 为 false 时强制设为 true（作为 bootstrap 的 LLM 输出 guard）。
-- **runTask 运行时兜底**：如果 `state.perTask[tk].audit_required` 缺失或 bootstrap 未设置，runTask 在 dispatch implementor 前用同样的确定性正则重新计算 `audit_required`（从 brief 文本 + frontmatter Type 字段）。这样即使 bootstrap 完全漏读 frontmatter，runtime 也不会让 refactor task 无 AUDIT 通过。运行时的计算与 bootstrap 的 LLM 输出是两层独立 guard。
+- **runTask 运行时兜底**：如果 `state.perTask[tk].audit_required` 缺失或 bootstrap 未设置，runTask 在 dispatch implementor 前用同样的确定性正则重新计算 `audit_required`（从 brief 文本 + frontmatter Type 字段）。这样即使 bootstrap 完全漏读 frontmatter，runtime 也不会让 refactor task 无 AUDIT 通过。运行时的计算与 bootstrap 的 LLM 输出是两层职责分层的 guard（LLM 理解 vs 确定性正则），共享相同关键词盲点，runtime fallback 覆盖面限于 frontmatter 可得字段（见 §1 诚实边界）。
 
 ### 4.3 SCHEMAS + dispatchImpl + haltLikelySource
 
