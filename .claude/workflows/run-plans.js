@@ -236,11 +236,12 @@ function normalizeFilePath(p) {
 // reviewHaltForEmptyFailed 共用，避免两处重复 push 逻辑漂移）—— inline 自 lib.js
 // 非 failed 或无 diagnostics → 返回 []。items 归一化同 collectReviewFindings。
 // W1-5b: file 字段经 normalizeFilePath 归一化，防跨 reviewer 路径格式差异致重叠检测漏报。
+// 兜底从 String(it) 改 JSON.stringify(it)（S7, 2026-07-08）：对象序列化为可读 JSON 而非零信息 [object Object]。
 function findingsOf(r, source, key) {
   if (!r || r.status !== 'failed') return []
   const out = []
   for (const it of (r.diagnostics?.[key] || [])) {
-    if (it && typeof it === 'object') out.push({ source, severity: it.severity, title: it.title || String(it), file: normalizeFilePath(it.file), fix: it.fix })
+    if (it && typeof it === 'object') out.push({ source, severity: it.severity, title: it.title || JSON.stringify(it), file: normalizeFilePath(it.file), fix: it.fix })
     else out.push({ source, title: String(it) })
   }
   return out
@@ -803,6 +804,7 @@ function formatCrossReviewerNote(findings) {
 // 注意：'agent_error' 是 orchestrator-internal sentinel，由 safeAgent 的 catch 块构造、
 // 绕过 schema 校验（agent() 抛错时不走 schema），故不入下方 status enum。
 // orchestrator 用 reviewHaltReason() 显式判断 agent_error/model_unavailable。入 enum 反而放宽约束。
+// specReview 已迁出至 specReviewSchema()（S7, 2026-07-08），本函数暂无消费者，保留供未来通用 reviewer。
 function reviewSchema() {
   return { type: 'object', required: ['status'], additionalProperties: true,
     properties: {
@@ -812,16 +814,41 @@ function reviewSchema() {
     } }
 }
 
-// qualityReviewer 单独 schema：issues 元素强制对象 {title, fix, severity, file}（specReview 用字符串模板故走 reviewSchema）。
+// qualityReviewer 单独 schema：issues 元素强制对象 {title, fix, severity, file}（specReview 亦已迁出至 specReviewSchema()，issues items 同样强制对象）。
 // items 约束防 LLM 返回纯字符串/缺 fix/用错字段名 → collectReviewFindings 的 it.title||String(it) 兜底为 [object Object]。
+// severity 加 required（S7, 2026-07-08）：防 LLM 省略 severity → formatFindingsHistory L128 severity 排序失效。
 function qualityReviewSchema() {
   return { type: 'object', required: ['status'], additionalProperties: true,
     properties: {
       status: { type: 'string', enum: ['ok', 'failed', 'model_unavailable'] },
       diagnostics: { type: 'object', properties: { files_touched: { type: 'array' },
         issues: { type: 'array', items: {
-          type: 'object', required: ['title', 'fix'],
+          type: 'object', required: ['title', 'fix', 'severity'],
           properties: { severity: { type: 'string', enum: ['critical', 'important', 'minor'] }, title: { type: 'string' }, file: { type: 'string' }, fix: { type: 'string' } },
+        } } } },
+      summary: { type: 'string' },
+    } }
+}
+
+// specReview 单独 schema（S7, 2026-07-08）：issues items 强制对象 {dimension, title, fix, severity?, file?}。
+// 旧实现用宽松 reviewSchema()（issues: {type:'array'} 无 items 约束）→ LLM 返缺 title/fix 对象不被 schema 拦截
+// → findingsOf 的 it.title||String(it) 兜底为 [object Object] → 畸形 finding 污染 findings_history
+// → formatFindingsHistory 渲染出 "-  [object Object] ★本轮新增"（用户 prompt 实测 2026-07-08）。
+// dimension 字段对应 specReview prompt 三维度 MISSING/EXTRA/MISUNDERSTANDING（L1039-1041）。
+function specReviewSchema() {
+  return { type: 'object', required: ['status'], additionalProperties: true,
+    properties: {
+      status: { type: 'string', enum: ['ok', 'failed', 'model_unavailable'] },
+      diagnostics: { type: 'object', properties: { files_touched: { type: 'array' },
+        issues: { type: 'array', items: {
+          type: 'object', required: ['title', 'fix'],
+          properties: {
+            dimension: { type: 'string', enum: ['MISSING', 'EXTRA', 'MISUNDERSTANDING'] },
+            severity: { type: 'string', enum: ['critical', 'important', 'minor'] },
+            title: { type: 'string' },
+            file: { type: 'string' },
+            fix: { type: 'string' },
+          },
         } } } },
       summary: { type: 'string' },
     } }
@@ -849,13 +876,14 @@ const SCHEMAS = {
       summary: { type: 'string' },
     },
   },
-  specReview: reviewSchema(),
+  specReview: specReviewSchema(),
   qualityReviewer: qualityReviewSchema(),
   hunter: { type: 'object', required: ['status'], additionalProperties: true,
     properties: { status: { type: 'string', enum: ['ok', 'failed', 'model_unavailable'] },
       diagnostics: { type: 'object', properties: { files_touched: { type: 'array' },
         silent_failures: { type: 'array', items: {
-          type: 'object', required: ['title', 'fix'],
+          // severity 加 required（S7, 2026-07-08）：防 LLM 省略 severity → formatFindingsHistory L128 severity 排序失效
+          type: 'object', required: ['title', 'fix', 'severity'],
           properties: { title: { type: 'string' }, severity: { type: 'string', enum: ['critical', 'important', 'minor'] }, file: { type: 'string' }, line: { type: 'integer' }, fix: { type: 'string' } },
         } } } },
       summary: { type: 'string' } } },
@@ -1013,6 +1041,7 @@ Return {status, evidence:{tests_exit_code, files_changed:[...], pytest_summary},
 - status=needs_context: missing info → fill diagnostics.blocked_category + last_error. evidence is OPTIONAL.
 RED FLAG: tests_exit_code 必须真实，绝不编造 0。绝不跳过测试。遇障碍宁可 blocked 也不要伪造通过。若遇到 model 限额耗尽（quota/rate-limit/429 错误），返回 status:'model_unavailable'（非 failed/blocked），让 orchestrator halt 并保存进度。`,
 
+  // specReview: return 指令用对象模板（与 specReviewSchema 对齐），旧字符串模板已弃用（Task 2, 2026-07-08）。
   specReview: `You are the SPEC-REVIEWER (model opus). Verify implementor built EXACTLY what was requested — nothing missing, nothing extra, no misunderstanding. Verdict on CURRENT working tree (HEAD or staged).
 
 Inputs: specPath={{specPath}} taskId={{taskId}} planFile={{planFilePath}} changedHint={{filesChanged}}{{concernsHint}}
@@ -1043,8 +1072,8 @@ Steps:
 
 {{staticReadonlyNote}}
 
-Return {status (ok|failed), diagnostics:{files_touched:[...], issues:[<dimension>: <spec requirement>: <code gap or over-build>]}, summary}.
-RED FLAG: ok 仅当三维度全清——逐条 spec 全符合 AND 无越界（lessons learned 修复经 Exemption 判定后不算越界）。绝不模糊通过。越界（spec 未要求的功能，尤其是合规红线禁止类如预测/推荐）必须 failed。issues 要具体（哪条 spec + 代码哪里不符/越界 + file:line）。{{quotaHaltNote}}`,
+Return {status (ok|failed), diagnostics:{files_touched:[...], issues:[{dimension: MISSING|EXTRA|MISUNDERSTANDING, severity: critical|important|minor, title, file, fix}]}, summary}.
+RED FLAG: ok 仅当三维度全清——逐条 spec 全符合 AND 无越界（lessons learned 修复经 Exemption 判定后不算越界）。绝不模糊通过。越界（spec 未要求的功能，尤其是合规红线禁止类如预测/推荐）必须 failed。issues 要具体（title 写哪条 spec + 代码哪里不符/越界，file 写 file:line，fix 写修法）。{{quotaHaltNote}}`,
 
   qualityReviewer: `You are the QUALITY-REVIEWER (model opus). Review code quality: architecture, boundaries, types, immutability, error handling, naming. Verdict on CURRENT tree.
 

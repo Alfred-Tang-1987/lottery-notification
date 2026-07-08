@@ -49,6 +49,14 @@ function extractFunctionBody(src, fnName) {
   return afterFn.slice(0, closeMatch.index + 2).trim()
 }
 
+// 提取 SCHEMAS 整块（lib.js 为 export const，run-plans.js 为 const，去 export 后字节一致）。
+// 多个 test 内联同名 helper，此处提升为 top-level 供新增 specReview schema 断言复用。
+function extractSchemas(src) {
+  const m = src.match(/(?:export\s+)?const SCHEMAS = \{[\s\S]*?\n\}/)
+  assert.ok(m, '须含 SCHEMAS 定义')
+  return m[0].replace(/^export\s+/, '')
+}
+
 test('QC-4: 关键 helper 函数体 lib.js ↔ run-plans.js 字节一致', () => {
   // Q7/S5: 扩展覆盖——影响路由/识别/反馈的关键决策函数须字节比较，不仅存在性正则
   // Q8（本轮新增）: validateAmendResult / validateCheckoutResult 纯函数化后纳入字节比较
@@ -91,6 +99,10 @@ test('QC-4: 关键 helper 函数体 lib.js ↔ run-plans.js 字节一致', () =>
     // Task 3 (2026-07-08): buildPrompt 默认参数含 auditDirective: ''（fix-round/retry 路径经 implCtx 调用）
     //   默认值若两端漂移 → {{auditDirective}} 残留进 prompt。须字节守护。
     'buildPrompt',
+    // S7 (2026-07-08): schema 工厂函数 byte-guard。SCHEMAS 整块字节比较只含 specReview:
+    //   specReviewSchema() 等 *调用*，不含函数 *定义*——若开发者改 specReviewSchema() 函数体
+    //   但漏同步 run-plans.js inline 副本，QC-4b SCHEMAS 整块比较不会捕获。须独立 byte-guard 函数体。
+    'specReviewSchema', 'qualityReviewSchema', 'reviewSchema',
   ]
   for (const fn of fns) {
     const libBody = extractFunctionBody(libSrc, fn)
@@ -170,6 +182,33 @@ test('run-plans.js inlines review_empty 空响应守卫 + review_failed_no_findi
   assert.match(libSrc, /'review_failed_no_findings'/)
   assert.match(libSrc, /function qualityReviewSchema/)
   assert.match(libSrc, /silent_failures:\s*\{\s*type:\s*'array',\s*items:/)
+  // specReview 拆出独立 schema（issues items 强制 {title,fix}，防 [object Object] 污染 findings_history）
+  assert.match(runSrc, /function specReviewSchema/, 'run-plans.js 须 inline specReviewSchema')
+  assert.match(libSrc, /function specReviewSchema/)
+  // SCHEMAS.specReview 须用 specReviewSchema() 而非 reviewSchema()
+  const specSchemaCall = extractSchemas(runSrc).match(/specReview:\s*(\w+)\(\)/)
+  assert.ok(specSchemaCall, 'SCHEMAS.specReview 须调用 schema 工厂函数')
+  assert.equal(specSchemaCall[1], 'specReviewSchema', 'SCHEMAS.specReview 须用 specReviewSchema()（非宽松 reviewSchema()）')
+  // issues items 须强制对象 + required title/fix + dimension 字段
+  // specReviewSchema 定义在 SCHEMAS 块外（与 qualityReviewSchema 同级 top-level 函数），
+  // 故从 runSrc 全文提取函数体（非 extractSchemas 作用域——SCHEMAS 块只含 specReviewSchema() 调用，不含定义）。
+  // 函数体内无 \n} 子模式（所有内层 } 均带缩进），非贪婪 [\s\S]*?\n\} 安全匹配到函数末尾列 0 闭合 }。
+  const specSchemaFn = runSrc.match(/function specReviewSchema\(\)\s*\{[\s\S]*?\n\}/)?.[0] || ''
+  assert.match(specSchemaFn, /issues:\s*\{\s*type:\s*'array',\s*items:\s*\{[\s\S]*?required:\s*\['title',\s*'fix'\]/,
+    'specReviewSchema issues items 须强制对象 + required title/fix')
+  assert.match(specSchemaFn, /dimension:\s*\{\s*type:\s*'string',\s*enum:\s*\['MISSING',\s*'EXTRA',\s*'MISUNDERSTANDING'\]/,
+    'specReviewSchema 须含 dimension 字段（MISSING/EXTRA/MISUNDERSTANDING 三维度）')
+  // quality/hunter schema severity 须 required（防 LLM 省略 severity → formatFindingsHistory L128 severity 排序失效）
+  // qualityReviewSchema 定义在 SCHEMAS 块外（top-level 工厂函数），故从 runSrc 全文提取函数体
+  // （非 extractSchemas 作用域——SCHEMAS 块只含 qualityReviewSchema() 调用，不含定义）。
+  const qualSchemaFn = runSrc.match(/function qualityReviewSchema\(\)\s*\{[\s\S]*?\n\}/)?.[0] || ''
+  assert.match(qualSchemaFn, /required:\s*\['title',\s*'fix',\s*'severity'\]/,
+    'qualityReviewSchema items 须 required title+fix+severity')
+  // hunter silent_failures 在 SCHEMAS 块内，extractSchemas 可提取。
+  // 闭合 } 带空格（} } }），故用 lookahead 到下一个 top-level key（simplify:）定界。
+  const huntSchemaBlock = extractSchemas(runSrc).match(/hunter:\s*\{[\s\S]*?(?=\n  simplify:)/)?.[0] || ''
+  assert.match(huntSchemaBlock, /required:\s*\['title',\s*'fix',\s*'severity'\]/,
+    'hunter silent_failures items 须 required title+fix+severity')
 })
 
 test('REGRESSION: allGreen break 在 detectOscillation 之前（防收敛误报 OSCILLATING）', () => {
@@ -1350,5 +1389,24 @@ test('AUDIT runTask: 初始 dispatch 据 audit_required 传 auditDirective + run
 test('P0-1: halt() blocked_info 须含顶层 diag 字段（与 finalReport 模板读取路径对齐）', () => {
   assert.match(runSrc, /blocked_info:\s*\{[\s\S]*?diag:\s*r\.diag \|\| \{\}/,
     'halt() blocked_info 须含顶层 diag: r.diag || {}（与 finalReport 模板 blocked_info.diag.audit_reason 对齐）')
+})
+
+// ===== Task 2 (2026-07-08): specReview prompt return 指令改对象模板（与 specReviewSchema 对齐）=====
+// 旧 prompt return 指令用字符串模板 issues:[<dimension>: <spec requirement>: <code gap or over-build>]，
+// 与 Task 1 新 specReviewSchema()（items 强制对象 + required title/fix + dimension enum）矛盾：
+// LLM 按旧 prompt 返字符串 → schema 拒 → 重试耗限额；或返对象但缺字段不被拦 → [object Object] 复现。
+// 此 TDD 断言用源码字面量守护 prompt 已改为对象模板（specReview prompt 是 run-plans.js 独有 runtime 胶水，
+// 用字面量断言防假绿——与 qualityReviewer 的 issues 元素 object 强制断言同模式）。
+test('specReview prompt return 指令须用对象模板（与 specReviewSchema 对齐，非字符串模板）', () => {
+  // 旧 prompt: issues:[<dimension>: <spec requirement>: <code gap or over-build>]（字符串模板）
+  // 新 prompt: issues:[{dimension: MISSING|EXTRA|MISUNDERSTANDING, severity, title, file, fix}]（对象模板）
+  // 字符串模板与 specReviewSchema 的 items 强制对象矛盾 → LLM 返字符串被 schema 拒 → 重试耗限额。
+  const promptMatch = runSrc.match(/specReview:\s*`([\s\S]*?)`/)
+  assert.ok(promptMatch, '须有 specReview prompt')
+  const prompt = promptMatch[1]
+  assert.doesNotMatch(prompt, /issues:\[<dimension>:/,
+    'specReview prompt 不得再用字符串模板 issues:[<dimension>: ...]')
+  assert.match(prompt, /issues:\[\{dimension:\s*MISSING\|EXTRA\|MISUNDERSTANDING,\s*severity[^}]*title[^}]*file[^}]*fix\}\]/,
+    'specReview prompt 须用对象模板 issues:[{dimension, severity, title, file, fix}]')
 })
 

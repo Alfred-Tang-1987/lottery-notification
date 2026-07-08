@@ -46,6 +46,32 @@ test('formatFindings never emits [object Object] and is readable', () => {
   assert.match(s, /\(a\.py\)/)
 })
 
+test('findingsOf 缺 title 对象兜底不再 [object Object]，输出可读 JSON（用户 prompt 实测 2026-07-08）', () => {
+  // specReview 返缺 title 的 issue 对象（schema 漏拦或 runtime 边界 case）
+  // 旧兜底 String(it) = "[object Object]"（零信息）→ formatFindingsHistory 渲染 "-  [object Object] ★本轮新增"
+  // 新兜底 JSON.stringify(it) → 至少 implementor 能读到 dimension/desc 等字段尝试修复
+  const specBadObj = { status: 'failed', diagnostics: { issues: [
+    { dimension: 'EXTRA', severity: 'minor', fix: 'remove unused helper' },  // 缺 title
+    { dimension: 'MISSING', desc: 'spec req Y not implemented', fix: 'add Y' },  // 缺 title，有 desc
+  ] } }
+  const out = collectReviewFindings(specBadObj, { status: 'ok' }, { status: 'ok' })
+  assert.equal(out.length, 2)
+  // 不再 [object Object]
+  assert.ok(!out[0].title.includes('[object Object]'), '缺 title 对象不得兜底为 [object Object]')
+  assert.ok(!out[1].title.includes('[object Object]'), '缺 title 对象不得兜底为 [object Object]')
+  // 须是可读 JSON（含原对象字段）
+  assert.match(out[0].title, /"dimension"\s*:\s*"EXTRA"/, '兜底 JSON 须含 dimension 字段')
+  assert.match(out[1].title, /"desc"\s*:\s*"spec req Y/, '兜底 JSON 须含 desc 字段')
+})
+
+test('findingsOf 字符串 issue 仍原样返回（不 JSON.stringify 字符串）', () => {
+  // 既有 specBad fixture 用字符串 'MISSING: spec req X (a.py:10)'
+  // 字符串须原样返回，不得 JSON.stringify 成 '"MISSING: ..."'（带引号）
+  const specStr = { status: 'failed', diagnostics: { issues: ['MISSING: spec req X (a.py:10)'] } }
+  const out = collectReviewFindings(specStr, { status: 'ok' }, { status: 'ok' })
+  assert.equal(out[0].title, 'MISSING: spec req X (a.py:10)', '字符串 issue 须原样返回，不得 JSON.stringify')
+})
+
 test('formatFindings empty → empty string', () => {
   assert.equal(formatFindings([]), '')
 })

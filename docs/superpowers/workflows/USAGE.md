@@ -174,6 +174,10 @@ refactor 类 task（plan frontmatter `Type: refactor`，或 brief 含 `替换/�
 
 现场核查记录在 `.audit/<taskKey>.md`（git 忽略，跨 session 不保证存在）。halt 详情见 `.workflow/blocked.md`。
 
+### reviewer 返回结构约束（schema 强制，S7 2026-07-08）
+
+三类 reviewer（spec/quality/hunter）的 `issues`/`silent_failures` 须返对象数组，schema 强制 `required: ['title', 'fix', 'severity']`（quality/hunter）或 `required: ['title', 'fix']`（specReview，severity 可选但建议）。LLM 返字符串或缺字段对象会被 schema 拒，runtime 强制重试。若持续不合规 → `model_unavailable`/`agent_error` halt（与限额耗尽同走 §7.1 全新跑续）。`findingsOf` 兜底用 `JSON.stringify(it)`（非 `String(it)`），即使畸形对象也输出可读 JSON 而非 `[object Object]`，便于事后诊断 `findings_history` 污染源。
+
 ## 7.1 续跑：用「全新跑」，不要用 resumeFromRunId（重要）
 
 **进度以 git 为单一事实源**——**全新跑**时 bootstrap 从 git log 解析已完成的

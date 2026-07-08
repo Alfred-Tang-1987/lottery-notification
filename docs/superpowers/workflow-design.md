@@ -1132,6 +1132,13 @@ resume 重跑该 task → bootstrap 重读 plan（含修过的 brief）→ 重�
 
 **与 implementor prompt 集成**：`PROMPTS.implementor` 含 `{{auditDirective}}` 占位（retryNote 后、`## Discipline` 前）。`buildPrompt` defaults 默认空串（非 refactor task opt-out，零影响）；audit_required=true 时调用方传 `AUDIT_DIRECTIVE` 常量注入。helpers.test 守护默认空串无 `{{auditDirective}}` 残留 + 显式传值注入。
 
+**reviewer schema 严格化（S7, 2026-07-08）**：
+
+- **specReview 独立 `specReviewSchema()`**（lib.js + run-plans.js inline SCHEMAS.specReview，sync 守护）：issues items 强制对象 `{dimension, title, fix, severity?, file?}`，对齐 specReview prompt Task 2 改后的对象模板（Task 1+2 配套）。消除旧 `reviewSchema()` 宽松 `issues: {type:'array'}` 无 items 约束 → LLM 返缺 title/fix 对象 → `findingsOf` 兜底 `[object Object]` 污染 `findings_history` 的 bug（D14 根因）。
+- **quality/hunter schema `severity` 加 `required`**（Task 4）：`qualityReviewSchema`/`hunterReviewSchema` 的 `required: ['title', 'fix', 'severity']`，防 `formatFindingsHistory` severity 排序失效（severity 缺失 → sort 比较时 undefined 比较退化）。
+- **`findingsOf` 兜底 `String(it)` → `JSON.stringify(it)`**（Task 3）：治标兜底——即使 schema 漏网或 quality/hunter 返畸形对象，`findings_history` 也输出可读 JSON 而非 `[object Object]`。helpers.test Task 3 断言 `match(/"dimension"\s*:\s*"EXTRA"/)` 守护。
+- **schema 与 prompt 对齐约束**：三类 reviewer（spec/quality/hunter）的 `issues`/`silent_failures` 须返对象数组。LLM 返字符串或缺字段对象会被 schema 拒，runtime 强制重试；持续不合规 → `model_unavailable`/`agent_error` halt（schema 是 reviewer 输出契约的硬约束，与 §5.1 review rounds 互补）。
+
 ## 14. Wontfix / TODO 决策记录（第 6 轮 review 收敛）
 
 本节记录第 6 轮 Spec/Quality Review 后的 wontfix 与未实现决策，含决策理由 + 复盘触发条件。每个条目标注 inline 引用位置（§章节号）便于追溯。
