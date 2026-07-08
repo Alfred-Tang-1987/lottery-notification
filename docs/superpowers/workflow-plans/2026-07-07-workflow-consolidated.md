@@ -1774,6 +1774,34 @@ node --test docs/superpowers/workflows/tests/*.test.js
 
 **裁定不修**（复核 §8.2）：Hunter P1-5（revert diag 漏 commitSha）不成立——:1457 已有；Hunter P1-3（fix-round 不传 auditDirective）不成立——AUDIT 设计上只首轮跑；Spec P1-2（基线 350）不成立——feature 前确为 350。
 
+### A.4 W3 hunter status 判定硬规则（1 Task，2026-07-07，移植自 OTC-Fund-SIP-Strategy）
+
+**原文件**：OTC-Fund-SIP-Strategy 仓库 commit `0552195`（移植）
+**问题**：hunter 报了 `silent_failures` 却 `status=ok` → `allGreen()` 误判通过 → 静默失败逃逸。
+
+**根因**：
+1. prompt 仅说 `status (ok|failed)` 未明确判定标准 → hunter 自行把 important 当作不阻塞
+2. RED FLAG "有日志+合理 fallback" AND 关系不清晰 → hunter 把无日志的 `return 1.0` 误判为优雅降级
+
+**修复（prompt 侧）**：
+- **STATUS DETERMINATION 硬规则**：`silent_failures` 数组非空 → `status=failed`；为空 → `status=ok`。severity 不影响 status 判定——critical/important/minor 任一 finding 都触发 failed。禁止"报了 finding 却 status=ok"的矛盾输出。
+- **优雅降级判定标准**：刻意的优雅降级须同时满足：① 有显式日志（`log.warning`/`error`，非注释/print 到 stdout）；② fallback 值类型正确且对调用方有意义。两者缺一即为静默失败。例如 `if not mapping: return 1.0` 无日志 → 静默失败（非优雅降级）。
+
+**Task 概览**（368→368 tests，无新 test() 块，+2 assert.match 守护断言并入既有 W1 测试块）：
+
+| Task | 内容 |
+|---|---|
+| W3 | hunter prompt 加 STATUS DETERMINATION 硬规则 + 优雅降级判定标准（lib.js + run-plans.js 双副本）+ sync.test 2 守护断言 + workflow-design.md §5.7 |
+
+**落地确认**（代码已验证，已 commit）：
+- `docs/superpowers/workflows/lib.js:1220-1222` hunter prompt 含 STATUS DETERMINATION + 优雅降级判定
+- `.claude/workflows/run-plans.js:1137-1139` inline 副本字节一致
+- `docs/superpowers/workflows/tests/sync.test.js:355-358` 2 个 W3 守护断言
+- `docs/superpowers/workflow-design.md` §5.7 W3 移植记录
+- git log: `ff5b99f` 已 commit
+
+**测试**：368/368 node --test 全绿（W3 守护断言并入既有 W1 测试块，无新 test() 块）。
+
 ---
 
 **END OF PLAN**

@@ -501,6 +501,16 @@ function normalizeFilePath(p) {
 - **H-F4**：specReview + qualityReviewer Exemption 加空 lessonsPath 防御——空 `{{lessonsPath}}` → Exemption N/A（跳过 L-xxx 查找，正常报告），防 reviewer 读空路径文件不存在 → Exemption fall through 到"仍按 EXTRA 报告"（与未配 lessons_path 的项目语义对齐）。
 - **H-F7**：finalReport manifest 加 `lessons_committed: bool` 字段——step 2 默认 `false`，step 6 commit 成功后重写 manifest 为 `true`。供下次 bootstrap 检查 lessons.md 是否真被持久化（防 best-effort commit 失败后静默退化，bootstrap 误以为已 commit 而跳过补 commit）。
 
+### 5.7 W3 hunter status 判定硬规则（2026-07-07：从 OTC-Fund-SIP-Strategy 仓库移植）
+
+**问题**：hunter 报了 `silent_failures` 却 `status=ok` → `allGreen()` 只看 status 字段 → orchestrator 误判通过 → 静默失败逃逸。根因：① prompt 仅说 `status (ok|failed)` 未明确判定标准 → hunter 自行把 important 当作不阻塞；② RED FLAG "有日志+合理 fallback" AND 关系不清晰 → hunter 把无日志的 `return 1.0` 误判为优雅降级。
+
+**修复（prompt 侧）**：
+- **STATUS DETERMINATION 硬规则**：`silent_failures` 数组非空 → `status=failed`；为空 → `status=ok`。severity 不影响 status 判定——critical/important/minor 任一 finding 都触发 failed。禁止"报了 finding 却 status=ok"的矛盾输出。
+- **优雅降级判定标准**：刻意的优雅降级须同时满足：① 有显式日志（`log.warning`/`error`，非注释/print 到 stdout）；② fallback 值类型正确且对调用方有意义。两者缺一即为静默失败。例如 `if not mapping: return 1.0` 无日志 → 静默失败（非优雅降级）。
+
+**测试守护**：sync.test 新增 2 个 W3 守护断言（`silent_failures 数组非空 → status=failed` 硬规则 + `优雅降级判定` 标准）。lib.js + run-plans.js 双副本同步。
+
 
 ### 5.4 lesson 自动提炼（distiller agent，2026-07-03）
 

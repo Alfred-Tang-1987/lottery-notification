@@ -348,6 +348,14 @@ test('W1 修复: Q-F1 Exemption 编号格式 + Q-F2 implementor 标编号 + H-F1
   //   否则下次 bootstrap 无从知晓 lessons.md 是否真被 commit → 静默退化
   assert.match(runSrc, /lessons_committed/i,
     'finalReport manifest 须含 lessons_committed 字段（H-F7：供下次 bootstrap 检查）')
+
+  // W3 (2026-07-07): hunter status 判定硬规则——silent_failures 非空 → status=failed
+  //   旧 prompt 仅说 status (ok|failed) 未明确判定标准 → hunter 报了 important finding 却 status=ok
+  //   → allGreen() 只看 status 字段 → orchestrator 误判通过 → 静默失败逃逸
+  assert.match(runSrc, /silent_failures 数组非空 → status=failed/i,
+    'hunter prompt 须含 status 判定硬规则（W3：silent_failures 非空 → failed，禁止矛盾输出）')
+  assert.match(runSrc, /优雅降级判定/,
+    'hunter prompt 须含优雅降级判定标准（W3：须同时满足有日志+合理 fallback，缺一即静默失败）')
 })
 
 test('S3: lessonsText must not call formatLessons (replaced by Tier 1 + Tier 2)', () => {
