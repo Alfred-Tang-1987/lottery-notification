@@ -244,3 +244,28 @@ if (impl?.status === 'needs_audit_fix') return { halted: true, reason: 'audit fi
 - **P1-4**：schema 加 taskKey（lib.js SCHEMAS + run-plans.js inline，sync.test 字节守护）。
 - **P1-5**：lib.js:792/794 + run-plans.js inline 两处 `spec.diagnostics`→`spec?.diagnostics`（×3 字段）。helpers.test 现有注释「须传真实 review 对象」改为「可选 ?. 兜底」并加 RED（传无 diagnostics 的对象不 TypeError）。
 - **P1-2/P1-3/P1-6**：纯文档，无 TDD。
+
+### 8.5 修复完成状态（2026-07-08 执行）
+
+修复计划 `docs/superpowers/workflows/plans/2026-07-08-audit-feature-fixes.md` 7 个 Task 全部完成，每 Task 经 SDD（implementer + task reviewer）独立验收，最终 whole-branch review 裁定 **Merge-ready**（无 Critical/Important，3 个 Minor 全 defer/dismiss）。
+
+| Task | 修复项 | Commit | 验收 | 测试增量 |
+|---|---|---|---|---|
+| T1 | P0-1 halt blocked_info 加顶层 `diag` 字段 | `2d4bda9` | APPROVED, 1 Minor non-blocking | sync.test +1 (源码字面量断言) |
+| T2 | P0-2 dispatchImpl retry 路径补 `needs_audit_fix` 检查 | `2095264` | PASS, 2 Minor non-blocking | dispatchImpl-retry.test +1 |
+| T3 | P1-4 SCHEMAS.implementor 加 `taskKey` 字段 | `3532126` | PASS, no issues | sync.test +1 (QC-4 SCHEMAS 字节守护) |
+| T4 | P1-5 decideReviewOutcome budget/maxRounds halt 用 `?.` | `bc12ba3` | PASS, implementer 测试偏差验证正确 | helpers.test +1 (RED: null/无 diagnostics 不 TypeError) |
+| T5 | P1-6 spec §1/§4.2 软化"两层独立 guard"措辞 | `4b72bed` | APPROVED, no issues | 纯文档 |
+| T6 | P1-2 USAGE.md 同步 AUDIT 阶段文档 | `55fa26a` | APPROVED, no issues | 纯文档 |
+| T7 | P1-3 spec §6.1 消除 A3 报告格式测试矛盾 | `b454271` | APPROVED, 1 Minor future-polish | 纯文档 |
+
+**全量回归**：361 baseline → **365 green, 0 fail**（T1-T4 各 +1 RED→GREEN 测试；T5-T7 纯文档无测试增量）。注：plan 全局收尾原文写「361 + 7 = 368」是算术笔误，实际 361 + 4 = 365。
+
+**T7 plan 矛盾处理**：plan T7 Step 1 替换文本原声称「Task 1 helpers.test 已实现」四段关键词断言，但 controller 验证 helpers.test (L1520-1531) 实际未逐字断言「关键路径」「brief 声明」「注释摘要」「判断」四段（仅断言 A1-A5 ID + needs_audit_fix + .audit/ + Grep/Read + 工具失败）。用户裁定 Option 1：修正替换文本诚实记录 gap（「helpers.test 未逐字断言这四段，属后续加固范畴，本 Plan 不补」），T7 仍只改 spec 不补测试。spec 现诚实记录现状。
+
+**已知 Minor（defer）**：
+1. T7 spec §6.1:186「见本节末 layered-test 盲区注」——line 215 实际在 §6.5，非严格 §6.1 末。brief-mandated 逐字文本，未来 polish。
+2. T5 spec §1 诚实边界引「run-plans.js:1490-1491」——T1-T4 加行后实际位置 drift 到 L1500-1501。行号 drift 是预期维护债，`AUDIT_REFACTOR_KEYWORDS` grep 可定位。
+3. T1/T2 progress ledger 引用 task-N-report.md 的 Minor 细节，报告实际无 Minor 段。ledger 记账噪音，非代码问题。
+
+**最终 whole-branch review** 裁定：7 个 fix 挂钩一致——T1 (diag) + T3 (taskKey schema/directive) + T2 (retry symmetry) 闭环确保 AUDIT halts 在两条 dispatchImpl 路径都正确渲染分类 + `.audit/<taskKey>.md` 可定位；T4 `?.` 防御性读在 decideReviewOutcome 全四 halt 分支 + 两文件副本一致。五项全局约束（两文件模型 / CRLF / 365 baseline / B1-10 通用性 / agent 调用数不变）全部满足。
