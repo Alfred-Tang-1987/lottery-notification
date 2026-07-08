@@ -1376,3 +1376,22 @@ test('P0-1: halt() blocked_info 须含顶层 diag 字段（与 finalReport 模�
     'halt() blocked_info 须含顶层 diag: r.diag || {}（与 finalReport 模板 blocked_info.diag.audit_reason 对齐）')
 })
 
+// ===== Task 2 (2026-07-08): specReview prompt return 指令改对象模板（与 specReviewSchema 对齐）=====
+// 旧 prompt return 指令用字符串模板 issues:[<dimension>: <spec requirement>: <code gap or over-build>]，
+// 与 Task 1 新 specReviewSchema()（items 强制对象 + required title/fix + dimension enum）矛盾：
+// LLM 按旧 prompt 返字符串 → schema 拒 → 重试耗限额；或返对象但缺字段不被拦 → [object Object] 复现。
+// 此 TDD 断言用源码字面量守护 prompt 已改为对象模板（specReview prompt 是 run-plans.js 独有 runtime 胶水，
+// 用字面量断言防假绿——与 qualityReviewer 的 issues 元素 object 强制断言同模式）。
+test('specReview prompt return 指令须用对象模板（与 specReviewSchema 对齐，非字符串模板）', () => {
+  // 旧 prompt: issues:[<dimension>: <spec requirement>: <code gap or over-build>]（字符串模板）
+  // 新 prompt: issues:[{dimension: MISSING|EXTRA|MISUNDERSTANDING, severity, title, file, fix}]（对象模板）
+  // 字符串模板与 specReviewSchema 的 items 强制对象矛盾 → LLM 返字符串被 schema 拒 → 重试耗限额。
+  const promptMatch = runSrc.match(/specReview:\s*`([\s\S]*?)`/)
+  assert.ok(promptMatch, '须有 specReview prompt')
+  const prompt = promptMatch[1]
+  assert.doesNotMatch(prompt, /issues:\[<dimension>:/,
+    'specReview prompt 不得再用字符串模板 issues:[<dimension>: ...]')
+  assert.match(prompt, /issues:\[\{dimension:\s*MISSING\|EXTRA\|MISUNDERSTANDING,\s*severity[^}]*title[^}]*file[^}]*fix\}\]/,
+    'specReview prompt 须用对象模板 issues:[{dimension, severity, title, file, fix}]')
+})
+

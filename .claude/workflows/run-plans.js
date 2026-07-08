@@ -813,7 +813,7 @@ function reviewSchema() {
     } }
 }
 
-// qualityReviewer 单独 schema：issues 元素强制对象 {title, fix, severity, file}（specReview 用字符串模板故走 reviewSchema）。
+// qualityReviewer 单独 schema：issues 元素强制对象 {title, fix, severity, file}（specReview 亦已迁出至 specReviewSchema()，issues items 同样强制对象）。
 // items 约束防 LLM 返回纯字符串/缺 fix/用错字段名 → collectReviewFindings 的 it.title||String(it) 兜底为 [object Object]。
 function qualityReviewSchema() {
   return { type: 'object', required: ['status'], additionalProperties: true,
@@ -1038,6 +1038,7 @@ Return {status, evidence:{tests_exit_code, files_changed:[...], pytest_summary},
 - status=needs_context: missing info → fill diagnostics.blocked_category + last_error. evidence is OPTIONAL.
 RED FLAG: tests_exit_code 必须真实，绝不编造 0。绝不跳过测试。遇障碍宁可 blocked 也不要伪造通过。若遇到 model 限额耗尽（quota/rate-limit/429 错误），返回 status:'model_unavailable'（非 failed/blocked），让 orchestrator halt 并保存进度。`,
 
+  // specReview: return 指令用对象模板（与 specReviewSchema 对齐），旧字符串模板已弃用（Task 2, 2026-07-08）。
   specReview: `You are the SPEC-REVIEWER (model opus). Verify implementor built EXACTLY what was requested — nothing missing, nothing extra, no misunderstanding. Verdict on CURRENT working tree (HEAD or staged).
 
 Inputs: specPath={{specPath}} taskId={{taskId}} planFile={{planFilePath}} changedHint={{filesChanged}}{{concernsHint}}
@@ -1068,8 +1069,8 @@ Steps:
 
 {{staticReadonlyNote}}
 
-Return {status (ok|failed), diagnostics:{files_touched:[...], issues:[<dimension>: <spec requirement>: <code gap or over-build>]}, summary}.
-RED FLAG: ok 仅当三维度全清——逐条 spec 全符合 AND 无越界（lessons learned 修复经 Exemption 判定后不算越界）。绝不模糊通过。越界（spec 未要求的功能，尤其是合规红线禁止类如预测/推荐）必须 failed。issues 要具体（哪条 spec + 代码哪里不符/越界 + file:line）。{{quotaHaltNote}}`,
+Return {status (ok|failed), diagnostics:{files_touched:[...], issues:[{dimension: MISSING|EXTRA|MISUNDERSTANDING, severity: critical|important|minor, title, file, fix}]}, summary}.
+RED FLAG: ok 仅当三维度全清——逐条 spec 全符合 AND 无越界（lessons learned 修复经 Exemption 判定后不算越界）。绝不模糊通过。越界（spec 未要求的功能，尤其是合规红线禁止类如预测/推荐）必须 failed。issues 要具体（title 写哪条 spec + 代码哪里不符/越界，file 写 file:line，fix 写修法）。{{quotaHaltNote}}`,
 
   qualityReviewer: `You are the QUALITY-REVIEWER (model opus). Review code quality: architecture, boundaries, types, immutability, error handling, naming. Verdict on CURRENT tree.
 
