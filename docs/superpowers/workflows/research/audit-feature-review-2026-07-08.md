@@ -98,8 +98,8 @@ if (impl?.status === 'needs_audit_fix') return { halted: true, reason: 'audit fi
 
 **状态**：✅ 确认成立
 
-- `specs/2026-07-08-refactor-audit-stage-design.md:184` 要求："A3 报告格式测试：给定含控制流重构的 brief，生成的 `.audit/<taskKey>.md` 必须包含「关键路径」「brief 声明」「注释/被调函数摘要」「判断」四段"
-- `specs/2026-07-08-refactor-audit-stage-design.md:213` 说："AUDIT 清单本身的执行（implementor 实际跑 Grep/Read）无法单测（依赖真实代码状态）"
+- `specs/2026-07-08-refactor-audit-stage-design.md:184`（已归档至 `workflow-plans/archive/`）要求："A3 报告格式测试：给定含控制流重构的 brief，生成的 `.audit/<taskKey>.md` 必须包含「关键路径」「brief 声明」「注释/被调函数摘要」「判断」四段"
+- `specs/2026-07-08-refactor-audit-stage-design.md:213`（已归档）说："AUDIT 清单本身的执行（implementor 实际跑 Grep/Read）无法单测（依赖真实代码状态）"
 
 `.audit/<taskKey>.md` 是 implementor agent 生成的文件，helpers.test.js 纯函数测试无法跑 agent。**spec 内部矛盾**。
 
@@ -135,7 +135,7 @@ if (impl?.status === 'needs_audit_fix') return { halted: true, reason: 'audit fi
 
 **状态**：✅ 确认成立
 
-`specs/2026-07-08-refactor-audit-stage-design.md:126`："运行时的计算与 bootstrap 的 LLM 输出是两层独立 guard"。
+`specs/2026-07-08-refactor-audit-stage-design.md:126`（已归档至 `workflow-plans/archive/`）："运行时的计算与 bootstrap 的 LLM 输出是两层独立 guard"。
 
 两层共享同一 `AUDIT_REFACTOR_KEYWORDS` 正则盲点，runtime fallback 只扫 title+model 不扫 brief body（实现已如实记录：`run-plans.js:1490-1491`, `workflow-design.md:1065`）。"独立"措辞高估了防护独立性。
 
@@ -247,7 +247,7 @@ if (impl?.status === 'needs_audit_fix') return { halted: true, reason: 'audit fi
 
 ### 8.5 修复完成状态（2026-07-08 执行）
 
-修复计划 `docs/superpowers/workflows/plans/2026-07-08-audit-feature-fixes.md` 7 个 Task 全部完成，每 Task 经 SDD（implementer + task reviewer）独立验收，最终 whole-branch review 裁定 **Merge-ready**（无 Critical/Important，3 个 Minor 全 defer/dismiss）。
+修复计划 `docs/superpowers/workflows/plans/2026-07-08-audit-feature-fixes.md`（已归档至 `workflow-plans/archive/`）7 个 Task 全部完成，每 Task 经 SDD（implementer + task reviewer）独立验收，最终 whole-branch review 裁定 **Merge-ready**（无 Critical/Important，3 个 Minor 全 defer/dismiss）。
 
 | Task | 修复项 | Commit | 验收 | 测试增量 |
 |---|---|---|---|---|

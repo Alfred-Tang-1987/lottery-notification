@@ -332,5 +332,6 @@ plan frontmatter 的 `model` 字段决定 implementor 用 sonnet 还是 opus：
 | `workflow.config.json` | 项目配置（命令 + spec_path） |
 | `docs/superpowers/workflow-design.md` | 设计 spec（§1-14 + cross-reviewer surfacing §13j） |
 | `docs/superpowers/workflow-plans/` | workflow 自身的 implementation plan 和 spec（共识矩阵 v1.0→v2.0 简化历程） |
-| `docs/superpowers/workflows/research/` | loop engineering 研究报告 + run-plans.js 评估 |
+| `docs/superpowers/workflow-plans/archive/` | **已整合并归档的历史 design/plan**（2026-07-08）：simplification TDD fix、AUDIT 阶段 design/plan、三维审计修复 plan。设计内容已沉淀进 `workflow-design.md`（§13l/§14/§15）+ `2026-07-07-workflow-consolidated.md`（附录 A），归档原文仅作历史追溯 |
+| `docs/superpowers/workflows/research/` | loop engineering 研究报告 + run-plans.js 评估（含三维审计复核报告，保留不归档） |
 | `.audit/<taskKey>.md` | AUDIT 阶段现场核查记录（refactor task Pre-RED，git 忽略，跨 session 不保证存在） |

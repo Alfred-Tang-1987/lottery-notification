@@ -1697,4 +1697,83 @@ node --test docs/superpowers/workflows/tests/*.test.js
 
 ---
 
+---
+
+## 附录 A：历史批次与归档来源（2026-07-08 整合）
+
+本 plan 是**回顾性 consolidated 文档**，汇编 6 个改进批次。2026-07-07/08 又新增两个批次（simplification TDD fix、AUDIT 阶段）——两者为**前瞻性实施 plan**，已实施完成（代码已落地、测试已绿），其完整 Task 步骤保留在归档原文中。本附录给出批次概览 + 关键 Task 映射 + 归档指针，便于追溯；**实施细节的权威来源是已归档的完整 plan + 当前代码**，本附录不重复逐步骤。
+
+### A.1 run-plans.js 简化与一致性 TDD 修复（16 Task，2026-07-07）
+
+**原文件**：`docs/superpowers/workflow-plans/2026-07-07-simplification-tdd-fix.md`（已归档 `archive/`）
+**设计依据**：`docs/superpowers/specs/2026-07-07-simplification-tdd-fix-design.md`（已归档 `archive/`）
+**审计依据**：`docs/superpowers/workflows/research/run-plans-simplification-audit-2026-07-07.md`（research 目录，保留）
+
+**三批次 16 Task 概览**（严格串行 Batch 1→2→3，307→346 tests）：
+
+| 批次 | 风险 | Task | 内容 | 累计测试 |
+|---|---|---|---|---|
+| Batch 1 | 低（安全网+文档） | T1-T3 | HIGH-1 lesson_categories 补链 + MEDIUM-1 trip-wire 守护 + B1-10 通用性守护 + LOW-1/2/3/4 + S11/S12/S14 清理 | 307→313 |
+| Batch 2 | 中（纯函数抽取） | T4-T11 | S10 taskKey / S4 REVIEW_SOURCES / S9 makeHalt / S6 formatFindingItem / S1 checkImplStatus / S5 formatBulletSection / S7 QUOTA_HALT_NOTE / S8 STATIC_READONLY_NOTE | 313→332 |
+| Batch 3 | 高（runtime 循环拆分） | T12-T16 | S2 recordReviewRound / decideReviewOutcome(10 action) / runFixRound / S3 simplify 三 helper + 主流程集成 | 332→346 |
+
+**与本 plan 的映射**（本 plan Task 覆盖的核心改动 + 本批次复述的位置）：
+- 本 plan **Task 1**（sync.test 骨架）→ 本批次强化 QC-4 `extractFunctionBody`（S9 makeHalt 等）
+- 本 plan **Task 3**（implementor Discipline）→ 本批次 T10/T11（QUOTA_HALT_NOTE / STATIC_READONLY_NOTE prompt 去重）
+- 本 plan **Task 5**（runReviewRound）→ 本批次 T12/T13（recordReviewRound / decideReviewOutcome 抽取，10 action 分支）
+- 本 plan **Task 9**（simplify 方案 C）→ 本批次 T15/T16（checkSimplifyChanges / amendSimplifyCommit / revertSimplifyChanges 三 helper + 主流程集成）
+
+**全量回归命令**：`node --test docs/superpowers/workflows/tests/*.test.js`
+**CRLF 约定**（本项目特定）：commit 前 `perl -i -pe 's/(?<!\r)\n/\r\n/g' <file>`
+
+### A.2 Refactor 类 Task AUDIT 阶段（5 Task，2026-07-08）
+
+**原文件**：`docs/superpowers/workflow-plans/2026-07-08-refactor-audit-stage.md`（已归档 `archive/`）
+**设计依据**：`docs/superpowers/specs/2026-07-08-refactor-audit-stage-design.md`（已归档 `archive/`）
+
+**5 Task 概览**（350→360 tests）：
+
+| Task | 内容 | 新增测试 |
+|---|---|---|
+| T1 | `AUDIT_DIRECTIVE` + `AUDIT_REFACTOR_KEYWORDS` 常量 + haltLikelySource 注释 | +3 |
+| T2 | SCHEMAS `needs_audit_fix` + `audit_reason` + dispatchImpl halt + blocked.md 分类诊断 | +2 |
+| T3 | implementor PROMPTS `{{auditDirective}}` 占位 + buildPrompt defaults 空串 | +2 |
+| T4 | bootstrap `audit_required` 双层 guard + runTask 初始 dispatch 注入 + runtime fallback | +3 |
+| T5 | 文档 §13l + §5 + §13b + §4.4 + `.gitignore` 加 `.audit/` | +0 |
+
+**依赖图**：T1/T2/T3 可并行（独立）→ T4 依赖 T1+T3 → T5 最后。串行 T1→2→3→4→5。
+
+**落地确认**（代码已验证）：
+- `.claude/workflows/run-plans.js:486/503` dispatchImpl 双路径（首层 + retry）对称检查 `needs_audit_fix`
+- `.claude/workflows/run-plans.js:848` SCHEMAS.implementor 含 `taskKey` 字段
+- `.claude/workflows/run-plans.js:212` buildPrompt defaults `auditDirective: ''`
+- `.claude/workflows/run-plans.js:1503` runTask 初始 dispatch 注入 `auditDirective: auditRequired ? AUDIT_DIRECTIVE : ''`
+
+### A.3 三维审计修复（7 Task，2026-07-08）
+
+**原文件**：`docs/superpowers/workflow-plans/2026-07-08-audit-feature-fixes.md`（已归档 `archive/`）
+**审计依据**：`docs/superpowers/workflows/research/audit-feature-review-2026-07-08.md`（research 目录，保留）
+
+**7 Task 概览**（361→368 tests，2 P0 + 5 P1）：
+
+| Task | 优先级 | 内容 |
+|---|---|---|
+| T1 | **P0-1** | halt() blocked_info 加顶层 `diag: r.diag \|\| {}`（修 AUDIT 分类诊断渲染断裂） |
+| T2 | **P0-2** | dispatchImpl retry 路径补 `needs_audit_fix` 检查（与首层对称，防 AUDIT halt 被 retry 吞） |
+| T3 | P1-4 | SCHEMAS.implementor 加 `taskKey` 字段（needs_audit_fix 定位 `.audit/` 报告闭环） |
+| T4 | **P1-5** | decideReviewOutcome budget/maxRounds halt 用 `?.` 防 diagnostics 缺失 TypeError（与 P0-2 同源——被吞的真实 halt reason） |
+| T5 | P1-6 | spec §1/§4.2 软化"两层独立 guard"措辞补诚实边界 |
+| T6 | P1-2 | USAGE.md 同步 AUDIT 阶段（已落地：§7 AUDIT halt 段 + §13 `.audit/`） |
+| T7 | P1-3 | spec §6.1 消除 A3 报告格式测试与免责声明矛盾 |
+
+**落地确认**（代码已验证，全 7 Task 已 commit）：
+- `.claude/workflows/run-plans.js:1341` halt blocked_info 含 `diag: r.diag || {}`（P0-1 ✓）
+- `.claude/workflows/run-plans.js:486/503` 双路径 `needs_audit_fix`（P0-2 ✓）
+- `.claude/workflows/run-plans.js:848` taskKey schema（P1-4 ✓）
+- git log: `4b72bed`(P1-6) / `55fa26a`(P1-2) / `b454271`(P1-3) 已 commit
+
+**裁定不修**（复核 §8.2）：Hunter P1-5（revert diag 漏 commitSha）不成立——:1457 已有；Hunter P1-3（fix-round 不传 auditDirective）不成立——AUDIT 设计上只首轮跑；Spec P1-2（基线 350）不成立——feature 前确为 350。
+
+---
+
 **END OF PLAN**

@@ -1162,3 +1162,60 @@ resume 重跑该 task → bootstrap 重读 plan（含修过的 brief）→ 重�
 - **`fixModelForRound` 无限模式 round>=4 升级 opus**：review 认为"无限模式不应强制 opus，应保持 baseModel"。但设计意图是"前 3 轮没修好说明问题复杂，后续用 opus 提升修复质量"（§5.3 设计理由），且与 §2.4「限额 halt 不降级」纪律一致（是升级而非降级）。spec §5.3 已有明确说明，不修。
 - **`haltLikelySource` 用 Set 替代大正则**：review 认为"Set 查找比正则慢"。但 Set.has 是 O(1) 且代码可读性远优于大正则，P1-8 修复正是为了"防误匹配 + 易维护"。性能差异在 halt 路径（非热路径）可忽略，不修。
 - **`buildPrompt` undefined/null 渲染为空串**：review 认为"应保留 `{{k}}` 占位符以便 debug"。但实现已区分：key 缺失（`k in ctx=false`）保留 `{{k}}` 占位符（debug 用）；key 存在但值为 undefined → 空串（防 `"undefined"` 污染 prompt）。两者并存，不冲突。
+
+## 15. 归档来源索引（design doc 已整合并归档，2026-07-08）
+
+以下 design doc 曾作为独立文件存在，其设计内容已沉淀进本文档对应章节，源文件已移入 `docs/superpowers/workflow-plans/archive/`。本节作为来源指针 + 关键决策摘录，便于追溯历史设计动机；**设计与运行时契约的权威来源仍是本文档 §1-§14 正文**，本节不引入新设计。
+
+### 15.1 run-plans.js 简化与一致性 TDD 修复设计（2026-07-07）
+
+**原文件**：`docs/superpowers/specs/2026-07-07-simplification-tdd-fix-design.md`（已归档）
+**审计依据**：`docs/superpowers/workflows/research/run-plans-simplification-audit-2026-07-07.md`（research 目录，保留）
+**沉淀位置**：§4.4（S10 taskKey）、§2.4（LOW-4 haltLikelySource head restore）、§5.2（B3-2 三 helper）、§5.5（改进 A lesson_categories）、§13b（headVerifier 角色表 LOW-2）、§4.3（分层约束）
+
+**关键决策（D1-D21 摘录，完整记录见归档原文）**：
+
+| # | 决策 | 落地位置 |
+|---|---|---|
+| D1 | 16 项审计发现全根治 | §4.4/§5.2/§5.5 等 |
+| D2-D3 | HIGH-1 只补 `lesson_categories` 提取链 + schema，不动现有 frontmatter | §5.5 改进 A 注 |
+| D4 | sync.test trip-wire 删脆弱点 1（反引号成对性对当前代码即 FAIL），保留 2 个 | §4.3 |
+| D6 | S13 dispatchImpl 不改名（13 处调用点风险高，收益仅命名美化） | §4.3 注 |
+| D10 | checkImplStatus 用 `reasonTemplate`（含 `{status}` 占位符）非 `reasonPrefix`（status 在中间非尾部，逐字对齐） | §5.5 S2 runtime 胶水 |
+| D15 | decideReviewOutcome **10 个 action 分支**（6 halt 子类 reason 区分 + 4 非 halt：break/escalate/continue/fix）；escalate/continue **fall through 到 budget guard**（非 osc 块内早 return，否则无限模式无限跑） | §5.5 / §13g |
+| D16 | runFixRound 不用 checkImplStatus（fix-round 的 blocked/failed/needs_context 都 halt，语义不同于初始 dispatch） | §5.5 S2 runtime 胶水 |
+| D17 | runtime 胶水函数不加新单测（可测逻辑已在 lib.js 纯函数覆盖，靠 sync.test 存在性断言 + 全量回归） | §5.2/§5.5 |
+
+**分层原则（§4.3，本设计强化）**：
+- 纯决策/纯构造函数（不调 `agent()`）→ 必须进 lib.js + 同步 run-plans.js inline 副本，sync.test QC-4 `extractFunctionBody` 字节守护
+- runtime 胶水（调 `agent()`/`safeAgent`/`dispatchImpl`）→ 只能留 run-plans.js（lib.js 是纯模块不能调 runtime 全局）
+- PROMPT 片段常量 → 进 lib.js `PROMPTS` 真源 + run-plans.js inline，`buildPrompt` 注入
+
+**B1-10 通用性守护**（本设计新增）：sync.test 断言 PROMPTS 不得含本项目专有路径/文件名（`lottery`/`notification`/`lessons.md`）——项目特定内容应靠 config 驱动注入。防未来重构误把项目耦合硬编码进通用 workflow。
+
+### 15.2 Refactor 类 Task AUDIT 阶段设计（2026-07-08）
+
+**原文件**：`docs/superpowers/specs/2026-07-08-refactor-audit-stage-design.md`（已归档）
+**沉淀位置**：§5.0（AUDIT 阶段概览）、§13l（完整流程/状态机/局限/与现有机制交互）
+
+**关键决策（D1-D22 摘录）**：
+
+| # | 决策 | 落地位置 |
+|---|---|---|
+| D1 | 仅 refactor 类 task 触发 AUDIT（§0 实测 7/7 缺陷在 refactor 类） | §13l 触发机制 |
+| D2 | 显式标记（`Type: refactor`）+ 关键词**强制**兜底（非警告——警告可被忽略） | §13l 双层 guard |
+| D3 | AUDIT 只收集证据，implementor 判断（「有意变体 vs 缺陷」需语义判断） | §13l 差异分级 |
+| D4/D12 | A3 强制可审计（不管判断一致与否写报告 + Read 被调函数定义摘录注释）——语义漏检无法阻止但可追溯 | §13l A3 强制可审计 |
+| D9 | Type 字段 `trim().toLowerCase()` 归一（避免 `Refactor`/`REFACTOR` 漏触发） | §13l 触发机制 |
+| D11 | 工具/写入失败 → `needs_audit_fix`（无法核查时不能盲跑 RED） | §13l 差异分级 |
+| D15 | runtime 确定性兜底计算 `audit_required`（防 bootstrap 漏读 frontmatter） | §13l 双层 guard |
+| D16 | `needs_audit_fix` 带 `audit_reason` 分类（brief_defect/intentional_variant_unclear/tool_failure） | §13l blocked.md 渲染 |
+| D17 | AUDIT_DIRECTIVE 明确指定 Read/Grep 工具名，禁 shell（跨平台/安全） | §13l 工具约束 |
+| D20 | 不设硬性 token 阈值（不同 refactor task 大小差异大），靠运行时 retryModel 兜底 | §13l 成本 |
+
+**诚实边界（Code Review 2026-07-08，已融入 §13l 局限）**：
+- 两层 guard（bootstrap LLM + runtime 正则）共享相同关键词盲点（非标准措辞如「统一构造」会两层都漏）。
+- runtime fallback 只扫 `task.title`/`task.model` 等 frontmatter 可得字段，**不扫 plan 文件 body 内的 brief**（实现 run-plans.js:1490-1491）。故「独立」指职责分层（LLM vs 确定性正则），非覆盖面互补。
+- §5.1 语义级控制流 bug：AUDIT 不阻止，靠 A3 强制可审计 + 下游 review 事后追溯。
+- §5.2 关键词列表需迭代（每次漏检 controller 24h 内补 REGRESSION 测试）。
+- §5.4 `needs_audit_fix` 是人工 gate，与全自动模式有张力——需 controller 读差异、判断、修 brief、resume。
