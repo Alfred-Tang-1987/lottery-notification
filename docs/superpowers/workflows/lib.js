@@ -913,7 +913,8 @@ export const SCHEMAS = {
     properties: { status: { type: 'string', enum: ['ok', 'failed', 'model_unavailable'] },
       diagnostics: { type: 'object', properties: { files_touched: { type: 'array' },
         silent_failures: { type: 'array', items: {
-          type: 'object', required: ['title', 'fix'],
+          // severity 加 required（S7, 2026-07-08）：防 LLM 省略 severity → formatFindingsHistory L128 severity 排序失效
+          type: 'object', required: ['title', 'fix', 'severity'],
           properties: { title: { type: 'string' }, severity: { type: 'string', enum: ['critical', 'important', 'minor'] }, file: { type: 'string' }, line: { type: 'integer' }, fix: { type: 'string' } },
         } } } },
       summary: { type: 'string' } } },
@@ -966,13 +967,14 @@ function reviewSchema() {
 
 // qualityReviewer 单独 schema：issues 元素强制对象 {title, fix, severity, file}（specReview 亦已迁出至 specReviewSchema()，issues items 同样强制对象）。
 // items 约束防 LLM 返回纯字符串/缺 fix/用错字段名 → collectReviewFindings 的 it.title||String(it) 兜底为 [object Object]。
+// severity 加 required（S7, 2026-07-08）：防 LLM 省略 severity → formatFindingsHistory L128 severity 排序失效。
 function qualityReviewSchema() {
   return { type: 'object', required: ['status'], additionalProperties: true,
     properties: {
       status: { type: 'string', enum: ['ok', 'failed', 'model_unavailable'] },
       diagnostics: { type: 'object', properties: { files_touched: { type: 'array' },
         issues: { type: 'array', items: {
-          type: 'object', required: ['title', 'fix'],
+          type: 'object', required: ['title', 'fix', 'severity'],
           properties: { severity: { type: 'string', enum: ['critical', 'important', 'minor'] }, title: { type: 'string' }, file: { type: 'string' }, fix: { type: 'string' } },
         } } } },
       summary: { type: 'string' },

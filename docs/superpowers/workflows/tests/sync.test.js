@@ -194,6 +194,17 @@ test('run-plans.js inlines review_empty 空响应守卫 + review_failed_no_findi
     'specReviewSchema issues items 须强制对象 + required title/fix')
   assert.match(specSchemaFn, /dimension:\s*\{\s*type:\s*'string',\s*enum:\s*\['MISSING',\s*'EXTRA',\s*'MISUNDERSTANDING'\]/,
     'specReviewSchema 须含 dimension 字段（MISSING/EXTRA/MISUNDERSTANDING 三维度）')
+  // quality/hunter schema severity 须 required（防 LLM 省略 severity → formatFindingsHistory L128 severity 排序失效）
+  // qualityReviewSchema 定义在 SCHEMAS 块外（top-level 工厂函数），故从 runSrc 全文提取函数体
+  // （非 extractSchemas 作用域——SCHEMAS 块只含 qualityReviewSchema() 调用，不含定义）。
+  const qualSchemaFn = runSrc.match(/function qualityReviewSchema\(\)\s*\{[\s\S]*?\n\}/)?.[0] || ''
+  assert.match(qualSchemaFn, /required:\s*\['title',\s*'fix',\s*'severity'\]/,
+    'qualityReviewSchema items 须 required title+fix+severity')
+  // hunter silent_failures 在 SCHEMAS 块内，extractSchemas 可提取。
+  // 闭合 } 带空格（} } }），故用 lookahead 到下一个 top-level key（simplify:）定界。
+  const huntSchemaBlock = extractSchemas(runSrc).match(/hunter:\s*\{[\s\S]*?(?=\n  simplify:)/)?.[0] || ''
+  assert.match(huntSchemaBlock, /required:\s*\['title',\s*'fix',\s*'severity'\]/,
+    'hunter silent_failures items 须 required title+fix+severity')
 })
 
 test('REGRESSION: allGreen break 在 detectOscillation 之前（防收敛误报 OSCILLATING）', () => {

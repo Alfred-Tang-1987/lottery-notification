@@ -25,18 +25,19 @@ test('review schemas require status enum', () => {
 // quality/hunter/specReview 的 issues/silent_failures 元素强制对象 {title, fix}。
 // 防 LLM 返回纯字符串/缺 fix/用错字段名 → collectReviewFindings 兜底为 [object Object]。
 // specReview（S7, 2026-07-08）从 reviewSchema() 迁出至 specReviewSchema()，加 dimension 字段。
-test('qualityReviewer issues items require title + fix', () => {
+// qualityReviewer/hunter severity 加 required（S7, 2026-07-08）：防 LLM 省略 severity → formatFindingsHistory 排序失效。
+test('qualityReviewer issues items require title + fix + severity', () => {
   const items = SCHEMAS.qualityReviewer.properties.diagnostics.properties.issues.items
   assert.equal(items.type, 'object')
-  assert.deepEqual(items.required.sort(), ['fix', 'title'])
+  assert.deepEqual(items.required.sort(), ['fix', 'severity', 'title'])
   assert.ok(items.properties.title, 'qualityReviewer issues item needs title prop')
   assert.ok(items.properties.fix, 'qualityReviewer issues item needs fix prop')
 })
 
-test('hunter silent_failures items require title + fix', () => {
+test('hunter silent_failures items require title + fix + severity', () => {
   const items = SCHEMAS.hunter.properties.diagnostics.properties.silent_failures.items
   assert.equal(items.type, 'object')
-  assert.deepEqual(items.required.sort(), ['fix', 'title'])
+  assert.deepEqual(items.required.sort(), ['fix', 'severity', 'title'])
   assert.ok(items.properties.title, 'hunter silent_failures item needs title prop')
   assert.ok(items.properties.fix, 'hunter silent_failures item needs fix prop')
 })
