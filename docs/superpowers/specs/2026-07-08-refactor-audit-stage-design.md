@@ -183,7 +183,7 @@ run-plans 标榜「全自动执行 plan」。AUDIT 引入可能的人工介入�
 - `AUDIT_DIRECTIVE` 常量导出 + 内容断言（含 5 行表格模板关键词：A1/A2/A3/A4/A5 + `needs_audit_fix` + 工具约束）
 - `haltLikelySource('audit fix needed') === 'unknown'`
 - 新增 `AUDIT_REFACTOR_KEYWORDS` 常量命中测试：命中 `替换`、`refactor`、`extract` 等词时返回 true；纯 feature 词返回 false
-- A3 报告格式测试：给定含控制流重构的 brief，生成的 `.audit/<taskKey>.md` 必须包含「关键路径」「brief 声明」「注释/被调函数摘要」「判断」四段
+- A3 报告格式测试：**不可单测**（.audit/ 报告由 implementor 现场生成，依赖真实代码状态，见本节末 layered-test 盲区注）。改为断言 `AUDIT_DIRECTIVE` 常量文本含 A1-A5 五项 ID + `needs_audit_fix` + `.audit/` + Grep/Read 工具约束（helpers.test 已实现，确保指令指示 implementor 执行完整核查）；`AUDIT_DIRECTIVE` A3 行文本含「关键路径」「brief 声明」「注释摘要」「判断」四段关键词（常量已具备，helpers.test 未逐字断言这四段，属后续加固范畴，本 Plan 不补）；实际报告格式靠端到端 mini-plan 验证（§6.5 完成标准 (a)(b)(c)）。
 - **buildPrompt 占位符测试**：`buildPrompt('implementor', { auditDirective: AUDIT_DIRECTIVE })` 渲染后包含 AUDIT 指令；`buildPrompt('implementor', { auditDirective: '' })` 渲染后无 AUDIT 指令（空串替换占位符）。注：因 `auditDirective` 进 buildPrompt defaults（默认空串），`buildPrompt('implementor', {})` 等价于传空串 → 无 AUDIT 指令、无 `{{auditDirective}}` 残留（非 refactor task prompt 清洁）。不复测 `{}` 的占位符保留行为——它与 defaults 设计冲突，且占位符残留会污染 prompt。
 
 ### 6.2 sync.test 守护
