@@ -164,6 +164,16 @@ get-ts（取时间戳）
 >
 > **会静默丢弃工作树中所有未提交的非 lessons.md 改动**——包括**非工作流的用户改动**。续跑前请确认工作树无重要未提交内容，或用 `git stash` 暂存。
 
+### AUDIT halt（refactor task brief 与现状不一致）
+
+refactor 类 task（plan frontmatter `Type: refactor`，或 brief 含 `替换/去重/抽取/refactor/extract` 等词）在 RED 前 implementor 会先跑 AUDIT 核查 brief 对现状代码的假设。遇以下情况 halt，`reason: audit fix needed`：
+
+- **brief_defect**：brief 的现状假设与代码不符（如声称「4 处可替换」实际 3 处）。Action：修正 plan brief 后全新跑续，bootstrap 会重读重审。
+- **intentional_variant_unclear**：brief 简化说法与现状不完全一致，但无法判定是有意变体还是缺陷。Action：在 brief 标注理由（有意变体）或修正（缺陷）后续跑。
+- **tool_failure**：AUDIT 的 Grep/Read 工具执行失败或 `.audit/` 写入失败。Action：检查文件系统/工具可用性后续跑。
+
+现场核查记录在 `.audit/<taskKey>.md`（git 忽略，跨 session 不保证存在）。halt 详情见 `.workflow/blocked.md`。
+
 ## 7.1 续跑：用「全新跑」，不要用 resumeFromRunId（重要）
 
 **进度以 git 为单一事实源**——**全新跑**时 bootstrap 从 git log 解析已完成的
@@ -237,6 +247,8 @@ review 链 max-rounds halt 后，task 留在「未 commit」状态（implementor
 
 > 该流程正是本项目 Plan-03/T3 实际走过的路径：review halt → 手动修 split-commit 静默失败 +
    stale-numbers bless → commit → spec/quality subagent 复核 → 全新跑从 T4 继续。
+
+> AUDIT halt（`audit fix needed`）同此流程：修 brief → commit（若有代码改动）→ 全新跑续。bootstrap 重读重审，无需 resumeFromRunId。
 
 ## 8. manifest 输出
 
@@ -321,3 +333,4 @@ plan frontmatter 的 `model` 字段决定 implementor 用 sonnet 还是 opus：
 | `docs/superpowers/workflow-design.md` | 设计 spec（§1-14 + cross-reviewer surfacing §13j） |
 | `docs/superpowers/workflow-plans/` | workflow 自身的 implementation plan 和 spec（共识矩阵 v1.0→v2.0 简化历程） |
 | `docs/superpowers/workflows/research/` | loop engineering 研究报告 + run-plans.js 评估 |
+| `.audit/<taskKey>.md` | AUDIT 阶段现场核查记录（refactor task Pre-RED，git 忽略，跨 session 不保证存在） |
