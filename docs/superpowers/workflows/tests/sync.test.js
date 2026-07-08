@@ -1302,6 +1302,25 @@ test('AUDIT: SCHEMAS.implementor 含 needs_audit_fix + audit_reason', () => {
     'run-plans.js SCHEMAS.implementor 须含 audit_reason 顶层字段 + 三枚举值（inline 同步）')
 })
 
+// Task 3 (2026-07-08): P1-4 SCHEMAS.implementor 加 taskKey 字段。
+// dispatchImpl halt diag 读 impl.taskKey（run-plans.js :486/:503），但 SCHEMAS.implementor
+// 未声明该字段 → implementor 多半不回传 → diag.taskKey 恒 undefined → blocked.md 缺
+// .audit/<taskKey>.md 定位。补 schema 字段闭环。
+test('P1-4: SCHEMAS.implementor 须含 taskKey 字段（needs_audit_fix 定位 .audit/ 报告）', () => {
+  function extractSchemas(src) {
+    const m = src.match(/(?:export\s+)?const SCHEMAS = \{[\s\S]*?\n\}/)
+    assert.ok(m, '须含 SCHEMAS 定义')
+    return m[0].replace(/^export\s+/, '')
+  }
+  const libSchemas = extractSchemas(libSrc)
+  const runSchemas = extractSchemas(runSrc)
+  for (const [name, src] of [['lib.js', libSchemas], ['run-plans.js', runSchemas]]) {
+    const impl = src.match(/implementor:\s*\{[\s\S]*?\n\s{4}\}/)?.[0] || ''
+    assert.match(impl, /taskKey:\s*\{\s*type:\s*'string'/,
+      `${name} SCHEMAS.implementor 须含 taskKey 字段（string）`)
+  }
+})
+
 // ===== Task 4 (2026-07-08): bootstrap audit_required 双层 guard + runTask 初始 dispatch 注入 + runtime fallback =====
 // 守护断言：bootstrap prompt 须指示读 task Type 字段（小写归一）+ 扫 refactor 关键词 → audit_required；
 //   Return schema tasks 须含 audit_required；runTask 初始 dispatch 须据 audit_required 传 auditDirective，

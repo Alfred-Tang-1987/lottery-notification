@@ -127,7 +127,7 @@ implementor 在 RED 前先把 AUDIT 结果写到 `.audit/<taskKey>.md`（与 man
 
 ### 4.3 SCHEMAS + dispatchImpl + haltLikelySource
 
-- SCHEMAS.implementor status enum 加 `'needs_audit_fix'`（sentinel，与 `needs_context` 同层——都是「需要外部介入」）。sentinel 同时带一个 `audit_reason` 字段，枚举：`brief_defect` / `intentional_variant_unclear` / `tool_failure`。
+- SCHEMAS.implementor status enum 加 `'needs_audit_fix'`（sentinel，与 `needs_context` 同层——都是「需要外部介入」）。sentinel 同时带一个 `audit_reason` 字段，枚举：`brief_defect` / `intentional_variant_unclear` / `tool_failure`；外加一个 `taskKey` 字段（string，plan-scoped key 如 `plan-04/T4`），needs_audit_fix 时回传，供 blocked.md 定位 `.audit/<taskKey>.md` 报告。
 - dispatchImpl 状态检查加分支：`if (impl.status === 'needs_audit_fix') return { halted: true, reason: 'audit fix needed', diag: impl.diagnostics }`。`diag` 必须包含 `audit_reason`。
 - haltLikelySource 映射加 `audit fix needed → unknown`（audit 差异不涉及工作树脏状态）。
 - 同步更新 `blocked.md` 诊断文案：按 `audit_reason` 给出不同 actionable 提示——`brief_defect` 提示修 brief；`intentional_variant_unclear` 提示确认是否确实是有意变体；`tool_failure` 提示检查文件系统/工具可用性。`needs_audit_fix` 根因说明：brief 与现状代码不一致或无法完成核查。

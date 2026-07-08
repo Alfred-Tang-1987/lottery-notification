@@ -902,6 +902,7 @@ export const SCHEMAS = {
         properties: { tests_exit_code: { type: 'integer' }, files_changed: { type: 'array' }, pytest_summary: { type: 'string' } } },
       diagnostics: { type: 'object', properties: { blocked_category: { type: 'string' }, last_error: { type: 'string' }, suggested_fix: { type: 'string' }, concerns: { type: 'array' } } },
       audit_reason: { type: 'string', enum: ['brief_defect', 'intentional_variant_unclear', 'tool_failure'] },
+      taskKey: { type: 'string', description: 'plan-scoped task key (e.g. plan-04/T4); echo back on needs_audit_fix so blocked.md can locate .audit/<taskKey>.md' },
       summary: { type: 'string' },
     },
   },
@@ -1015,7 +1016,8 @@ export const AUDIT_DIRECTIVE = `## Pre-RED Audit（此 task 标记为 refactor �
 - A1/A2/A5 差异且你能判定为「有意变体」——**必须有证据**（用 Read 读到的 schema 字段/注释/代码逻辑，能解释为何 brief 简化说法与现状不一致但仍合理；仅凭感觉不算）→ 报告标注「有意变体 + 证据」→ 进 RED。
 - A1/A2/A3/A5 差异且判定为「brief 缺陷」→ STOP，status='needs_audit_fix'，diag 含 audit_reason='brief_defect' + 差异清单。
 - 拿不准是有意变体还是缺陷 → STOP，status='needs_audit_fix'，audit_reason='intentional_variant_unclear'（拿不准时阻断比强行实现安全）。
-- 工具执行失败（Grep/Read 报错）或 .audit/ 写入失败 → STOP，status='needs_audit_fix'，audit_reason='tool_failure'（无法核查时不能盲跑 RED）。`
+- 工具执行失败（Grep/Read 报错）或 .audit/ 写入失败 → STOP，status='needs_audit_fix'，audit_reason='tool_failure'（无法核查时不能盲跑 RED）。
+回传：status='needs_audit_fix' 时，response 顶层须带 taskKey 字段（plan-scoped key，如 plan-04/T4，与写入 .audit/<taskKey>.md 的路径同源），供 blocked.md 定位报告。`
 
 // 10 类 agent prompt 模板（§13b）。{{key}} 由 buildPrompt(role, ctx) 填充。
 export const PROMPTS = {
