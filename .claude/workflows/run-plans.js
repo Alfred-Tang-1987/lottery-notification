@@ -1331,6 +1331,8 @@ async function halt(plan, task, r) {
       likely_source: haltLikelySource(r.reason),
       failed_approach: { task_id: tid, reason: r.reason, error: r.diag?.last_error || r.reason },
       raw: r.diag || {},
+      // diag 与 raw 同源异职：raw=全量 dump 兜底（保留现有消费方），diag=与 finalReport 模板 blocked_info.diag.audit_reason 读取路径对齐
+      diag: r.diag || {},
     }
   })
   phase('Finalize')

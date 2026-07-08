@@ -1325,3 +1325,11 @@ test('AUDIT runTask: 初始 dispatch 据 audit_required 传 auditDirective + run
   assert.match(runTaskBody, /AUDIT_REFACTOR_KEYWORDS/, 'runTask 须含 runtime fallback 正则（D15）')
 })
 
+// ===== Task 1 (2026-07-08): P0-1 halt() blocked_info 顶层 diag 字段 =====
+// finalReport blocked.md 模板读 blocked_info.diag.audit_reason（audit fix needed halt 分类渲染）。
+// halt() 须把 r.diag 同时写入 raw（全量 dump）与 diag（结构化键），否则 audit_reason 分类诊断永不渲染。
+test('P0-1: halt() blocked_info 须含顶层 diag 字段（与 finalReport 模板读取路径对齐）', () => {
+  assert.match(runSrc, /blocked_info:\s*\{[\s\S]*?diag:\s*r\.diag \|\| \{\}/,
+    'halt() blocked_info 须含顶层 diag: r.diag || {}（与 finalReport 模板 blocked_info.diag.audit_reason 对齐）')
+})
+
