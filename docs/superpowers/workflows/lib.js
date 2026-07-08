@@ -137,11 +137,12 @@ export function issuesFromReviews(...reviews) {
 // reviewHaltForEmptyFailed 共用，避免两处重复 push 逻辑漂移）。
 // 非 failed 或无 diagnostics → 返回 []。items 归一化同 collectReviewFindings。
 // W1-5b: file 字段经 normalizeFilePath 归一化，防跨 reviewer 路径格式差异致重叠检测漏报。
+// 兜底从 String(it) 改 JSON.stringify(it)（S7, 2026-07-08）：对象序列化为可读 JSON 而非零信息 [object Object]。
 function findingsOf(r, source, key) {
   if (!r || r.status !== 'failed') return []
   const out = []
   for (const it of (r.diagnostics?.[key] || [])) {
-    if (it && typeof it === 'object') out.push({ source, severity: it.severity, title: it.title || String(it), file: normalizeFilePath(it.file), fix: it.fix })
+    if (it && typeof it === 'object') out.push({ source, severity: it.severity, title: it.title || JSON.stringify(it), file: normalizeFilePath(it.file), fix: it.fix })
     else out.push({ source, title: String(it) })
   }
   return out
