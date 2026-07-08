@@ -1407,7 +1407,7 @@ test('S2 decideReviewOutcome: osc + flipFlop → halt OSCILLATING', () => {
 
 test('S2 decideReviewOutcome: maxRounds=0 budget guard → halt review_not_converging', () => {
   // 无限模式 maxRounds=0 + round>=budget(默认 5) → halt review_not_converging
-  // 注：budget/maxRounds halt 分支用 qual.diagnostics/hunt.diagnostics（非 ?.），须传真实 review 对象（与 run-plans.js 原代码一致）
+  // review.diagnostics 可选（schema 非强制），budget/maxRounds halt 分支用 ?. 兜底（与 reviewReason/emptyFailed 一致）
   const state = mkState({ filesTouched: [['a.ts']] })
   const out = decideReviewOutcome(state, 'plan-01/T1', 5, failedSpec, failedSpec, failedSpec, 'opus', 0, {}, null, null)
   assert.equal(out.action, 'halt')
@@ -1418,12 +1418,28 @@ test('S2 decideReviewOutcome: maxRounds=0 budget guard → halt review_not_conve
 
 test('S2 decideReviewOutcome: round===maxRounds (finite) → halt review max rounds', () => {
   // 有限模式 round===maxRounds → halt review max rounds
-  // 注：budget/maxRounds halt 分支用 qual.diagnostics/hunt.diagnostics（非 ?.），须传真实 review 对象（与 run-plans.js 原代码一致）
+  // review.diagnostics 可选（schema 非强制），budget/maxRounds halt 分支用 ?. 兜底（与 reviewReason/emptyFailed 一致）
   const state = mkState({ filesTouched: [['a.ts']] })
   const out = decideReviewOutcome(state, 'plan-01/T1', 4, failedSpec, failedSpec, failedSpec, 'sonnet', 4, {}, null, null)
   assert.equal(out.action, 'halt')
   assert.equal(out.reason, 'review max rounds')
   assert.equal(out.diag.round, 4)
+})
+
+test('P1-5: decideReviewOutcome budget halt 对 null/无 diagnostics 的 review 不 TypeError（防御性 ?.）', () => {
+  // review agent 偶尔未运行 → spec/qual/hunt 可能为 null；SCHEMAS 中 diagnostics 非强制（LLM 偶省略）。
+  // budget/maxRounds halt 须用 ?.（与 reviewReason/emptyFailed 分支 spec?.diagnostics 一致），
+  // 防 TypeError 被顶层 catch 吞为 agent_error，丢失真实 review_not_converging/review max rounds reason。
+  const state = mkState({ filesTouched: [['a.ts']] })
+  const reviewNoDiag = { status: 'failed' }  // 无 diagnostics 字段
+  // spec 传真实对象（allGreen=false → 落入 budget guard），qual/hunt 传 null（模拟 review agent 未运行）
+  const out = decideReviewOutcome(state, 'plan-01/T1', 5, reviewNoDiag, null, null,
+    'sonnet', 0, {}, null, null)  // maxRounds=0, round>=budget(5)
+  assert.equal(out.action, 'halt')
+  assert.equal(out.reason, 'review_not_converging')
+  assert.equal(out.diag.spec, undefined)  // reviewNoDiag.diagnostics === undefined（无该字段）
+  assert.equal(out.diag.qual, undefined)  // null?.diagnostics === undefined（?. 兜底，非 TypeError）
+  assert.equal(out.diag.hunt, undefined)
 })
 
 // 4 非 halt

@@ -187,9 +187,9 @@ function decideReviewOutcome(state, taskKey, round, spec, qual, hunt, model, max
   }
   if (maxRounds === 0) {
     const budget = resolveReviewBudget(cfg)
-    if (round >= budget) return { action: 'halt', reason: 'review_not_converging', diag: { round, budget, findings_history: state.perTask[taskKey].findings_history, spec: spec.diagnostics, qual: qual.diagnostics, hunt: hunt.diagnostics } }
+    if (round >= budget) return { action: 'halt', reason: 'review_not_converging', diag: { round, budget, findings_history: state.perTask[taskKey].findings_history, spec: spec?.diagnostics, qual: qual?.diagnostics, hunt: hunt?.diagnostics } }
   } else if (round === maxRounds) {
-    return { action: 'halt', reason: 'review max rounds', diag: { round, findings_history: state.perTask[taskKey].findings_history, spec: spec.diagnostics, qual: qual.diagnostics, hunt: hunt.diagnostics } }
+    return { action: 'halt', reason: 'review max rounds', diag: { round, findings_history: state.perTask[taskKey].findings_history, spec: spec?.diagnostics, qual: qual?.diagnostics, hunt: hunt?.diagnostics } }
   }
   return action === 'escalate' ? { action, model: 'opus' } : { action }  // 'fix' / 'escalate'(含 model) / 'continue'
 }
