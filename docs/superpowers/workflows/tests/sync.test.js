@@ -99,6 +99,10 @@ test('QC-4: 关键 helper 函数体 lib.js ↔ run-plans.js 字节一致', () =>
     // Task 3 (2026-07-08): buildPrompt 默认参数含 auditDirective: ''（fix-round/retry 路径经 implCtx 调用）
     //   默认值若两端漂移 → {{auditDirective}} 残留进 prompt。须字节守护。
     'buildPrompt',
+    // S7 (2026-07-08): schema 工厂函数 byte-guard。SCHEMAS 整块字节比较只含 specReview:
+    //   specReviewSchema() 等 *调用*，不含函数 *定义*——若开发者改 specReviewSchema() 函数体
+    //   但漏同步 run-plans.js inline 副本，QC-4b SCHEMAS 整块比较不会捕获。须独立 byte-guard 函数体。
+    'specReviewSchema', 'qualityReviewSchema', 'reviewSchema',
   ]
   for (const fn of fns) {
     const libBody = extractFunctionBody(libSrc, fn)
