@@ -25,3 +25,6 @@ graphify-out/
 
 # AUDIT 阶段报告（refactor 类 task Pre-RED 核查，每次重跑覆盖写，不入版本控制）
 .audit/
+
+# SDD (subagent-driven-development) scratch files（task briefs/reports/review-diff packages/progress ledger，session 内派生物，跨 session 不保留）
+.superpowers/
