@@ -497,6 +497,10 @@ async function dispatchImpl(prompt, opts, model, retryModel = null) {
         // Q1（第 4 轮）: retry 路径须检查 model_unavailable status（与首次调用一致）
         //   retryModel 也限额耗尽 → 返回 {status:'model_unavailable'} → 调用方访问 impl.evidence crash
         if (impl != null) {
+          // P0-2: retry 路径须与首层对称检查 needs_audit_fix，防 AUDIT halt 被 retry 吞。
+          //   首次 null（限额吞）→ retry opus → AUDIT 跑出 needs_audit_fix → 旧代码当成功 return impl
+          //   → 调用方 `if (impl.halted)` 拿到非 halted 对象 → review loop 在错误工作树上跑。
+          if (impl?.status === 'needs_audit_fix') return { halted: true, reason: 'audit fix needed', diag: { ...impl.diagnostics, audit_reason: impl.audit_reason, taskKey: impl.taskKey } }
           if (impl?.status === 'model_unavailable') return { halted: true, reason: 'model_unavailable', diag: impl.diagnostics }
           return impl
         }

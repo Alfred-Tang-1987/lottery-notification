@@ -145,6 +145,24 @@ test('AUDIT: dispatchImpl 对 needs_audit_fix 返回 halt + diag 含 audit_reaso
     'dispatchImpl needs_audit_fix halt 分支必须在 model_unavailable 检查之前（更具体 status 先查）')
 })
 
+test('P0-2: dispatchImpl retry 路径须检查 needs_audit_fix（与首层对称）', () => {
+  // retry 升 opus 跑 AUDIT 发现 brief 缺陷返回 needs_audit_fix 时，
+  // retry 分支不得当成功 return impl——须与首层（:486）对称 halt。
+  // 否则：首次 null（限额吞）→ retry opus → AUDIT needs_audit_fix → 当成功 → review loop 在错误工作树上跑。
+  const body = extractDispatchImpl(runSrc)
+  // retry 块（impl = await agent(prompt, { ...opts, model: retryModel }) 之后）
+  const retryAgentIdx = body.indexOf('model: retryModel')
+  assert.ok(retryAgentIdx > -1, '须有 retry 分支（model: retryModel）')
+  const retryBlock = body.slice(retryAgentIdx)
+  // retry 块内须有 needs_audit_fix 检查，且在 model_unavailable 之前
+  const retryAuditIdx = retryBlock.indexOf("impl?.status === 'needs_audit_fix'")
+  const retryMuIdx = retryBlock.indexOf("impl?.status === 'model_unavailable'")
+  assert.ok(retryAuditIdx > -1, 'retry 路径须有 needs_audit_fix status 检查')
+  assert.ok(retryMuIdx > -1, 'retry 路径须有 model_unavailable status 检查')
+  assert.ok(retryAuditIdx < retryMuIdx,
+    'retry 路径 needs_audit_fix 检查必须在 model_unavailable 之前（与首层对称）')
+})
+
 test('SH2: distiller 是 halt() 中独立 agent 调用（S5 第 5 轮：单次 agent 调用，非 agentWithFallback）', () => {
   // S5（第 5 轮）: spec §2.4 fallback 链 [opus,sonnet,haiku] 仅用于 finalReport 保存进度；
   //   distiller 是 lesson 提炼通道（非进度保存），改用单次 agent() 调用（model: 'opus'），
