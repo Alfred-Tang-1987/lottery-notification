@@ -1217,7 +1217,9 @@ This is a STATIC READ-ONLY review. You may use 'git status', 'git diff', 'find',
 
 Return {status (ok|failed), diagnostics:{files_touched:[...], silent_failures:[{title, severity (critical|important|minor), file, line?, fix}]}, summary}.
 silent_failures 元素 MUST 是 object（必有 title + fix；file 强烈建议；severity 可选默认 important）——纯字符串或不带 fix 的对象会被 schema 拒绝。
-RED FLAG: 只报真正的静默失败（会导致 bug 被隐藏），不报刻意的优雅降级（有日志+合理 fallback）。{{quotaHaltNote}}`,
+RED FLAG: 只报真正的静默失败（会导致 bug 被隐藏），不报刻意的优雅降级（有日志+合理 fallback）。
+**STATUS DETERMINATION (HARD RULE — 2026-07-07 W3): silent_failures 数组非空 → status=failed；silent_failures 数组为空 → status=ok。severity 不影响 status 判定——critical/important/minor 任一 finding 都触发 failed。禁止"报了 finding 却 status=ok"的矛盾输出。**
+**优雅降级判定（与静默失败的区分）**：刻意的优雅降级须同时满足：① 有显式日志（log.warning/error，非注释/print 到 stdout）；② fallback 值类型正确且对调用方有意义（如 1.0x 乘数保留基础金额）。两者缺一即为静默失败。例如 "if not mapping: return 1.0" 无日志 → 静默失败（非优雅降级）。{{quotaHaltNote}}`,
 
   simplify: `You are SIMPLIFY. Reduce code: dedupe, remove dead code, tighten naming, lower complexity. Behavior MUST be preserved (tests still pass). Be honest about whether you changed anything.
 
