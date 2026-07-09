@@ -1,4 +1,5 @@
 // workflow orchestrator —— 多 plan 自动执行（workflow-design.md §4/§5/§13）
+// DO NOT EDIT — generated from workflow-engine@cb09dd146325b76a87bd5a18d0c2b73a54ecca1d5038e87fa1ac780a9358d03f by sync.mjs
 // 纯函数/SCHEMAS/PROMPTS inline 自 docs/superpowers/workflows/lib.js —— 改 lib 必须同步改这里。
 // 顶层 await = Workflow 入口；agent/parallel/phase/log/args 为 Workflow runtime 注入的全局。
 // 分层：纯决策（classifyThrown/reviewHaltReason/collectReviewFindings 等）进 lib.js 可 node:test 测；
