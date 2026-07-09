@@ -71,14 +71,18 @@
 │       ├── USAGE.md
 │       ├── research/
 │       ├── workflow-plans/       ← engine 自身历史 plan
+│       ├── .gitattributes        ← 强制 LF
 │       ├── examples/
 │       │   ├── workflow.config.example.json
 │       │   ├── lessons.seed.md
 │       │   └── plan-frontmatter.example.md
 │       ├── scripts/
+│       │   ├── common.mjs
 │       │   ├── sync.mjs
 │       │   ├── pre-commit-sync-check.sh
-│       │   └── session-start-check.sh
+│       │   ├── pre-commit-sync-check.mjs
+│       │   ├── session-start-check.sh
+│       │   └── init-consumer.mjs
 │       ├── README.md
 │       └── package.json
 ├── workflow.config.json          ← 项目特定（从 example 拷贝后改）
@@ -114,33 +118,52 @@ named-workflow 按 `.claude/workflows/*.js` 枚举（非递归扫 `.claude/`）�
 
 ### 4.1 一次性初始化（新项目接入）
 
-> 以下命令中的 `<engine-repo-url>`、`<sha>`、`<new-sha>` 为运行时变量，接入时替换为实际值：`<engine-repo-url>` = `c:/Users/Alfred/Documents/projects/run-plans-engine`（本地阶段）或 Gitea 远程 URL（阶段四后）；`<sha>` 由 sync.mjs 自动计算并输出，无需手填。
+> 本地阶段 `<engine-repo-url>` = `file:///C:/Users/Alfred/Documents/projects/run-plans-engine`（Windows 格式），后续推远程后替换为 Gitea URL。
 
 ```bash
 # 1. 添加 engine submodule
-git submodule add <engine-repo-url> .claude/workflow-engine
+git submodule add file:///C:/Users/Alfred/Documents/projects/run-plans-engine .claude/workflow-engine
 git commit -m "chore(workflow): add run-plans-engine submodule"
 
-# 2. 生成 .claude/workflows/run-plans.js（named-workflow 注册位置）
-node .claude/workflow-engine/scripts/sync.mjs
+# 2-5. 使用 init-consumer 脚手架一键完成 sync、拷贝 examples、安装 hooks
+node .claude/workflow-engine/scripts/init-consumer.mjs
 
-# 3. commit 派生产物
-git add .claude/workflows/run-plans.js
-git commit -m "chore(workflow): sync run-plans.js from engine@<sha>"
-
-# 4. 从模板拷贝项目特定配置并改
-cp .claude/workflow-engine/examples/workflow.config.example.json workflow.config.json
-cp .claude/workflow-engine/examples/lessons.seed.md docs/superpowers/lessons.md
-# 编辑 workflow.config.json：填 test_command/full_test_command/spec_path/language 等
-# 编辑 lessons.md：保留通用静默失败模式 + 追加项目特定 lessons
-
-# 5. 安装 pre-commit gate
-cp .claude/workflow-engine/scripts/pre-commit-sync-check.sh .git/hooks/pre-commit
-chmod +x .git/hooks/pre-commit
-
-# 6. （可选）安装 SessionStart 提醒
-cp .claude/workflow-engine/scripts/session-start-check.sh <某处>  # 见 §5.4
+# 3. 提交变更（如果 init-consumer 已自动 stage，则直接 commit）
+git commit -m "chore(workflow): init run-plans-engine consumer"
 ```
+
+`init-consumer.mjs` 会：
+- 检查并添加 submodule（已存在则跳过）
+- 运行 `sync.mjs` 生成 `.claude/workflows/run-plans.js`
+- 拷贝 `examples/workflow.config.example.json` → `workflow.config.json`
+- 拷贝 `examples/lessons.seed.md` → `docs/superpowers/lessons.md`
+- 安装 pre-commit hook：若已有 `.git/hooks/pre-commit`，先检查是否已包含 `pre-commit-sync-check` 调用；若已包含则跳过安装，否则备份后合并。保证 `init-consumer` 幂等可重试。
+- 可选安装 SessionStart hook（询问用户，默认不安装）
+
+手动 6 步（旧版）仍保留在 engine 仓库的 `USAGE.md` 中作为参考。
+
+### 4.1.1 必须步骤：根据消费仓库编辑 workflow.config.json
+
+**`workflow.config.json` 是项目特定配置，拷贝自 example 后必须根据消费仓库自身情况编辑，否则 workflow 无法正确运行。** `init-consumer.mjs` 拷贝后会在文件头注入 `// TODO: edit me` 标记，并打印醒目提示。
+
+必须编辑的字段（example 中留占位）：
+
+| 字段 | 含义 | lottery-notification 示例 | OTC-Fund-SIP-Strategy 示例 |
+|---|---|---|---|
+| `test_command` | 单文件测试命令 | `python -m pytest {file} -x` | `python -m pytest {file} -x` |
+| `full_test_command` | 全量测试命令 | `python -m pytest` | `python -m pytest` |
+| `lint_command` | lint 命令 | `ruff check .` | `ruff check .` |
+| `spec_path` | spec 目录 | `docs/superpowers/specs` | `docs/superpowers/specs` |
+| `plans_dir` | plan 目录 | `docs/superpowers/plans` | `docs/superpowers/plans` |
+| `language` | 主语言 | `python` | `python` |
+| `silent_failure_context` | 项目特定的静默失败上下文 | 彩票 DB 5 条纪律 | 基金定投特定纪律 |
+
+**init-consumer 的 config 守护**：
+- 若 `workflow.config.json` 仍含 `// TODO: edit me` 标记，`init-consumer.mjs` 退出时打印警告："workflow.config.json 未编辑，workflow 将无法正确运行。请编辑后再提交。"
+- pre-commit hook（gate 2）在 commit 时也检查此标记：若仍存在则拒绝 commit 并提示编辑。
+- 这避免"拷贝了 example 就直接 commit，导致 workflow 跑起来用错 test_command"的静默失败。
+
+**跨平台注意**：`test_command` / `lint_command` 在 Windows 和 Mac 上可能不同（如 `python` vs `python3`）。若消费仓库跨平台开发，建议在 `workflow.config.json` 中用平台无关命令，或通过 `scripts/` 包装脚本分发。
 
 ### 4.2 触发 workflow（与现状完全一致）
 
@@ -182,44 +205,35 @@ git commit -m "chore(workflow): bump run-plans-engine@<new-sha>"
 | 方案 | 触发时机 | 自动化 | 评估 |
 |---|---|---|---|
 | A. 纯手动 | 消费项目主动 submodule update + sync + commit | 全手动 | 不够 |
-| **B. pre-commit 自动 sync** | git commit 时检测 engine 已更新但产物漂移 → 自动跑 sync + stage 产物 → 允许 commit | **半自动（commit 时自愈）** | **采用** |
+| **B. pre-commit 自动 sync** | git commit 时检测 engine 已更新但产物漂移 → 自动跑 sync + stage 产物 → 退出非零要求重新提交 | **半自动（commit 时自愈）** | **采用** |
 | **C. SessionStart hook 提醒** | Claude Code session 开始 → 检测 engine 远程是否有新 commit → 有则提醒 | **提醒式（不改工作树）** | **采用** |
-| D. 远程 CI 自动 PR | engine push → Gitea Actions 向消费仓库提 PR | 全自动 | 当前规模不划算（2 个消费仓库，CI 配置成本 > 收益） |
+| D. 远程 CI 自动 PR | engine push → Gitea Actions 向消费仓库提 PR | 全自动 | 当前规模不划算（2 个消费仓库，CI 配置成本 > 收益），已记入 TODOS.md |
 
-**B 解决"忘记 sync"**：用户只需 `git submodule update --remote`，下次 commit 时 pre-commit hook 自动检测 run-plans.js 漂移 → 跑 sync 脚本 → 把更新后的产物 stage 进当前 commit。
+**B 解决"忘记 sync"**：用户只需 `git submodule update --remote`，下次 commit 时 pre-commit hook 自动检测 run-plans.js 漂移 → 跑 sync 脚本 → 把更新后的产物 stage 进当前 commit，然后退出非零要求重新提交。
 
 **C 解决"不知道 engine 有更新"**：SessionStart hook 跑 `git -C .claude/workflow-engine fetch && git log HEAD..origin/main --oneline`，有新 commit 则提示。只提醒不改工作树。
 
 ### 5.2 B 的 pre-commit 脚本逻辑
 
-```bash
-#!/bin/bash
-# .git/hooks/pre-commit — engine 漂移自动 sync
-ENGINE=".claude/workflow-engine"
-SRC="$ENGINE/run-plans.js"
-DERIVED=".claude/workflows/run-plans.js"
+消费项目由 `init-consumer` 生成的 `.git/hooks/pre-commit` 是一个 `#!/usr/bin/env node` 入口脚本，调用 engine 仓库的 `scripts/pre-commit-sync-check.mjs`：
 
-if [ ! -f "$SRC" ] || [ ! -f "$DERIVED" ]; then exit 0; fi
-
-src_sha=$(sha256sum "$SRC" | cut -d' ' -f1)
-derived_marked_sha=$(head -3 "$DERIVED" | grep -oE '@sha [a-f0-9]+' | cut -d' ' -f2)
-
-if [ "$src_sha" != "$derived_marked_sha" ]; then
-  echo "⚠ run-plans.js 与 engine 源不一致，自动 sync..."
-  if ! node "$ENGINE/scripts/sync.mjs"; then
-    echo "ERROR: sync 脚本失败，请手动排查"
-    exit 1
-  fi
-  git add "$DERIVED"
-  echo "✓ 已 sync run-plans.js 并 stage"
-fi
+```javascript
+// pre-commit-sync-check.mjs 核心逻辑
+// 1. 读取派生文件头 @sha
+// 2. 计算 canonical run-plans.js 的 sha256（Node crypto）
+// 3. 若不一致：运行 sync.mjs → stage 派生文件 → exit 1（要求重新提交）
+// 4. 若一致：检查 workflow.config.json 是否仍含 // TODO: edit me 标记
+//    - 若含：exit 1 + 提示"请先编辑 workflow.config.json 再提交"（§4.1.1）
+//    - 若不含：exit 0
 ```
+
+engine 仓库同时提供 POSIX 参考实现 `pre-commit-sync-check.sh`（供非 Windows 环境或手动安装）。
 
 ### 5.3 安全约束
 
 - pre-commit 只自动 stage `.claude/workflows/run-plans.js` 这一个派生文件（绝不 `git add -A`）
 - sync 脚本失败 → 退出非零阻断 commit（不静默放过）
-- 派生文件头注入 `@sha` 标注，让 gate 3（bootstrap warning）与 gate 2 可比对
+- 派生文件头注入 `@sha` 标注，让 gate 2 可比对
 
 ### 5.4 C 的 SessionStart 提醒逻辑
 
@@ -241,23 +255,7 @@ if [ -n "$NEW_COMMITS" ]; then
 fi
 ```
 
-集成方式：在消费项目的 `.claude/settings.json` 注册 SessionStart hook 调用此脚本（输出会被 Claude Code session 启动时读取）。
-
-## 6. Gate 控（三层防漂移）
-
-| gate | 位置 | 作用 | 强制性 |
-|---|---|---|---|
-| gate 1：引擎 sync.test | 通用仓库 CI | 守护 canonical run-plans.js 与 lib.js 字节一致（现有 sync.test 机制，路径调整后保留） | 引擎开发者侧强制 |
-| gate 2：消费项目 pre-commit hook | 消费项目 `.git/hooks/pre-commit` | 检测 run-plans.js 漂移 → 自动 sync + stage（§5.2） | 消费项目开发者侧强制 |
-| gate 3：bootstrap agent 启动 warning | run-plans.js bootstrap 阶段 | 读派生文件头 `@sha` 与 submodule HEAD 比对，不符 log warning（不 halt） | 软提醒 |
-
-**为什么 gate 3 设为软提醒而非 halt**：bootstrap agent 已有大量 halt 路径（quota/OSCILLATING/audit 等），engine 版本不一致是"派生物可能过期"而非"运行时错误"，halt 会过度阻断开发。warning 进 manifest 供事后核查即可。
-
-> **gate 3 的实现范围**：gate 3 需要 engine 代码本身的小幅改动（bootstrap 读派生文件头 `@sha` + 比对 submodule HEAD 的 run-plans.js sha256）。**本次迁移不实现 gate 3**——保持 engine 代码零改动（§7.2 唯一改代码处仅为 sync.test.js 路径调整），仅交付 gate 1（引擎 sync.test）+ gate 2（消费项目 pre-commit 自愈）双层防护。gate 3 作为**后续可选增强**，待双层防护实际运行一段时间、确认需要运行时软提醒时再单独迭代。
-
-### 6.1 SessionStart hook 集成方式
-
-§5.4 的 `session-start-check.sh` 通过 Claude Code 的 hooks 机制集成。在消费项目的 `.claude/settings.json` 中注册：
+集成方式：在消费项目的 `.claude/settings.json` 中注册：
 
 ```json
 {
@@ -273,6 +271,32 @@ fi
 ```
 
 Claude Code 在 session 启动时执行此命令，脚本的 stdout 会被注入 session 上下文作为提醒。脚本只读 git 状态、不改工作树，符合 SessionStart hook 的安全约束。
+
+## 6. Gate 控（双层防漂移）
+
+| gate | 位置 | 作用 | 强制性 |
+|---|---|---|---|
+| gate 1：引擎 sync.test | 通用仓库 `tests/` | 守护 canonical `run-plans.js` 与 `lib.js` 字节一致（现有 sync.test 机制，路径调整后保留） | 引擎开发者侧强制 |
+| gate 2：消费项目 pre-commit hook | 消费项目 `.git/hooks/pre-commit` | 检测 `run-plans.js` 漂移 → 自动 sync + stage，并退出非零要求重新提交（§5.2） | 消费项目开发者侧强制 |
+
+说明：Gate 3（bootstrap 运行时软提醒）在 CEO review 中曾被考虑，但 Claude Code Workflow runtime 禁止 `run-plans.js` 在运行时读取文件系统，因此无法在 bootstrap 中实现。已移除。
+
+### 6.1 为什么两层已足够
+
+- **Gate 1** 保证 canonical `run-plans.js` 与 `lib.js` 字节一致（引擎仓库内）。
+- **Gate 2** 保证消费项目提交时派生文件与 engine 源一致。
+- **`init-consumer.mjs` 自动安装 hook** 解决「忘记安装 pre-commit」问题。
+- 如果 hook 被绕过，这是团队纪律问题，而非技术问题；文档中明确禁止手改派生文件。
+
+### 6.2 `@sha` 文件头格式（gate 2 辅助）
+
+`sync.mjs` 在派生文件第二行注入：
+
+```
+// DO NOT EDIT — generated from workflow-engine@<sha256> by sync.mjs
+```
+
+Gate 2 的 pre-commit 脚本读取该 header，与 canonical `run-plans.js` 的 sha256 比对。缺失 `@sha` 时按 drift 处理，重新 sync。
 
 ## 7. 迁移执行计划
 
@@ -296,12 +320,16 @@ Claude Code 在 session 启动时执行此命令，脚本的 stdout 会被注入
 
 | 路径 | 作用 |
 |---|---|
+| `.gitattributes` | 强制 LF 行尾，避免 Windows CRLF 问题影响 sync.test 字节守护和 hook 执行 |
 | `examples/workflow.config.example.json` | 从 lottery 的 config 抽通用字段（test/lint/spec_path/language 留占位） |
 | `examples/lessons.seed.md` | 通用静默失败模式（bare except / split-commit / savepoint 等跨项目通用项） |
 | `examples/plan-frontmatter.example.md` | plan frontmatter 示例（含 model 字段） |
-| `scripts/sync.mjs` | 复制 run-plans.js → 目标 + 注入 @sha 头 |
-| `scripts/pre-commit-sync-check.sh` | gate 2：漂移自愈 |
+| `scripts/common.mjs` | 共享：提取 `@sha`、计算 sha256（sync.mjs 与 gate 2 复用） |
+| `scripts/sync.mjs` | 复制 run-plans.js → 目标 + 注入 @sha 头（使用 Node crypto） |
+| `scripts/pre-commit-sync-check.sh` | gate 2：漂移自愈（POSIX 参考实现） |
+| `scripts/pre-commit-sync-check.mjs` | gate 2：跨平台 Node 入口（init-consumer 生成 hook 时调用） |
 | `scripts/session-start-check.sh` | gate C：engine 更新提醒 |
+| `scripts/init-consumer.mjs` | 新项目接入脚手架（submodule + sync + examples + hook） |
 | `README.md` | 仓库说明 + 快速接入指引 |
 
 ### 7.2 sync.test.js 路径调整
@@ -317,7 +345,7 @@ const runSrc = fs.readFileSync(
 const runSrc = fs.readFileSync(path.resolve(__dirname, '../run-plans.js'), 'utf8')
 ```
 
-其余断言逻辑不变。
+其余断言逻辑不变。但在迁移后，需要检查所有 260+ tests 是否还有硬编码的消费项目路径，不只是 `sync.test.js`。
 
 ### 7.3 sync.mjs 核心逻辑
 
@@ -325,7 +353,7 @@ const runSrc = fs.readFileSync(path.resolve(__dirname, '../run-plans.js'), 'utf8
 // scripts/sync.mjs — 复制 canonical run-plans.js 到消费项目的 .claude/workflows/
 import fs from 'node:fs'
 import path from 'node:path'
-import { execSync } from 'node:child_process'
+import { computeSha256 } from './common.mjs'
 
 const ENGINE_ROOT = path.resolve(import.meta.dirname, '..')
 const SRC = path.join(ENGINE_ROOT, 'run-plans.js')
@@ -333,8 +361,8 @@ const SRC = path.join(ENGINE_ROOT, 'run-plans.js')
 const CONSUMER_ROOT = path.resolve(ENGINE_ROOT, '../..')
 const DEST = path.join(CONSUMER_ROOT, '.claude', 'workflows', 'run-plans.js')
 
-// 计算 engine HEAD 的 run-plans.js sha256（gate 比对用）
-const sha = execSync(`sha256sum "${SRC}"`, { cwd: ENGINE_ROOT }).toString().split(' ')[0]
+// 计算 canonical run-plans.js sha256（Node crypto，跨平台）
+const sha = await computeSha256(SRC)
 
 const srcContent = fs.readFileSync(SRC, 'utf8')
 // 注入 @sha 标注到文件头（第二行注释，不破坏首行注释）
@@ -347,39 +375,44 @@ fs.writeFileSync(DEST, marked)
 console.log(`✓ synced run-plans.js → ${path.relative(CONSUMER_ROOT, DEST)} (@sha ${sha.slice(0,12)})`)
 ```
 
+约束：canonical `run-plans.js` 首行必须是 `//` 注释；`sync.test.js` 增加断言守护该约束。如果首行不匹配，sync.mjs 抛出清晰错误。
+
 ### 7.4 迁移顺序（4 阶段）
 
 ```
 阶段一：建通用仓库（本地）
   1. 在 c:/Users/Alfred/Documents/projects/run-plans-engine 建 git 仓库
   2. 从 lottery-notification 复制 engine 文件（按 7.1 映射表）
-  3. 调整 sync.test.js 路径（7.2）+ 创建脚本（7.3）+ examples + README
-  4. 跑 node --test tests/ 验证全绿（含 sync.test 字节守护）
+  3. 调整 sync.test.js 路径（7.2）+ 创建脚本（7.3）+ examples + README + .gitattributes
+  4. 跑 node --test tests/ 验证全绿（含 sync.test 字节守护；同时检查所有 tests 是否有硬编码消费项目路径）
   5. git commit -m "chore: initialize run-plans-engine from lottery-notification"
 
 阶段二：lottery-notification 迁移为消费项目
   6. 删除 engine 源文件（.claude/workflows/run-plans.js + docs/superpowers/workflows/ + workflow-design.md + workflow-plans/）
-  7. git submodule add <engine-path> .claude/workflow-engine
-  8. node .claude/workflow-engine/scripts/sync.mjs → 生成 .claude/workflows/run-plans.js
-  9. 配置 hooks：cp .claude/workflow-engine/scripts/pre-commit-sync-check.sh .git/hooks/pre-commit && chmod +x
- 10. 验证：Workflow({scriptPath: '.claude/workflows/run-plans.js', args: {...}}) 跑一个轻量 task
+  7. git submodule add file:///C:/Users/Alfred/Documents/projects/run-plans-engine .claude/workflow-engine
+  8. node .claude/workflow-engine/scripts/init-consumer.mjs → 生成 run-plans.js + 拷贝 examples + 安装 hook
+  9. 验证：Workflow({scriptPath: '.claude/workflows/run-plans.js', args: {...}}) 跑一个轻量 task
+ 10. git commit
 
 阶段三：OTC-Fund-SIP-Strategy 迁移（重复 6-10，删除其旧副本）
 
-阶段四：（后续）推 Gitea + 更新 submodule URL 为远程
+阶段四：（后续）推 Gitea + 更新 submodule URL 为远程（已记入 TODOS.md）
 ```
 
 ### 7.5 验证检查清单
 
 | 验证项 | 方法 | 期望 |
 |---|---|---|
-| 引擎测试全绿 | `cd run-plans-engine && node --test tests/` | 365+ tests pass |
+| 引擎测试全绿 | `cd run-plans-engine && node --test tests/` | 365+ tests pass；无硬编码消费项目路径失败 |
 | sync.test 路径正确 | 同上 | sync.test 子项全绿 |
 | sync 脚本可用 | `node sync.mjs` | 生成 .claude/workflows/run-plans.js + @sha 头 |
 | lottery workflow 可触发 | `Workflow({scriptPath, args:{plan:'01',tasks:['T1']}})` | bootstrap 正常 + 识别已 commit task |
-| pre-commit 自愈 | 故意改 .claude/workflows/run-plans.js + git commit | hook 自动 sync + stage |
+| pre-commit 自愈 | 故意改 .claude/workflows/run-plans.js + git commit | hook 自动 sync + stage + 退出非零要求重新提交 |
+| pre-commit 拦截未编辑 config | 拷贝 example 后不编辑直接 commit | hook exit 1 + 提示"请先编辑 workflow.config.json" |
+| config 已针对消费项目编辑 | 人工核对 lottery / OTC 的 workflow.config.json | test_command/full_test_command/language/silent_failure_context 均非占位 |
 | SessionStart 提醒 | engine 有新 commit + 开新 session | 提示"engine 有更新" |
 | OTC workflow 可触发 | 同 lottery 验证 | bootstrap 正常 |
+| 跨平台 sync | Windows + Mac 各跑一次 init-consumer + sync | 均成功；hook 在两平台均触发 |
 
 ### 7.6 保留在 lottery-notification 的项目特定文件
 
@@ -400,9 +433,12 @@ console.log(`✓ synced run-plans.js → ${path.relative(CONSUMER_ROOT, DEST)} (
 | 仓库位置 | 先本地（file://）后推 Gitea | 两阶段，本地走通再上远程 |
 | 迁移范围 | 完整（含历史 plan + research） | 完整迁移，lottery-notification 的 engine 相关文件清空 |
 | 首批消费项目 | lottery-notification + OTC-Fund-SIP-Strategy | 一次性解决两个项目的同步问题 |
-| gate 3 强度 | 软 warning（非 halt） | engine 版本不一致非运行时错误，halt 过度阻断 |
-| gate 3 实现范围 | 本次不实现，后续可选增强 | 保持 engine 代码零改动（仅 sync.test.js 路径调整）；gate 1 + gate 2 双层已足够 |
+| pre-commit 自动 sync 后行为 | 自动 sync + stage，退出非零，要求重新提交 | 符合 git hook 约定，不自动 commit |
 | lessons.md 处理 | 消费项目保留（含项目特定 + 通用） | 通用部分已在 engine 的 lessons.seed.md，不强拆消费项目 lessons |
+| workflow.config.json 守护 | init-consumer 注入 `// TODO: edit me` 标记；pre-commit 检测未编辑则拒绝 commit | 防止"拷贝 example 就直接 commit 导致 workflow 用错 test_command"的静默失败；强制消费项目根据自身情况编辑 |
+| 跨平台支持 | Node crypto + Node 入口 hook（POSIX .sh 仅参考）+ .gitattributes 强制 LF | Windows + Mac 均无外部命令依赖（不依赖 sha256sum/grep） |
+| engine 可信源声明 | README.md 与 USAGE.md 中显式声明 | 消费项目应使用授权/审核过的 submodule URL，更新前 review 变更 |
+| Gate 3 | **移除** | Claude Code Workflow runtime 禁止 run-plans.js 运行时读取文件系统，bootstrap 中无法实现软提醒；gate 1 + gate 2 + init-consumer 自动安装已足够 |
 
 ## 9. 风险与缓解
 
@@ -410,6 +446,33 @@ console.log(`✓ synced run-plans.js → ${path.relative(CONSUMER_ROOT, DEST)} (
 |---|---|
 | pre-commit hook 在无 node 环境的消费项目失败 | sync.mjs 是纯 node 脚本（无依赖）；hook 检测 `command -v node` 不存在时 exit 0 放行 + 提醒安装 |
 | submodule 在 Windows 上的 CRLF 问题 | `.gitattributes` 在 engine 仓库强制 LF（lottery-notification 已有先例） |
-| sync 脚本生成的 @sha 头破坏 run-plans.js 首行注释 | 用正则 `^(//.*\n)` 在首行注释后插入，不覆盖首行 |
-| 消费项目忘记配置 pre-commit hook | 文档强调（USAGE.md §接入步骤）；gate 3 的 bootstrap warning 作为兜底提醒 |
-| engine 演进破坏旧消费项目（breaking change） | engine 仓库的 CHANGELOG 标注 breaking；消费项目可锁定 submodule SHA 不升级 |
+| sync 脚本生成的 @sha 头破坏 run-plans.js 首行注释 | 用正则 `^(//.*\n)` 在首行注释后插入，不覆盖首行；由 sync.mjs 单元测试守护；首行必须是 `//` 注释（由 sync.test 守护） |
+| 消费项目忘记配置 pre-commit hook | `init-consumer.mjs` 自动安装并验证；README/USAGE 强调；禁止手改派生文件 |
+| 消费项目拷贝 example 后未编辑 workflow.config.json 就 commit | `init-consumer` 注入 `// TODO: edit me` 标记；pre-commit hook 检测标记存在则拒绝 commit 并提示编辑（§4.1.1） |
+| 跨平台 test_command 差异（python vs python3） | example 注释提示；建议消费项目用平台无关命令或 scripts/ 包装 |
+| engine 演进破坏旧消费项目（breaking change） | engine 仓库的 CHANGELOG 标注 breaking（TODOS T3）；消费项目可锁定 submodule SHA 不升级 |
+| engine 仓库为可信源 | README.md 与 USAGE.md 显式声明：消费项目只应使用授权/审核过的 submodule URL，更新前 review 变更 |
+| 本地 `file://` submodule URL 格式不标准 | 使用 `file:///C:/Users/...` 格式，并在 Windows 11 本机验证 |
+| init-consumer 重复运行导致嵌套 hook | 安装前检查 hook 是否已包含 `pre-commit-sync-check` 调用；已包含则跳过 |
+| 260+ tests 中存在硬编码消费项目路径 | 迁移后运行全量测试，检查并修复所有路径相关断言 |
+
+## 10. 回滚策略
+
+- 迁移前备份旧 `.claude/workflows/run-plans.js` 到 `.claude/workflows/run-plans.js.bak.<timestamp>`。
+- 如果 submodule 无法工作，执行 `git rm -f .claude/workflow-engine` 和 `git submodule deinit -f .claude/workflow-engine`，从备份恢复旧文件。
+- 保留旧 engine 文件删除的 commit，可通过 `git revert` 回滚。
+- 先在 `lottery-notification` 验证通过后再迁移 `OTC-Fund-SIP-Strategy`（分阶段，降低 blast radius）。
+
+## GSTACK REVIEW REPORT
+
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 1 | issues_open | mode: SELECTIVE_EXPANSION, 5 proposals, 2 accepted, 3 deferred, 0 critical gaps |
+| Codex Review | `/codex review` | Independent 2nd opinion | 0 | — | — |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | issues_open | Node crypto, remove gate 3, sync.mjs idempotency, test plan written |
+| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — |
+| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
+
+- **UNRESOLVED:** 0
+- **CROSS-MODEL:** Outside voice found that gate 3 cannot be implemented inside run-plans.js bootstrap due to Workflow runtime fs/import restrictions. This was accepted and gate 3 removed from scope.
+- **VERDICT:** CEO + Eng Review CLEARED — ready to implement.
