@@ -144,7 +144,7 @@ git commit -m "chore(workflow): init run-plans-engine consumer"
 
 ### 4.1.1 必须步骤：根据消费仓库编辑 workflow.config.json
 
-**`workflow.config.json` 是项目特定配置，拷贝自 example 后必须根据消费仓库自身情况编辑，否则 workflow 无法正确运行。** `init-consumer.mjs` 拷贝后会在文件头注入 `// TODO: edit me` 标记，并打印醒目提示。
+**`workflow.config.json` 是项目特定配置，拷贝自 example 后必须根据消费仓库自身情况编辑，否则 workflow 无法正确运行。** 拷贝后 `init-consumer.mjs` 打印醒目提示，并依赖 pre-commit 字节比对守护（见下）。
 
 必须编辑的字段（example 中留占位）：
 
@@ -158,10 +158,14 @@ git commit -m "chore(workflow): init run-plans-engine consumer"
 | `language` | 主语言 | `python` | `python` |
 | `silent_failure_context` | 项目特定的静默失败上下文 | 彩票 DB 5 条纪律 | 基金定投特定纪律 |
 
-**init-consumer 的 config 守护**：
-- 若 `workflow.config.json` 仍含 `// TODO: edit me` 标记，`init-consumer.mjs` 退出时打印警告："workflow.config.json 未编辑，workflow 将无法正确运行。请编辑后再提交。"
-- pre-commit hook（gate 2）在 commit 时也检查此标记：若仍存在则拒绝 commit 并提示编辑。
-- 这避免"拷贝了 example 就直接 commit，导致 workflow 跑起来用错 test_command"的静默失败。
+**config 守护机制（字节比对，不污染 JSON）**：
+
+> `workflow.config.json` 是 `.json` 文件，JSON 标准不支持注释。**不采用**"注入 `// TODO: edit me` 标记"方案（会破坏 JSON.parse）。改用字节比对：
+
+- `init-consumer.mjs` 拷贝 example 后打印警告："workflow.config.json 未编辑，workflow 将无法正确运行。请编辑后再提交。"
+- pre-commit hook（gate 2）在 commit 时：若 `workflow.config.json` 与 `examples/workflow.config.example.json` **字节一致**（sha256 相同），则拒绝 commit 并提示"workflow.config.json 仍是 example 原值，请根据消费项目情况编辑"。
+- 一旦用户编辑任意字段，字节即不等，hook 放行。这避免"拷贝了 example 就直接 commit，导致 workflow 用错 test_command"的静默失败。
+- **已知小限制**：若用户编辑后改回 example 原值会被误拦——概率低，且误拦时按提示再编辑任意字段即可放行。
 
 **跨平台注意**：`test_command` / `lint_command` 在 Windows 和 Mac 上可能不同（如 `python` vs `python3`）。若消费仓库跨平台开发，建议在 `workflow.config.json` 中用平台无关命令，或通过 `scripts/` 包装脚本分发。
 
@@ -207,7 +211,7 @@ git commit -m "chore(workflow): bump run-plans-engine@<new-sha>"
 | A. 纯手动 | 消费项目主动 submodule update + sync + commit | 全手动 | 不够 |
 | **B. pre-commit 自动 sync** | git commit 时检测 engine 已更新但产物漂移 → 自动跑 sync + stage 产物 → 退出非零要求重新提交 | **半自动（commit 时自愈）** | **采用** |
 | **C. SessionStart hook 提醒** | Claude Code session 开始 → 检测 engine 远程是否有新 commit → 有则提醒 | **提醒式（不改工作树）** | **采用** |
-| D. 远程 CI 自动 PR | engine push → Gitea Actions 向消费仓库提 PR | 全自动 | 当前规模不划算（2 个消费仓库，CI 配置成本 > 收益），已记入 TODOS.md |
+| D. 远程 CI 自动 PR | engine push → Gitea Actions 向消费仓库提 PR | 全自动 | 当前规模不划算（2 个消费仓库，CI 配置成本 > 收益），已记入 [`run-plans-engine-TODOS.md`](../run-plans-engine-TODOS.md) |
 
 **B 解决"忘记 sync"**：用户只需 `git submodule update --remote`，下次 commit 时 pre-commit hook 自动检测 run-plans.js 漂移 → 跑 sync 脚本 → 把更新后的产物 stage 进当前 commit，然后退出非零要求重新提交。
 
@@ -222,9 +226,9 @@ git commit -m "chore(workflow): bump run-plans-engine@<new-sha>"
 // 1. 读取派生文件头 @sha
 // 2. 计算 canonical run-plans.js 的 sha256（Node crypto）
 // 3. 若不一致：运行 sync.mjs → stage 派生文件 → exit 1（要求重新提交）
-// 4. 若一致：检查 workflow.config.json 是否仍含 // TODO: edit me 标记
-//    - 若含：exit 1 + 提示"请先编辑 workflow.config.json 再提交"（§4.1.1）
-//    - 若不含：exit 0
+// 4. 若一致：检查 workflow.config.json 是否与 examples/workflow.config.example.json 字节一致
+//    - 若一致（未编辑）：exit 1 + 提示"请先编辑 workflow.config.json 再提交"（§4.1.1）
+//    - 若不一致（已编辑）：exit 0
 ```
 
 engine 仓库同时提供 POSIX 参考实现 `pre-commit-sync-check.sh`（供非 Windows 环境或手动安装）。
@@ -396,7 +400,7 @@ console.log(`✓ synced run-plans.js → ${path.relative(CONSUMER_ROOT, DEST)} (
 
 阶段三：OTC-Fund-SIP-Strategy 迁移（重复 6-10，删除其旧副本）
 
-阶段四：（后续）推 Gitea + 更新 submodule URL 为远程（已记入 TODOS.md）
+阶段四：（后续）推 Gitea + 更新 submodule URL 为远程（已记入 [`run-plans-engine-TODOS.md`](../run-plans-engine-TODOS.md) T1）
 ```
 
 ### 7.5 验证检查清单
@@ -408,7 +412,7 @@ console.log(`✓ synced run-plans.js → ${path.relative(CONSUMER_ROOT, DEST)} (
 | sync 脚本可用 | `node sync.mjs` | 生成 .claude/workflows/run-plans.js + @sha 头 |
 | lottery workflow 可触发 | `Workflow({scriptPath, args:{plan:'01',tasks:['T1']}})` | bootstrap 正常 + 识别已 commit task |
 | pre-commit 自愈 | 故意改 .claude/workflows/run-plans.js + git commit | hook 自动 sync + stage + 退出非零要求重新提交 |
-| pre-commit 拦截未编辑 config | 拷贝 example 后不编辑直接 commit | hook exit 1 + 提示"请先编辑 workflow.config.json" |
+| pre-commit 拦截未编辑 config | 拷贝 example 后不编辑直接 commit | hook exit 1 + 提示"workflow.config.json 仍是 example 原值" |
 | config 已针对消费项目编辑 | 人工核对 lottery / OTC 的 workflow.config.json | test_command/full_test_command/language/silent_failure_context 均非占位 |
 | SessionStart 提醒 | engine 有新 commit + 开新 session | 提示"engine 有更新" |
 | OTC workflow 可触发 | 同 lottery 验证 | bootstrap 正常 |
@@ -435,7 +439,7 @@ console.log(`✓ synced run-plans.js → ${path.relative(CONSUMER_ROOT, DEST)} (
 | 首批消费项目 | lottery-notification + OTC-Fund-SIP-Strategy | 一次性解决两个项目的同步问题 |
 | pre-commit 自动 sync 后行为 | 自动 sync + stage，退出非零，要求重新提交 | 符合 git hook 约定，不自动 commit |
 | lessons.md 处理 | 消费项目保留（含项目特定 + 通用） | 通用部分已在 engine 的 lessons.seed.md，不强拆消费项目 lessons |
-| workflow.config.json 守护 | init-consumer 注入 `// TODO: edit me` 标记；pre-commit 检测未编辑则拒绝 commit | 防止"拷贝 example 就直接 commit 导致 workflow 用错 test_command"的静默失败；强制消费项目根据自身情况编辑 |
+| workflow.config.json 守护 | pre-commit 字节比对 workflow.config.json 与 example；字节一致则拒绝 commit | JSON 不支持注释，不能用 TODO 标记；字节比对零污染且语义清晰（已编辑=不等于 example）；防止拷贝 example 就直接 commit 的静默失败 |
 | 跨平台支持 | Node crypto + Node 入口 hook（POSIX .sh 仅参考）+ .gitattributes 强制 LF | Windows + Mac 均无外部命令依赖（不依赖 sha256sum/grep） |
 | engine 可信源声明 | README.md 与 USAGE.md 中显式声明 | 消费项目应使用授权/审核过的 submodule URL，更新前 review 变更 |
 | Gate 3 | **移除** | Claude Code Workflow runtime 禁止 run-plans.js 运行时读取文件系统，bootstrap 中无法实现软提醒；gate 1 + gate 2 + init-consumer 自动安装已足够 |
@@ -448,9 +452,9 @@ console.log(`✓ synced run-plans.js → ${path.relative(CONSUMER_ROOT, DEST)} (
 | submodule 在 Windows 上的 CRLF 问题 | `.gitattributes` 在 engine 仓库强制 LF（lottery-notification 已有先例） |
 | sync 脚本生成的 @sha 头破坏 run-plans.js 首行注释 | 用正则 `^(//.*\n)` 在首行注释后插入，不覆盖首行；由 sync.mjs 单元测试守护；首行必须是 `//` 注释（由 sync.test 守护） |
 | 消费项目忘记配置 pre-commit hook | `init-consumer.mjs` 自动安装并验证；README/USAGE 强调；禁止手改派生文件 |
-| 消费项目拷贝 example 后未编辑 workflow.config.json 就 commit | `init-consumer` 注入 `// TODO: edit me` 标记；pre-commit hook 检测标记存在则拒绝 commit 并提示编辑（§4.1.1） |
+| 消费项目拷贝 example 后未编辑 workflow.config.json 就 commit | pre-commit hook 字节比对 workflow.config.json 与 example；字节一致则拒绝 commit 并提示编辑（§4.1.1）。不注入 JSON 注释（JSON 不支持注释） |
 | 跨平台 test_command 差异（python vs python3） | example 注释提示；建议消费项目用平台无关命令或 scripts/ 包装 |
-| engine 演进破坏旧消费项目（breaking change） | engine 仓库的 CHANGELOG 标注 breaking（TODOS T3）；消费项目可锁定 submodule SHA 不升级 |
+| engine 演进破坏旧消费项目（breaking change） | engine 仓库的 CHANGELOG 标注 breaking（[TODOS](../run-plans-engine-TODOS.md) T3）；消费项目可锁定 submodule SHA 不升级 |
 | engine 仓库为可信源 | README.md 与 USAGE.md 显式声明：消费项目只应使用授权/审核过的 submodule URL，更新前 review 变更 |
 | 本地 `file://` submodule URL 格式不标准 | 使用 `file:///C:/Users/...` 格式，并在 Windows 11 本机验证 |
 | init-consumer 重复运行导致嵌套 hook | 安装前检查 hook 是否已包含 `pre-commit-sync-check` 调用；已包含则跳过 |
@@ -458,21 +462,13 @@ console.log(`✓ synced run-plans.js → ${path.relative(CONSUMER_ROOT, DEST)} (
 
 ## 10. 回滚策略
 
-- 迁移前备份旧 `.claude/workflows/run-plans.js` 到 `.claude/workflows/run-plans.js.bak.<timestamp>`。
-- 如果 submodule 无法工作，执行 `git rm -f .claude/workflow-engine` 和 `git submodule deinit -f .claude/workflow-engine`，从备份恢复旧文件。
+- 迁移前备份旧 `.claude/workflows/run-plans.js` 到系统临时目录（`os.tmpdir()/run-plans-backup-<timestamp>.js`），避免备份文件留在 `.claude/` 下被 git 跟踪或干扰 named-workflow 枚举。
+- 如果 submodule 无法工作，执行 `git rm -f .claude/workflow-engine` 和 `git submodule deinit -f .claude/workflow-engine`，从临时目录备份恢复旧文件。
 - 保留旧 engine 文件删除的 commit，可通过 `git revert` 回滚。
 - 先在 `lottery-notification` 验证通过后再迁移 `OTC-Fund-SIP-Strategy`（分阶段，降低 blast radius）。
 
-## GSTACK REVIEW REPORT
+## 11. Review 报告
 
-| Review | Trigger | Why | Runs | Status | Findings |
-|--------|---------|-----|------|--------|----------|
-| CEO Review | `/plan-ceo-review` | Scope & strategy | 1 | issues_open | mode: SELECTIVE_EXPANSION, 5 proposals, 2 accepted, 3 deferred, 0 critical gaps |
-| Codex Review | `/codex review` | Independent 2nd opinion | 0 | — | — |
-| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | issues_open | Node crypto, remove gate 3, sync.mjs idempotency, test plan written |
-| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — |
-| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
+Review 过程产物（CEO/Eng review 结论、cross-model 发现等）已移至独立文件：[`docs/superpowers/reviews/2026-07-09-run-plans-engine-extraction-review.md`](reviews/2026-07-09-run-plans-engine-extraction-review.md)
 
-- **UNRESOLVED:** 0
-- **CROSS-MODEL:** Outside voice found that gate 3 cannot be implemented inside run-plans.js bootstrap due to Workflow runtime fs/import restrictions. This was accepted and gate 3 removed from scope.
-- **VERDICT:** CEO + Eng Review CLEARED — ready to implement.
+**结论摘要**：CEO + Eng Review CLEARED — ready to implement。gate 3 因 Workflow runtime fs 限制被 cross-model 发现并移除。
