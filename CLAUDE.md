@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目状态
 
-**Plan 01–05 已完成（基础设施 / 领域层 / 仓储核心闭环 / 调度推送 / 认证用户管理），318 tests green。** Plan 06（Web UI/部署）待实现，plan 在 `docs/superpowers/plans/`。改代码前先读 spec + 对应 plan；实现通过 **workflow orchestrator**（见下）自动跑 plan。
+**Plan 01–05 已完成（基础设施 / 领域层 / 仓储核心闭环 / 调度推送 / 认证用户管理），318 tests green。** Plan 06（Web UI/部署）进行中：T1–T5 骨架（Vite/Vue3/路由/布局）与 T6 页面初版已 commit，T6 拆为 6b–6g 子 task（选号/走势/统计/设置/后台/Dashboard+中奖收尾）待实现。plan 在 `docs/superpowers/plans/`。改代码前先读 spec + 对应 plan；实现通过 **workflow orchestrator**（见下）自动跑 plan。
 
 ## 项目是什么
 
@@ -89,14 +89,23 @@ uv run uvicorn app.main:app --reload                         # 启动 API（需 
 uv run alembic upgrade head                                  # 应用迁移
 uv run lint-imports                                          # app.domain 不得 import infra/adapters/api/services
 
+# 前端（web/）
+cd web && npm install && npm run dev                         # 开发（代理 /api → :8000）
+cd web && npm test                                           # vitest 组件/逻辑测试（不进 Python gate）
+cd web && npm run build                                      # 产物到 ../static
+
 # workflow orchestrator 测试
 cd docs/superpowers/workflows && node --test 'tests/*.test.js'
 
-# 前端（web/）
-cd web && npm install && npm run dev                         # 开发（代理 /api → :8000）
-
 # 部署（NAS Docker，端口 8280）
 docker compose up -d --build
+docker compose build                                         # 仅构建
+
+# 更新 run-plans-engine 子模块（必须同时更 submodule 指针 + 派生副本）
+cd .claude/workflow-engine && git pull origin main && cd ../..
+node .claude/workflow-engine/scripts/sync.mjs
+git add .claude/workflow-engine .claude/workflows/run-plans.js
+git commit -m "chore(workflow): bump run-plans-engine"
 ```
 
 **密钥**（`.env`，不进库不进日志；模板 `.env.example`）：`JWT_SECRET`（≥32 字符）、`CRYPTO_KEY_V1`（44 字符 Fernet key）、`MXNZP_API_KEY`/`JUHE_API_KEY`（数据源）、`SMTP_*`（email 渠道）、`ADMIN_BARK_KEY`。启动时 `validate_startup()` 端到端冒烟验证 crypto key。
@@ -131,9 +140,16 @@ Workflow({ scriptPath: '.claude/workflows/run-plans.js', args: { plan: '03' } })
 
 - `docs/superpowers/specs/2026-06-16-lottery-notification-design.md` — **设计 spec（15 节，需求/架构/数据/合规的单一事实源）**
 - `docs/reference/lottery-rules.md` — **7 大彩种规则权威参考**
-- `docs/superpowers/workflows/USAGE.md` — workflow orchestrator 使用指南
-- `docs/superpowers/workflow-design.md` — workflow orchestrator 设计文档（含历史修复记录摘要）
+- `.claude/workflow-engine/USAGE.md` — **workflow orchestrator 使用指南（子模块）**
+- `.claude/workflow-engine/workflow-design.md` — **workflow orchestrator 设计文档（含历史修复记录摘要）**
+- `docs/superpowers/workflows/USAGE.md` — 旧版 workflow 使用指南（已迁移，以子模块为准）
+- `docs/superpowers/workflow-design.md` — 旧版 workflow 设计文档（已迁移，以子模块为准）
 - `docs/superpowers/plans/` — implementation plan（6 份业务 plan：01 已完成，02–06 待实现）
+
+## 更新 run-plans-engine 子模块
+
+详见「常用命令」节；核心要点：必须同时更新 submodule 指针（`.claude/workflow-engine`）和派生副本（`.claude/workflows/run-plans.js`），只执行 `git submodule update` 会两者不同步。新版 engine 将 `dist/run-plans.js` 作为 canonical 源，由 `scripts/sync.mjs` 复制并注入 `@sha` 头。
+
 
 ## NAS 部署约束
 
