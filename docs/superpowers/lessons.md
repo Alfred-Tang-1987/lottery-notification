@@ -133,3 +133,12 @@ detail: 当 plan 在 task 描述中给出参考代码（reference implementation
 source: plan-06/T7@2026-07-06
 category: convention
 status: active
+
+## L-20260721T000000Z
+title: plan-lint L1a 把「Placeholder scan：无 TBD」自我声明句召回成 placeholder_hits —— 含字面量的否定/元描述句会命中正则 → 假 halt
+detail: plan-lint.js 的 LLM 召回指令（prompts/templates/plan-parser.md）要求机械返回**每行**含字面量 TBD/FIXME/待补充/待填写/待定/待完善/稍后补充 的行，plan-lint.js 再对每条命中行跑 PLAN_PLACEHOLDER_PATTERNS_A 正则复核。但两者都**不区分肯定占位与否定/元描述语境**：plan 作者在文末写的自检声明「**Placeholder scan：** 无 TBD/TODO；所有 step 含实际代码/命令。」同样含字面量 "TBD" → 被召回 → L1a defect → bootstrap halt「plan lint failed」。本次 run 6 份 plan 全部因此类自我声明句被误判（plans 01-06 各 1 条 L1a，detail 内容均为 "无 TBD..." 否定句），导致任何 plan 都无法启动。
+修法：(1) **plan 作者：不要在 plan 正文写「无 TBD/无 placeholder」类自检声明**——lint 是机器扫描，否定句里的字面量照样命中，写了等于自我举报；自检结论放 spec/PR 描述即可。(2) engine 侧（修 .claude/workflow-engine）：plan-parser.md 的机械提取指令须补充「排除以『无/not/none/非』等否定词修饰字面量的行，排除 Placeholder scan/自检 类元描述行」；或 plan-lint.js 复核正则升级为否定感知（如命中行前向 80 字符窗口含 无|非|none|no 且同行无其他 A 类字面量 → 降级 filtered）。(3) 遇到「plan lint failed」halt 且 defect detail 是 "无 TBD..." 句时，人工确认后可删除 plan 中该声明行作为 unblock 手段。
+source: plan-lint/bootstrap@2026-07-21
+category: convention
+status: active
+last_verified: 2026-07-21
