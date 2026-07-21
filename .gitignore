@@ -28,3 +28,6 @@ graphify-out/
 
 # SDD (subagent-driven-development) scratch files（task briefs/reports/review-diff packages/progress ledger，session 内派生物，跨 session 不保留）
 .superpowers/
+
+# Playwright MCP 临时页面快照（浏览外部文档时的 accessibility tree dump，一次性调试产物）
+.playwright-mcp/
