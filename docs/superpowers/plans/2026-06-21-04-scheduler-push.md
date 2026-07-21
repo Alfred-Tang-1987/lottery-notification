@@ -1076,7 +1076,7 @@ git add app/main.py tests/integration/test_scheduler_push.py
 - 📌 DND 结束重排（defer）→ Task 3 返回0 + Task 5 注释（DND 结束时刻再调 notify_path_b；MVP 用次日常规 tick 兜底，精确 defer 在 Plan 06 优化）
 - 📌 浮奖回填补推 → Plan 03 refill 标记 + Plan 04 Notifier 监听（amount_lookup_stub MVP 返回 None）
 
-**Placeholder scan：** 无 TBD；`_amount_lookup_stub` 是明确占位（MVP 不回填，真实接口 Plan 05/06 补），标注清晰非 placeholder。
+**Placeholder scan：** 无占位符；`_amount_lookup_stub` 是明确占位（MVP 不回填，真实接口 Plan 05/06 补），标注清晰非 placeholder。
 **类型一致：** `NotificationPayload`/`SendResult`/`ChannelStatus`/`Notifier.notify_path_a/b` 签名前后一致；渠道 config 解密约定（`{"ct":...}` + key_version）统一。
 **衔接：** Plan 03 services（fetch/compare/refill）被调度器调用；Plan 05 API 写 notification_channels 按 `{"ct":...}` 加密约定；Plan 06 main.py startup 已接线。
 **已知简化（MVP）：** 路径A推送 MVP 在 tick 内同步调（单连接串行），精确异步线程池 Plan 06 优化；DND defer MVP 用次日 tick 兜底，精确重排 Plan 06。

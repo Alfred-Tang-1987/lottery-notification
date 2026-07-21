@@ -1141,7 +1141,7 @@ git commit -m "feat(domain): __init__ 导出 + purity 元测试 + import-linter 
 - ✅ 领域纯净护栏 + 95% 覆盖（§11）→ Task 10
 - 📌 复式/胆拖完整展开逻辑（fushi/dantuo）= Phase 2，本 plan 给 expand 框架 + 上限/cost 校验（接口已定，Phase 2 补精确组合）
 
-**Placeholder scan：** 无 TBD；所有奖级金额给了具体分值（可配置）+ 数据源标注；七星彩连续命中定义给了 MVP 选择 + 官方为准说明。
+**Placeholder scan：** 无占位符；所有奖级金额给了具体分值（可配置）+ 数据源标注；七星彩连续命中定义给了 MVP 选择 + 官方为准说明。
 **类型一致：** `compare()` 入口、`HitResult`、`SingleCombo`、`REGISTRY` 前后命名一致；`Entry.cost(price_per_bet)` 签名统一。
 **衔接 Plan 03：** Plan 03 仓储/比对引擎调用 `app.domain.compare(spec, ...)` + `expand()`；`HitResult` 写入 comparisons.hits_json/prize_tier/amount。
 **衔接 seeds：** Plan 01 的 `LotterySpecModel`（校验）与领域 `LotterySpec`（运行时）同形，从同一 spec_json hydrate。

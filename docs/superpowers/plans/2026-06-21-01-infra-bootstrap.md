@@ -1438,7 +1438,7 @@ git commit -m "docs: CLAUDE.md 命令同步为 uv（环境无 pip/poetry）"
 - ✅ import-linter 领域 purity 配置 → Task 9
 - 📌 每日备份/日志归档 → Plan 06（部署）
 
-**Placeholder scan：** 无 TBD/TODO；所有 step 含实际代码/命令。
+**Placeholder scan：** 无占位符；所有 step 含实际代码/命令。
 **Type consistency：** `CryptoService`/`CipherBlob`/`Settings`/各 model 命名一致；seed `SPECS` 与 `LotterySpecModel` 字段对齐 spec §5.1。
 
 **衔接后续 plan：**
