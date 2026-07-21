@@ -238,6 +238,13 @@ app.include_router(comparisons_router)
 
 @app.get('/health')
 def health(db: Engine = Depends(get_db_for_health)):
+    """健康探活端点（spec §4.3 / Docker HEALTHCHECK）。
+
+    DB 故障时返回 **HTTP 503**（非 200）——容器编排层（Docker HEALTHCHECK / k8s liveness）
+    依赖 HTTP 状态码判断健康。返回 200 + status=degraded 会让 Docker 把不健康容器标为
+    healthy，DB 长期故障时漏抓开奖/比对/推送，违反「中奖永不静默漏通知」核心纪律。
+    响应体保留 `status=degraded` 供人类可读；HTTP 状态码供编排器判定（review-fix critical）。
+    """
     try:
         with db.connect() as conn:
             conn.execute(text('SELECT 1'))
@@ -246,11 +253,19 @@ def health(db: Engine = Depends(get_db_for_health)):
         # hunter：db 故障不得静默——只在 HTTP 响应变 degraded 会让运维无迹可寻，延误发现。
         logger.warning('/health db 探活失败: %s', exc)
         db_ok = False
-    return {
+    body = {
         'status': 'ok' if db_ok else 'degraded',
         'tz': get_settings().tz,
         'db': 'ok' if db_ok else 'down',
     }
+    # review-fix：DB down → HTTP 503，让编排层（Docker/k8s）正确标 unhealthy。
+    # silent-failure 设防（L-20260706T010500Z 自验：HTTP 503 真能改变 Docker HEALTHCHECK
+    # 判定——否则 DB 故障被静默吞，违反「中奖永不静默漏通知」核心纪律）。
+    if not db_ok:
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(status_code=503, content=body)
+    return body
 
 
 # —— FastAPI 静态托管 SPA（spec §12.3 / plan 06 T8）——
