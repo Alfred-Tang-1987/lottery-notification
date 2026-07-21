@@ -870,7 +870,7 @@ git commit -m "feat: 备份脚本 + CLI(create-admin/ssq冒烟) + 部署运维�
 - 📌 各页详细组件（号码盘/图表/卡片）→ 按 prototype 实现，骨架已给
 - 📌 浮奖回填真实 amount_lookup（接官方奖金接口）→ 数据源提供后补
 
-**Placeholder scan：** 无 TBD；部分页面代码标"按 prototype 实现，骨架已给"（prototype 是视觉基准，非 placeholder——给了组件骨架 + 关键交互 + API 衔接）。
+**Placeholder scan：** 无占位符；部分页面代码标"按 prototype 实现，骨架已给"（prototype 是视觉基准，非 placeholder——给了组件骨架 + 关键交互 + API 衔接）。
 **类型一致：** API client/route meta/State props/Drawer emit 前后一致；后端 /auth /channels /admin 路由与 Plan 05 对齐。
 **衔接：** Plan 05 API（cookie+CSRF）被前端 client 消费；Plan 04 main.py startup + Plan 05 main.py 路由 + 本 Plan main.py 静态托管合并到同一 app/main.py（执行顺序 04→05→06，都用 Edit 追加）。
 **已知简化（MVP）：**

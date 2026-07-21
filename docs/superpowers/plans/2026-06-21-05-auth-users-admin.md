@@ -1062,7 +1062,7 @@ git commit -m "feat: 路由注册 + CORS/CSRF 中间件 + invite_codes 迁移 + 
 - 📌 tickets CRUD API → Task 7 标注复用 TicketRepo（Plan 03 已 IDOR-safe）
 - 📌 bootstrap admin（首个 admin 生成）→ 首次部署手动 SQL 或 env 注入一个 admin（运维 runbook）
 
-**Placeholder scan：** 无 TBD；tickets.router 标注"复用 TicketRepo 不展开"（非 placeholder——TicketRepo 在 Plan 03 已实现，本 plan 聚焦认证/admin）。
+**Placeholder scan：** 无占位符；tickets.router 标注"复用 TicketRepo 不展开"（非 placeholder——TicketRepo 在 Plan 03 已实现，本 plan 聚焦认证/admin）。
 **类型一致：** `COOKIE_NAME`/`CSRF_HEADER`/`create_session_token`/`current_user`/`require_admin` 前后一致；渠道 config `{"ct":...}`+key_version 与 Plan 04 Notifier._decrypt_config 对齐。
 **衔接：** Plan 04 main.py startup（Plan 04 Task 7）与本 Plan 05 main.py 路由注册合并（都用 Edit 追加到 app/main.py）；Plan 06 前端用 /auth/* + /channels + /admin API。
 **已知简化（MVP）：**

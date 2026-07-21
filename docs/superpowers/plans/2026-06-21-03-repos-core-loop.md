@@ -1180,7 +1180,7 @@ git commit -m "test(integration): 端到端核心闭环（fetch→verify→compa
 - 📌 补推（浮奖回填后推送）→ Plan 04（Notifier 消费标记）
 - 📌 调度接线（APScheduler 调 fetch/compare/refill worker）→ Plan 04
 
-**Placeholder scan：** 无 TBD；adapter 字段名标注"以 API 文档为准，实现时核对调整"（非 placeholder——给了结构 + 解析约定，真实字段注册后核对）。
+**Placeholder scan：** 无占位符；adapter 字段名标注"以 API 文档为准，实现时核对调整"（非 placeholder——给了结构 + 解析约定，真实字段注册后核对）。
 **类型一致：** `FetchResult`/`DrawNumbers`/`compare()` 入口签名前后一致；`CompareService._upsert_comparison` 与 Plan 02 `HitResult` 字段对齐。
 **衔接：** Plan 04 调度器调 `FetchService.fetch_and_store` / `CompareService.process_pending` / `FloatRefillWorker.refill`；Plan 05 admin 调 `DrawCorrectService.correct` + force-verify；Plan 06 API 查 comparisons。
 **领域纯净：** services/adapters/repositories 均 import domain（单向），domain 不反向 import——符合分层。
