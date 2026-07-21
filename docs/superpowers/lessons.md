@@ -152,3 +152,13 @@ source: plan-06/gate@2026-07-21
 category: test-strategy
 status: active
 last_verified: 2026-07-21
+
+## L-20260721T130000Z
+title: API router 前缀须全局统一——半数 router 漏 /api 前缀致路径记忆分裂、冒烟易误测 404 当 bug
+detail: 冒烟 spec §13 第 13 步时 curl `/api/tickets` 返 404，初判为「受保护 API 应 401 却 404」的 bug，深查发现是路径误测——tickets router 真实路径是 `/tickets`（无 /api 前缀），返 401 完全正常。根因是 router 前缀不统一：9 个 router 里只有 3 个（comparisons/draws/dashboard）显式带 `/api/` 前缀，其余 6 个（admin/channels/auth/claims/tickets，及 health 裸路径）都没有。`include_router` 时也没统一加 prefix 兜底。后果：(1) 前端 API client 须记两套前缀规则，易写错（本例就是我写错）；(2) OpenAPI 文档路径分裂，`/tickets` 与 `/api/dashboard` 并存，无命名约定可循；(3) 冒烟/排障时每个端点都要先查 OpenAPI 才知道正确路径，摩擦大。
+修法（非阻塞，下个触及 API 层的 plan 一并修）：(1) 所有业务 router 统一 `prefix='/api/<resource>'`（或 `include_router(x, prefix='/api')` 统一兜底，但注意 health 静态探活路径是否要保留无前缀）；(2) 改时同步前端 `web/src/api/client.ts` 所有调用点 + e2e/vitest 路径 + OpenAPI snapshot；(3) SPA catch-all 的排除前缀列表（main.py spa_catch_all）须同步加 `/api/`。当前不动——记录在此，避免下次冒烟再误判 + 下次改 API 层时顺手统一。
+新增观察（同源，adapter 层）：MxnzpAdapter 首次实现用了停用的旧接口 `/lottery/common/result` + 只传 app_id（返 500），正确契约是 `/lottery/common/latest?code=X` + header 双参数。教训泛化：对接第三方 API 时，**plan/spec 里的接口描述可能与上游演进脱节**（plan-03 写时可能是旧接口），implementor 不能盲信 plan，须以官方文档 + 真实 curl 探测为准。冒烟阶段用真实 key 探活是发现此类漂移的唯一可靠手段——单测用 MockTransport 只能验证「adapter 按假设的契约解析」，验证不了「假设的契约本身对不对」。
+source: plan-06/smoke@2026-07-21
+category: convention
+status: active
+last_verified: 2026-07-21
