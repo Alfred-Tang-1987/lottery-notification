@@ -1,6 +1,13 @@
+from typing import TYPE_CHECKING
+
 from sqlmodel import Field, Relationship
 
 from app.models._base import TimestampMixin
+
+if TYPE_CHECKING:
+    # 循环引用：NotificationSettings 定义在 notification.py，运行时由 SQLModel
+    # 解析字符串注解，此处仅供类型检查器/ruff 识别（避免 F821 误报），不在运行时导入。
+    from app.models.notification import NotificationSettings
 
 
 class User(TimestampMixin, table=True):
