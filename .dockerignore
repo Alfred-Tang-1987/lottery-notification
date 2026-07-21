@@ -1,0 +1,43 @@
+# .dockerignore（spec §4.3 / plan 06 T9）
+# 排除：版本控制 / 构建产物缓存 / 虚拟环境 / 运行时数据 / 密钥
+
+# 版本控制
+.git
+.gitignore
+
+# 前端依赖与构建缓存（由 Dockerfile 内 npm ci + build 重新生成）
+web/node_modules
+web/dist
+
+# Python 虚拟环境与缓存
+.venv
+__pycache__
+*.pyc
+*.pyo
+
+# 运行时数据（必须由卷挂载提供，不烤进镜像——避免数据漂移与敏感用户数据泄露）
+data/
+backups/
+
+# 密钥：绝不能进镜像层（L-20260706T053000Z 的镜像层延伸——.env 烤进 layer 推 registry 即泄露）。
+# silent-failure 陷阱：构建时不排除 .env 不会立即崩，但密钥被 docker layer cache 持久化。
+.env
+.env.*
+!.env.example
+
+# 工具产物（与运行无关）
+.gstack
+.graphify-out
+.workflow
+.audit
+.superpowers
+runs/
+htmlcov/
+.coverage
+*.egg-info/
+
+# 构建产物（由 Dockerfile 内重新构建，不拷贝陈旧产物）
+static/
+
+# 文档（可选拷贝；镜像内不读则排除省体积）
+docs/

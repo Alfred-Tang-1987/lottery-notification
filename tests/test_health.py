@@ -84,10 +84,29 @@ def test_health_logs_when_db_down(caplog):
     try:
         with caplog.at_level(logging.WARNING, logger='app.main'):
             r = TestClient(app).get('/health')
-        assert r.status_code == 200
         assert r.json()['db'] == 'down'
         assert any(rec.levelno >= logging.WARNING for rec in caplog.records), (
             '/health db 故障应 logger.warning，不该静默吞'
         )
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_health_returns_503_when_db_down():
+    """[critical review-fix]：DB down 必须返回 HTTP 503，不能 200 + status=degraded。
+
+    容器编排层（Docker HEALTHCHECK / k8s liveness）依赖 HTTP 状态码判断健康——
+    返回 200 会让 Docker 把不健康容器标为 healthy，DB 长期故障时漏抓开奖/比对/推送，
+    违反「中奖永不静默漏通知」核心纪律。
+    """
+    bad = MagicMock()
+    bad.connect.side_effect = OSError('connection refused')
+    app.dependency_overrides[get_db_for_health] = lambda: bad
+    try:
+        r = TestClient(app).get('/health')
+        assert r.status_code == 503, (
+            'DB down 必须返回 503（degraded 是运行时状态，但编排层依赖 HTTP 状态码）'
+        )
+        assert r.json()['db'] == 'down'
     finally:
         app.dependency_overrides.clear()
