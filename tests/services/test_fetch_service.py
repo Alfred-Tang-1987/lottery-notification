@@ -409,3 +409,81 @@ def test_single_source_fallback_attributes_actual_source(db_engine):
     with Session(db_engine) as s:
         dr = s.exec(select(DrawResult)).first()
         assert dr.source == 'juhe'
+
+
+def test_fetch_primary_ok_backup_failed_skips_grace(db_engine):
+    """主源成功 + 备源故障（异常）→ 跳过 grace 立即单源入库，不 sleep 5 分钟。
+
+    回归点（2026-07-21 冒烟发现）：旧逻辑在「恰一源有效」时无条件 sleep(grace)，
+    但备源故障（HTTP 异常/超时）不会因等 5 分钟自愈——grace 重抓注定再次失败，
+    白白阻塞启动/cron 数分钟。grace 的正确语义是给「数据延迟」（源返回未开奖）
+    一个等待窗口，不是给「源故障」兜底。
+
+    判定：注入一个会记录调用次数的 sleep；若 grace 被 sleep，测试失败。
+    """
+    primary = _src(_dn('ssq', '062', [1, 2, 3, 4, 5, 6], [7]), name='mxnzp')
+    backup = _src(_dn('ssq', '062', [1, 2, 3, 4, 5, 6], [7]), name='juhe')
+    backup.fetch.side_effect = RuntimeError('juhe timeout')  # 备源故障（非未开奖）
+
+    slept = []
+    svc = FetchService(
+        primary, backup, db_engine,
+        grace_seconds=300,  # 即便配了 5 分钟 grace，故障路径也不该 sleep
+        max_attempts=1, sleep=lambda *_: slept.append(True),
+    )
+    r = svc.fetch_and_store('ssq')
+
+    assert r.stored and r.verified and r.single_source
+    assert r.error is None  # 单源成功，非错误
+    assert slept == [], f'故障路径不该 sleep grace，但 sleep 了 {len(slept)} 次'
+    # 入库来源是实际提供数据的主源
+    with Session(db_engine) as s:
+        dr = s.exec(select(DrawResult)).first()
+        assert dr.source == 'mxnzp' and dr.single_source
+
+
+def test_fetch_backup_ok_primary_failed_skips_grace(db_engine):
+    """对称：主源故障 + 备源成功 → 同样跳过 grace 立即单源入库（以备源为准）。"""
+    primary = _src(_dn('ssq', '062', [1, 2, 3, 4, 5, 6], [7]), name='mxnzp')
+    primary.fetch.side_effect = RuntimeError('mxnzp timeout')
+    backup = _src(_dn('ssq', '062', [1, 2, 3, 4, 5, 6], [7]), name='juhe')
+
+    slept = []
+    svc = FetchService(
+        primary, backup, db_engine,
+        grace_seconds=300, max_attempts=1, sleep=lambda *_: slept.append(True),
+    )
+    r = svc.fetch_and_store('ssq')
+
+    assert r.stored and r.verified and r.single_source
+    assert slept == []
+    with Session(db_engine) as s:
+        dr = s.exec(select(DrawResult)).first()
+        assert dr.source == 'juhe'  # 实际提供数据的备源
+
+
+def test_fetch_primary_ok_backup_not_drawn_keeps_grace(db_engine):
+    """主源成功 + 备源『未开奖』（正常 None）→ 保留 grace 重抓（grace 的正确用途）。
+
+    区别于上面两个故障测试：备源返回 None（未开奖/数据延迟）是 grace 设计应对的场景，
+    等 5 分钟后备源可能出数据 → 升级双源。这条不能被 B1 修复误伤。
+    """
+    primary = _src(_dn('ssq', '062', [1, 2, 3, 4, 5, 6], [7]), name='mxnzp')
+    backup_calls = [None, _dn('ssq', '062', [1, 2, 3, 4, 5, 6], [7])]  # 首次无，grace 重抓时有
+
+    def backup_fetch(_code):
+        return backup_calls.pop(0)
+
+    backup = _src(None, name='juhe')
+    backup.fetch.side_effect = backup_fetch
+
+    slept = []
+    svc = FetchService(
+        primary, backup, db_engine,
+        grace_seconds=1, max_attempts=1, sleep=lambda *_: slept.append(True),
+    )
+    r = svc.fetch_and_store('ssq')
+
+    # grace 触发 → 重抓到备源且一致 → 双源 verified（不是 single_source）
+    assert r.stored and r.verified and not r.single_source
+    assert len(slept) == 1  # grace 确实 sleep 了一次（正确用途）
