@@ -142,3 +142,13 @@ source: plan-lint/bootstrap@2026-07-21
 category: convention
 status: active
 last_verified: 2026-07-21
+
+## L-20260721T090600Z
+title: Plan gate 的 ruff check 与 pytest 同级——全测试绿 ≠ done；交付前必须 `uv run ruff check .` 清零，其中 F811 重复测试定义是静默漏测（后定义遮蔽先定义，先定义永不运行）
+detail: plan gate 同时跑 pytest + ruff check + lint-imports，三者任一非零即 halt「plan gate failed」。本次 run（SHA fdb0a5a）pytest 470 passed、lint-imports PASSED，但 ruff 11 errors → gate 直接判失败。教训：**「测试全绿」自报不代表 gate 过**——implementor 交付前必须自跑 gate 的全部命令，不只是 pytest。
+11 errors 三类根因与修法：(1) **机械类（7 条可 --fix）**——I001 import 未排序（app/api/dashboard.py、app/cli.py、tests/api/test_settings_t6e.py、tests/conftest.py、tests/webui/test_tokens.py）、F401 未用 import（tests/test_cli_t10.py 的 io/redirect_stdout）、F841 未用局部变量（tests/api/test_dashboard.py:331 cst_now）。修法：`uv run ruff check . --fix` 一把清零，不该留到 gate。(2) **F821 forward-ref 字符串注解未解析**——app/models/notification.py:43 注解引用 'User'、app/models/user.py:17 引用 'NotificationSettings'，但两名字连 TYPE_CHECKING 块里都没 import。SQLModel 循环引用须用 `if TYPE_CHECKING: from app.models.user import User` 形式导入——ruff 静态分析认 TYPE_CHECKING import，裸字符串注解不导入必报 F821。(3) **F811 重复测试定义（最危险）**——tests/api/test_dashboard.py 同一测试函数名 test_dashboard_custom_period_with_date_range 在 326 行与 509 行各定义一次，Python 后定义遮蔽先定义 → 326 行版本**静默永不运行**，pytest 仍全绿（运行数不差，无人察觉）。这是 test-suite 维度的 silent-failure：与 L-20260705T180000Z（stub 不命中删测试掩盖回归）同根——测试套件「看起来绿」但断言在流失。修法：改名合并两版本，不得放任遮蔽。
+修法（纪律）：(1) implementor commit/交付前跑 gate 同款三件套 `uv run pytest && uv run ruff check . && uv run lint-imports`，任一非零不交付；(2) 新增 SQLModel model 互相引用时统一 TYPE_CHECKING import 模式；(3) review 链/gate 对 F811 单独高亮——它不是风格问题，是「某测试从此不运行」的覆盖率洞，须视为 critical 而非可忽略 warning。
+source: plan-06/gate@2026-07-21
+category: test-strategy
+status: active
+last_verified: 2026-07-21
