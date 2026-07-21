@@ -37,11 +37,14 @@ class MxnzpAdapter:
 
     def fetch(self, lottery_code: str) -> DrawNumbers | None:
         # MXNZP 通用彩票「最新一期」接口（文档 id=3「最新通用中奖号码信息」权威）。
-        # 鉴权：app_id + app_secret 双参数（README 鉴权章节）。返回 {code, msg, data}。
+        # 鉴权：app_id + app_secret 双参数（README 鉴权章节）。**放 header 不放 URL
+        # query**——secret 进 URL 会泄露到 server logs / proxy access logs / httpx
+        # request URL 日志。README 明确 header 是「推荐方案」，实测两种方式等价。
         mxnzp_code = _MXNZP_CODE.get(lottery_code, lottery_code)
         r = self._client.get(
             'https://www.mxnzp.com/api/lottery/common/latest',
-            params={'code': mxnzp_code, 'app_id': self._app_id, 'app_secret': self._app_secret},
+            params={'code': mxnzp_code},
+            headers={'app_id': self._app_id, 'app_secret': self._app_secret},
         )
         r.raise_for_status()
         body = r.json()
