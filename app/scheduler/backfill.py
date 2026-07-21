@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, select
 
+from app.config import get_settings
 from app.models import DrawResult, LotteryType
 from app.scheduler import _JobDeps
 from app.seeds import SPECS
@@ -30,6 +31,14 @@ def run_startup_backfill(deps: _JobDeps) -> None:
         logger.error('startup_backfill_process_pending_failed', exc_info=True)
 
     # 2. 补宕机窗口内应开奖但未抓的彩种。
+    #    pre-check：两个数据源 key 都未配置时整段跳过——否则 7 彩种 × 12 次退避
+    #    重试注定全失败，阻塞应用启动数分钟（healthcheck 超时 → restart:always
+    #    无限重启循环，2026-07-21 冒烟实测）。outbox 已在步骤 1 处理，不受影响。
+    settings = get_settings()
+    if not settings.mxnzp_api_key and not settings.juhe_api_key:
+        logger.info('startup_backfill_skip_fetch reason=no_data_source_key')
+        return
+
     today = datetime.now(_CST).date()
     lookback_days = [today - timedelta(days=i) for i in range(_BACKFILL_LOOKBACK_DAYS)]
 
