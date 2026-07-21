@@ -93,7 +93,7 @@ def cmd_smoke(argparse_ns) -> None:
     settings = get_settings()
     # 双源适配器（spec §4.3 / §7.2）：MXNZP 主 + 聚合数据备
     fetch = FetchService(
-        MxnzpAdapter(settings.mxnzp_api_key),
+        MxnzpAdapter(settings.mxnzp_api_key, settings.mxnzp_app_secret),
         JuheAdapter(settings.juhe_api_key),
         engine,
     )

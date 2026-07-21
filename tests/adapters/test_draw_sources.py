@@ -32,11 +32,15 @@ def test_normalize_draw_no_real_formats():
 
 def test_mxnzp_adapter_parses():
     def handler(req: httpx.Request) -> httpx.Response:
+        # 新契约（文档 id=3）：/lottery/common/latest，返回 {code, msg, data:{openCode,expect,...}}
         return httpx.Response(
-            200, json={'code': '200', 'data': {'issue': '2026062', 'numbers': '01,02,03,04,05,06+07'}}
+            200, json={'code': 1, 'msg': 'ok', 'data': {
+                'openCode': '01,02,03,04,05,06+07', 'code': 'ssq', 'expect': '2026062',
+                'name': '双色球', 'time': '2026-06-12 21:15:00',
+            }}
         )
 
-    adapter = MxnzpAdapter(api_key='k', transport=_mock_transport(handler))
+    adapter = MxnzpAdapter(api_key='k', app_secret='s', transport=_mock_transport(handler))
     d = adapter.fetch('ssq')
     assert d is not None
     assert d.lottery_code == 'ssq'
@@ -45,13 +49,66 @@ def test_mxnzp_adapter_parses():
     assert d.back == (7,)
 
 
+def test_mxnzp_adapter_sends_app_id_and_secret_and_code_param():
+    """鉴权 + URL 契约：请求必须带 app_id/app_secret/code 参数，且 hit /common/latest。"""
+    seen = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen['url'] = str(req.url)
+        seen['params'] = dict(req.url.params)
+        return httpx.Response(200, json={'code': 1, 'data': {
+            'openCode': '01,02,03,04,05,06+07', 'code': 'ssq', 'expect': '2026062', 'time': 't',
+        }})
+
+    adapter = MxnzpAdapter(api_key='my-id', app_secret='my-secret', transport=_mock_transport(handler))
+    adapter.fetch('ssq')
+    assert '/api/lottery/common/latest' in seen['url']
+    assert seen['params']['app_id'] == 'my-id'
+    assert seen['params']['app_secret'] == 'my-secret'
+    assert seen['params']['code'] == 'ssq'
+
+
+def test_mxnzp_adapter_maps_dlt_to_cjdlt():
+    """大乐透 code 映射：项目 dlt → MXNZP cjdlt（文档 line 38 权威）。"""
+    seen = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen['code'] = req.url.params.get('code')
+        # 大乐透真实 openCode 格式：前区5 + 后区2（两个 + 号）
+        return httpx.Response(200, json={'code': 1, 'data': {
+            'openCode': '08,16,18,24,34+09+12', 'code': 'cjdlt', 'expect': '2026081', 'time': 't',
+        }})
+
+    adapter = MxnzpAdapter(api_key='k', app_secret='s', transport=_mock_transport(handler))
+    d = adapter.fetch('dlt')
+    assert seen['code'] == 'cjdlt'
+    assert d is not None
+    assert d.lottery_code == 'dlt'  # 出口仍用项目 code
+    assert d.front == (8, 16, 18, 24, 34)
+    assert d.back == (9, 12)  # 两个 + 都正确解析为后区两号
+
+
+def test_mxnzp_adapter_parses_positional_code_without_plus():
+    """按位型彩种（fc3d/qxc/pl3/pl5）openCode 无 +，全部归 front，back=None。"""
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={'code': 1, 'data': {
+            'openCode': '9,0,6', 'code': 'fc3d', 'expect': '2026191', 'time': 't',
+        }})
+
+    adapter = MxnzpAdapter(api_key='k', app_secret='s', transport=_mock_transport(handler))
+    d = adapter.fetch('fc3d')
+    assert d is not None
+    assert d.front == (9, 0, 6)
+    assert d.back is None
+
+
 def test_mxnzp_adapter_empty_means_not_drawn():
-    """HTTP 200 但 data 为空 = 该期未开奖（非错误）。"""
+    """HTTP 200 但 code=0 / data 为空 = 该期未开奖（非错误）。"""
 
     def handler(req):
-        return httpx.Response(200, json={'code': '200', 'data': None})
+        return httpx.Response(200, json={'code': 0, 'msg': 'no data', 'data': None})
 
-    adapter = MxnzpAdapter(api_key='k', transport=_mock_transport(handler))
+    adapter = MxnzpAdapter(api_key='k', app_secret='s', transport=_mock_transport(handler))
     assert adapter.fetch('ssq') is None
 
 
@@ -65,10 +122,12 @@ def test_mxnzp_adapter_shanghai_date():
 
     def handler(req: httpx.Request) -> httpx.Response:
         return httpx.Response(
-            200, json={'code': '200', 'data': {'issue': '2026062', 'numbers': '01,02,03,04,05,06+07'}}
+            200, json={'code': 1, 'data': {
+                'openCode': '01,02,03,04,05,06+07', 'code': 'ssq', 'expect': '2026062', 'time': 't',
+            }}
         )
 
-    adapter = MxnzpAdapter(api_key='k', transport=_mock_transport(handler))
+    adapter = MxnzpAdapter(api_key='k', app_secret='s', transport=_mock_transport(handler))
 
     # 模拟 Shanghai 00:30（= UTC 前一天 16:30）
     shanghai_0030 = datetime(2026, 6, 22, 0, 30, tzinfo=ZoneInfo('Asia/Shanghai'))

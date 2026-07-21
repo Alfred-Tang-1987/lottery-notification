@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     crypto_key_v2: str | None = Field(default=None, alias='CRYPTO_KEY_V2')
 
     mxnzp_api_key: str = ''
+    mxnzp_app_secret: str = ''
     juhe_api_key: str = ''
 
     smtp_host: str | None = None
