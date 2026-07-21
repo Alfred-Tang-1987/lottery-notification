@@ -132,11 +132,17 @@ class FetchService:
         # 恰一源有效：grace 后重抓缺失源（spec §7.2 部分源 grace window）。
         # 重抓三态分流：拿到数据→双源校验（不一致即拒绝，不得降级单源——否则双源
         # 安全网在 grace 路径被绕过，§10 准确性优先）；仍无/故障→单源兜底。
-        if self._grace > 0:
+        #
+        # grace 触发条件（2026-07-21 冒烟修正）：仅当缺失源是「未开奖」（ok=True 且
+        # None，数据延迟）时才 grace 等待。缺失源若是「故障」（ok=False，HTTP 异常/
+        # 超时/鉴权失败），sleep 5 分钟注定再次失败——只白白阻塞启动/cron 数分钟
+        # （NAS 场景 healthcheck 超时 → restart 循环）。故障直接走单源兜底。
+        present_dn = p if p is not None else b  # 恰一源有效，必非 None
+        missing_ok = p_ok if p is None else b_ok  # 缺失源是否「未开奖」而非「故障」
+        assert present_dn is not None  # 类型窄化（上面分支已排双 None/双有）
+        if self._grace > 0 and missing_ok:
             self._sleep(self._grace)
-            present_dn = p if p is not None else b  # 恰一源有效，必非 None
-            assert present_dn is not None  # 类型窄化（上面分支已排双 None/双有）
-            # 归属：以实际提供数据的源为准（与单源兜底 :147 一致），而非恒记主源——
+            # 归属：以实际提供数据的源为准（与单源兜底一致），而非恒记主源——
             # 否则主源故障靠备源恢复入库的行会错标 source=主源，丢失 ops 追溯来源。
             present_source_name = self._primary.name if p is not None else self._backup.name
             verdict = self._grace_refetch(
@@ -148,7 +154,7 @@ class FetchService:
             if verdict is not None:
                 return verdict  # 双源校验成功入库 / mismatch 拒绝
 
-        # grace 后仍单源（重抓仍无/故障）→ single_source 存（记录实际来源）
+        # grace 后仍单源（重抓仍无/故障，或缺失源本身故障跳过 grace）→ single_source 存
         only = p if p is not None else b
         src_name = self._primary.name if p is not None else self._backup.name
         return self._store(only, verified=True, single_source=True, source_name=src_name)
