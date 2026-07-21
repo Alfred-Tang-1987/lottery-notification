@@ -50,12 +50,18 @@ def test_mxnzp_adapter_parses():
 
 
 def test_mxnzp_adapter_sends_app_id_and_secret_and_code_param():
-    """鉴权 + URL 契约：请求必须带 app_id/app_secret/code 参数，且 hit /common/latest。"""
+    """鉴权 + URL 契约：code 在 URL，app_id/app_secret 在 **header**（非 URL query），
+    且 hit /common/latest。
+
+    secret 必须走 header——放 URL query 会泄露到 server logs / proxy access logs /
+    httpx request URL 日志（实测冒烟日志完整记录过 secret）。
+    """
     seen = {}
 
     def handler(req: httpx.Request) -> httpx.Response:
         seen['url'] = str(req.url)
         seen['params'] = dict(req.url.params)
+        seen['headers'] = dict(req.headers)
         return httpx.Response(200, json={'code': 1, 'data': {
             'openCode': '01,02,03,04,05,06+07', 'code': 'ssq', 'expect': '2026062', 'time': 't',
         }})
@@ -63,9 +69,12 @@ def test_mxnzp_adapter_sends_app_id_and_secret_and_code_param():
     adapter = MxnzpAdapter(api_key='my-id', app_secret='my-secret', transport=_mock_transport(handler))
     adapter.fetch('ssq')
     assert '/api/lottery/common/latest' in seen['url']
-    assert seen['params']['app_id'] == 'my-id'
-    assert seen['params']['app_secret'] == 'my-secret'
-    assert seen['params']['code'] == 'ssq'
+    assert seen['params']['code'] == 'ssq'  # code 留 URL（非敏感）
+    assert seen['headers']['app_id'] == 'my-id'
+    assert seen['headers']['app_secret'] == 'my-secret'
+    # 防回归：secret 绝不能出现在 URL（server/proxy 日志会记录）
+    assert 'app_id' not in seen['params']
+    assert 'app_secret' not in seen['params']
 
 
 def test_mxnzp_adapter_maps_dlt_to_cjdlt():
