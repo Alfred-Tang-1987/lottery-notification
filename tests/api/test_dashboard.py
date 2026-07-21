@@ -328,8 +328,6 @@ def test_dashboard_custom_period_with_date_range(db_engine):
     _seed_lottery(db_engine)
     uid = _make_user(db_engine, 'custom_period_user')
 
-    cst_now = datetime.now(_CST).replace(tzinfo=None)
-
     with Session(db_engine) as s:
         # Ticket from 2026-06-15
         t1 = Ticket(
@@ -506,7 +504,7 @@ def test_dashboard_default_period_is_month(db_engine):
     assert summary['total_cost'] == 200, f"Expected 200 (default=month), got {summary['total_cost']}"
 
 
-def test_dashboard_custom_period_with_date_range(db_engine):
+def test_dashboard_custom_period_rolling_window(db_engine):
     """Spec §12.2 row 6: 自定义 — period=custom with date_from/date_to filters by custom range."""
     _seed_lottery(db_engine)
     uid = _make_user(db_engine, 'custom_period_user')

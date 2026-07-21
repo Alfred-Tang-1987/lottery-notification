@@ -52,8 +52,8 @@ def db_engine(tmp_path, monkeypatch):
     让 lifespan 等直接使用 get_engine() 的代码命中隔离测试数据库。
     """
     import app.models  # noqa: F401  注册全部表
-    from app.db.engine import apply_sqlite_pragmas, build_engine
     from app.db import session as session_mod
+    from app.db.engine import apply_sqlite_pragmas, build_engine
 
     eng = build_engine(f'sqlite:///{tmp_path}/test.db')
     apply_sqlite_pragmas(eng)

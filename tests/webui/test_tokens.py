@@ -2,7 +2,6 @@ from pathlib import Path
 
 import pytest
 
-
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 TOKENS_CSS = PROJECT_ROOT / "web" / "src" / "styles" / "tokens.css"
 MAIN_TS = PROJECT_ROOT / "web" / "src" / "main.ts"

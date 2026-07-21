@@ -4,10 +4,10 @@ Spec §12.2：仪表盘首屏需要「待兑奖 / 我的命中 / 盈亏速览 / 
 /api/dashboard 在一次请求内返回当前用户的全部首屏数据，减少前端多次请求。
 """
 
+import json
 from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
-import json
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field

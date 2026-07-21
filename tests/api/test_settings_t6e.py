@@ -12,7 +12,7 @@ from app.api.security import COOKIE_NAME, CSRF_HEADER, create_session_token
 from app.config import reset_settings_cache
 from app.infrastructure.crypto import CryptoService
 from app.main import app
-from app.models import LotteryType, NotificationRule, NotificationChannel, NotificationSettings, User
+from app.models import LotteryType, NotificationChannel, NotificationRule, NotificationSettings, User
 
 
 @pytest.fixture(autouse=True)
