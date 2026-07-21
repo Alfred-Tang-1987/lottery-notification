@@ -118,7 +118,7 @@ def _build_scheduler_and_deps(engine: Engine, settings: Settings):
     )
 
     fetch = FetchService(
-        MxnzpAdapter(settings.mxnzp_api_key),
+        MxnzpAdapter(settings.mxnzp_api_key, settings.mxnzp_app_secret),
         JuheAdapter(settings.juhe_api_key),
         engine,
     )
