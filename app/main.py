@@ -1,5 +1,6 @@
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import Depends, FastAPI
 from sqlalchemy import text
@@ -250,3 +251,50 @@ def health(db: Engine = Depends(get_db_for_health)):
         'tz': get_settings().tz,
         'db': 'ok' if db_ok else 'down',
     }
+
+
+# —— FastAPI 静态托管 SPA（spec §12.3 / plan 06 T8）——
+# STATIC_DIR 由前端构建产物（web/ → npm run build → ../static/）落盘。生产部署存在，
+# 开发态/未构建时不存在——此时不应注册 catch_all（保留 FastAPI 默认 404，让 dev 用 Vite）。
+# 注：plan T8 brief 的 Files 字段提到 app/cli.py（build 集成），但 brief 无 cli.py 代码块，
+# cli 将在 T10 引入（plan §10）——本 task 不创建 cli.py，避免 over-build（L-20260706T123500Z）。
+STATIC_DIR = Path(__file__).parent.parent / 'static'
+
+
+def mount_spa(app: FastAPI, static_dir: Path) -> None:
+    """注册 SPA 静态托管 + history catch-all（spec §12.3）。
+
+    - ``/assets/*`` 走 StaticFiles（前端构建产物的 hash 命名资源）。
+    - ``/{full_path:path}`` catch_all：非 API/静态路径回退 index.html，让 Vue Router
+      history 模式刷新子路由时不 404。
+
+    catch_all 注册时机：必须**晚于**所有 API router（app.include_router 在 main.py 顶部
+    已完成）。FastAPI 按注册顺序匹配，API router 先注册 → 先命中；catch_all 仅在无人命中
+    时兜底。因此 catch_all 的排除前缀列表（auth/admin/channels/health）是 belt-and-
+    suspenders 防御性逻辑，列表不完整（缺 tickets/claims/api）不影响功能——顺序保证。
+
+    抽成函数：模块级一次性调用 + 测试可显式调用并清理 routes（避免污染全局 app）。
+    """
+    from fastapi.responses import FileResponse, JSONResponse
+    from fastapi.staticfiles import StaticFiles
+
+    assets_dir = static_dir / 'assets'
+    if assets_dir.exists():
+        app.mount('/assets', StaticFiles(directory=assets_dir), name='assets')
+
+    index_html = static_dir / 'index.html'
+
+    @app.get('/{full_path:path}', name='spa_catch_all')
+    def spa_catch_all(full_path: str):
+        """history 模式：非 API/静态路径回退 index.html（spec §12.3）。
+
+        排除已知 API 前缀——防御性 belt-and-suspenders（路由顺序已保证 API 先命中）。
+        """
+        if full_path.startswith(('auth/', 'admin/', 'channels/', 'health')):
+            return JSONResponse(status_code=404, content={'detail': 'not found'})
+        return FileResponse(index_html)
+
+
+# 模块级一次性注册（生产 static/ 存在时挂载，开发/未 build 时跳过）。
+if STATIC_DIR.exists() and (STATIC_DIR / 'index.html').exists():
+    mount_spa(app, STATIC_DIR)
