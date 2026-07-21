@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -57,13 +57,32 @@ class MxnzpAdapter:
         expect = data['expect']  # '2026082'
         open_code = data['openCode']  # '05,07,10,14,21,28+04'（分区型）或 '9,0,6'（按位型）
         front, back = self._parse_open_code(open_code)
+        # draw_date 取 MXNZP 返回的 time 字段（真实开奖日，如 '2026-07-19 21:15:00'）。
+        # MXNZP 国内服务，time 无时区标记，按 Asia/Shanghai 解释。
+        # 健壮性：time 缺失/格式异常时回退抓取日（不让解析错炸掉整次抓取——
+        # draw_date 仅用于展示，比对靠 draw_no）。
+        draw_date = self._parse_time(data.get('time'))
         return DrawNumbers(
             lottery_code=lottery_code,
             draw_no=normalize_draw_no(expect),
-            draw_date=datetime.now(_CST).date(),
+            draw_date=draw_date,
             front=front,
             back=back,
         )
+
+    @staticmethod
+    def _parse_time(raw: str | None) -> date:
+        """解析 MXNZP time 字段（'YYYY-MM-DD HH:MM:SS'，无时区）为 CST 日期。
+
+        回退链：time 非空且可解析 → 其 CST 日期；否则 → 抓取日（now CST）。
+        """
+        if raw:
+            try:
+                # fromisoformat 接受 'YYYY-MM-DD HH:MM:SS'；按 CST 解释（国内开奖时间）。
+                return datetime.fromisoformat(raw).replace(tzinfo=_CST).date()
+            except (ValueError, TypeError):
+                pass
+        return datetime.now(_CST).date()
 
     @staticmethod
     def _parse_open_code(open_code: str) -> tuple[tuple[int, ...], tuple[int, ...] | None]:

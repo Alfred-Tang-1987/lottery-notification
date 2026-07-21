@@ -47,6 +47,9 @@ def test_mxnzp_adapter_parses():
     assert d.draw_no == '062'  # 归一化
     assert d.front == (1, 2, 3, 4, 5, 6)
     assert d.back == (7,)
+    # draw_date 取 MXNZP 返回的 time 字段（真实开奖日），不是抓取日。
+    # 回归点（2026-07-21 冒烟）：旧代码用 datetime.now()，ssq 7-19 开奖存成抓取日 7-21。
+    assert d.draw_date == date(2026, 6, 12)
 
 
 def test_mxnzp_adapter_sends_app_id_and_secret_and_code_param():
@@ -122,41 +125,38 @@ def test_mxnzp_adapter_empty_means_not_drawn():
 
 
 def test_mxnzp_adapter_shanghai_date():
-    """§4.3 + §7.3: draw_date 必须用 Asia/Shanghai 时区，不能回退到 UTC。
-    开奖窗口 21:30-01:00 横跨 Shanghai 午夜，00:30 CST = 前一天 16:30 UTC，
-    若用 UTC.date() 会少一天。"""
-    from datetime import datetime, timezone
-    from unittest.mock import patch
-    from zoneinfo import ZoneInfo
-
+    """§4.3 + §7.3: draw_date 取自 MXNZP time 字段，按 Asia/Shanghai 解释（国内服务）。
+    开奖窗口 21:30-01:00 横跨 Shanghai 午夜——若错用 UTC 解释 '2026-06-22 00:30:00'，
+    转回 UTC 是前一天 16:30，date() 会少一天。time 字段无时区标记，必须按 CST 读。"""
+    # time 给的是 CST 00:30（开奖跨午夜的真实场景）
     def handler(req: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200, json={'code': 1, 'data': {
-                'openCode': '01,02,03,04,05,06+07', 'code': 'ssq', 'expect': '2026062', 'time': 't',
+                'openCode': '01,02,03,04,05,06+07', 'code': 'ssq', 'expect': '2026062',
+                'time': '2026-06-22 00:30:00',  # CST 跨午夜
             }}
         )
 
     adapter = MxnzpAdapter(api_key='k', app_secret='s', transport=_mock_transport(handler))
-
-    # 模拟 Shanghai 00:30（= UTC 前一天 16:30）
-    shanghai_0030 = datetime(2026, 6, 22, 0, 30, tzinfo=ZoneInfo('Asia/Shanghai'))
-    utc_1630 = datetime(2026, 6, 21, 16, 30, tzinfo=UTC)
-    with patch('app.adapters.mxnzp.datetime') as mock_dt:
-        # 关键：代码调用 datetime.now(timezone.utc) 时返回 utc_1630
-        # 若代码用 UTC，则 date() 得到 6/21；若用 Asia/Shanghai 则得到 6/22
-        def _now(tz=None):
-            if tz is UTC:
-                return utc_1630
-            if str(tz) == 'Asia/Shanghai':
-                return shanghai_0030
-            return utc_1630  # 默认
-
-        mock_dt.now = _now
-        mock_dt.__name__ = 'datetime'
-        mock_dt.timezone = timezone
-        d = adapter.fetch('ssq')
+    d = adapter.fetch('ssq')
     assert d is not None
-    assert d.draw_date == date(2026, 6, 22)  # Shanghai 日期是 6/22，不是 UTC 的 6/21
+    assert d.draw_date == date(2026, 6, 22)  # CST 日期是 6/22
+
+
+def test_mxnzp_adapter_draw_date_falls_back_when_time_missing():
+    """time 字段缺失/格式错时回退抓取日（不让解析错炸掉抓取）。"""
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={'code': 1, 'data': {
+            'openCode': '01,02,03,04,05,06+07', 'code': 'ssq', 'expect': '2026062',
+            'time': 'not-a-date',  # 格式错
+        }})
+
+    adapter = MxnzpAdapter(api_key='k', app_secret='s', transport=_mock_transport(handler))
+    d = adapter.fetch('ssq')
+    assert d is not None
+    # 回退到今天（抓取日），不抛异常
+    from datetime import date as _date
+    assert d.draw_date == _date.today()
 
 
 def test_juhe_adapter_shanghai_date():
