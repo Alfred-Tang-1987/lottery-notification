@@ -2,6 +2,11 @@
 
 用法（spec §13 Phase 1.0.13）::
 
+    # 推荐：交互式 prompt（密码不进 shell history / ps）
+    uv run python -m app.cli create-admin --username admin
+    # 或环境变量（适合非交互自动化：Docker entrypoint / ansible）
+    ADMIN_PASSWORD=<p> uv run python -m app.cli create-admin --username admin
+    # --password 显式（向后兼容；注意会进 shell history / ps，仅可信 shell 用）
     uv run python -m app.cli create-admin --username admin --password <p>
     uv run python -m app.cli ssq
 
@@ -15,8 +20,12 @@
 """
 
 import argparse
+import getpass
 import logging
+import os
 import sys
+
+from sqlmodel import Session
 
 from app.adapters.juhe import JuheAdapter
 from app.adapters.mxnzp import MxnzpAdapter
@@ -26,7 +35,6 @@ from app.db.session import get_engine
 from app.models import User
 from app.services.compare_service import CompareService
 from app.services.fetch_service import FetchService
-from sqlmodel import Session
 
 logger = logging.getLogger(__name__)
 
@@ -35,16 +43,39 @@ logger = logging.getLogger(__name__)
 engine = get_engine()
 
 
+def resolve_password(argparse_ns) -> str:
+    """解析 admin 密码，三档优先级（避免密码泄露到 shell history / ps）：
+
+    1. ``--password`` 显式参数（向后兼容；仅可信 shell 用，会进 history/ps）
+    2. ``ADMIN_PASSWORD`` 环境变量（适合非交互自动化：Docker entrypoint / ansible）
+    3. 交互式 ``getpass`` prompt（推荐，密码不落盘）
+
+    第三档在非交互终端（无 TTY，如某些 CI/容器场景）会抛 ``getpass.GetpassWarning``
+    回退到明文输入或直接报错——此时应改用 env 变量。
+    """
+    if argparse_ns.password:
+        return argparse_ns.password
+    env_pw = os.environ.get('ADMIN_PASSWORD')
+    if env_pw:
+        return env_pw
+    return getpass.getpass('Admin password: ')
+
+
 def cmd_create_admin(argparse_ns) -> None:
     """创建首个 admin 用户（spec §13 Phase 1.0.13 bootstrap）。
 
     username 重复会从 SQLAlchemy 上抛 IntegrityError——调用方（CLI main）不捕获，
     异常非零退出，避免「静默成功」的 silent-failure 陷阱（运维误以为已建账号）。
     """
+    password = resolve_password(argparse_ns)
+    if not password:
+        # getpass 空输入 / env 为空串：不静默创建空密码账号（silent-failure 防护）
+        print('ERROR: password 不能为空（提供 --password / ADMIN_PASSWORD / 交互输入）', file=sys.stderr)
+        sys.exit(2)
     with Session(engine) as s:
         u = User(
             username=argparse_ns.username,
-            password_hash=hash_password(argparse_ns.password),
+            password_hash=hash_password(password),
             role='admin',
             invite_code='BOOTSTRAP',  # CLI bootstrap 标记（不走邀请码防爆破）
         )
@@ -89,7 +120,12 @@ def main(argv=None) -> None:
 
     ca = sub.add_parser('create-admin', help='创建首个 admin（bootstrap）')
     ca.add_argument('--username', required=True)
-    ca.add_argument('--password', required=True)
+    ca.add_argument(
+        '--password',
+        default=None,
+        help='admin 密码；省略则读 ADMIN_PASSWORD 环境变量，再省略则交互 prompt（推荐，'
+        '避免密码进 shell history / ps）',
+    )
     ca.set_defaults(func=cmd_create_admin)
 
     smoke = sub.add_parser('ssq', help='手动触发一期 ssq 端到端冒烟')

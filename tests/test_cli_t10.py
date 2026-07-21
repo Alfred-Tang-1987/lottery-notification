@@ -18,8 +18,6 @@
 - ``backup.sh``/``deploy.md`` 是声明式文件，用内容契约测试（同 T9 Dockerfile 测试风格）。
 """
 
-import io
-from contextlib import redirect_stdout
 from unittest.mock import MagicMock
 
 import pytest
@@ -71,6 +69,52 @@ def test_create_admin_rejects_duplicate_username(db_engine, monkeypatch):
         cli_mod.cmd_create_admin(
             argparse_ns=MagicMock(username='admin', password='second-pass')
         )
+
+
+# ---------------------------------------------------------------- password 解析（安全）
+def test_resolve_password_prefers_explicit_arg():
+    """--password 显式参数优先级最高（向后兼容）。"""
+    import app.cli as cli_mod
+
+    ns = MagicMock(password='explicit-pass')
+    assert cli_mod.resolve_password(ns) == 'explicit-pass'
+
+
+def test_resolve_password_falls_back_to_env(monkeypatch):
+    """省略 --password 时读 ADMIN_PASSWORD 环境变量（非交互自动化场景）。"""
+    import app.cli as cli_mod
+
+    monkeypatch.setenv('ADMIN_PASSWORD', 'env-pass')
+    ns = MagicMock(password=None)  # 省略 --password
+    assert cli_mod.resolve_password(ns) == 'env-pass'
+
+
+def test_resolve_password_falls_back_to_getpass(monkeypatch):
+    """env 也省略时走交互 getpass prompt（密码不进 shell history / ps）。"""
+    import app.cli as cli_mod
+
+    monkeypatch.delenv('ADMIN_PASSWORD', raising=False)
+    # 替换 getpass.getpass 避免真卡 stdin（CI 无 TTY 会 hang）
+    monkeypatch.setattr(cli_mod.getpass, 'getpass', lambda prompt: 'typed-pass')
+    ns = MagicMock(password=None)
+    assert cli_mod.resolve_password(ns) == 'typed-pass'
+
+
+def test_create_admin_rejects_empty_password(monkeypatch):
+    """密码解析为空（prompt 空输入 / env 空串）时 sys.exit(2)，不静默创建空密码账号。
+
+    回归点：空密码哈希后仍能落库（bcrypt 接受空串），但空密码 = 无认证，是
+    silent-failure（运维以为建了账号，实则任何人空密码可登）。必须显式拒绝。
+    """
+    import app.cli as cli_mod
+
+    monkeypatch.delenv('ADMIN_PASSWORD', raising=False)
+    monkeypatch.setattr(cli_mod.getpass, 'getpass', lambda prompt: '')  # 空输入
+    ns = MagicMock(username='admin', password=None)
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli_mod.cmd_create_admin(argparse_ns=ns)
+    assert exc_info.value.code == 2
 
 
 # ---------------------------------------------------------------- ssq smoke
