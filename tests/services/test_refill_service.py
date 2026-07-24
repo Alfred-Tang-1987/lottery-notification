@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from sqlalchemy.orm import session as sa_session_module
@@ -118,7 +118,7 @@ def test_refill_lookup_raises_isolates_row_and_still_marks_expired(db_engine):
     c_id, _ = _seed_float_win(db_engine, days_ago=10, suffix='C')  # 超期，应标 unresolved
 
     # A 的 amount_lookup 抛异常；B 正常（C 超期不会到 lookup）
-    def lookup(lottery_code, draw_no, tier):
+    def lookup(lottery_code, draw_no, draw_date, tier):
         if draw_no == a_no:  # A 触发源故障
             raise RuntimeError('source 5xx for A')
         return 5_000_000
@@ -249,7 +249,7 @@ def test_refill_permanent_lookup_error_marks_unresolved_immediately(db_engine):
 
     perm_id, perm_no = _seed_float_win(db_engine, days_ago=1, suffix='P')
 
-    def lookup(lottery_code, draw_no, tier):
+    def lookup(lottery_code, draw_no, draw_date, tier):
         if draw_no == perm_no:
             raise PermanentLookupError('typemoney=abc not parseable')
         return 5_000_000
@@ -275,7 +275,7 @@ def test_refill_transient_exception_still_retries_not_unresolved(db_engine):
     """
     trans_id, trans_no = _seed_float_win(db_engine, days_ago=1, suffix='T')
 
-    def lookup(lottery_code, draw_no, tier):
+    def lookup(lottery_code, draw_no, draw_date, tier):
         if draw_no == trans_no:
             raise RuntimeError('source 5xx transient')
         return 5_000_000
@@ -359,7 +359,7 @@ def test_refill_marks_expired_even_when_permanent_unresolved_commit_fails(db_eng
 
     monkeypatch.setattr(sa_session_module.Session, 'commit', fail_on_permanent_mark_commit)
 
-    def lookup(lottery_code, draw_no, tier):
+    def lookup(lottery_code, draw_no, draw_date, tier):
         if draw_no == p_no:
             raise PermanentLookupError('typemoney=abc')
         return None
@@ -374,3 +374,221 @@ def test_refill_marks_expired_even_when_permanent_unresolved_commit_fails(db_eng
         assert c.unresolved is True, (
             'PermanentLookupError 分支 commit 抛异常时，批末 expired 标记仍须执行（finally）'
         )
+
+
+# ────────── Plan 07 T4：签名扩展 + verified 过滤 + 金额公式 + 分组限流 ──────────
+
+from datetime import UTC
+from zoneinfo import ZoneInfo
+
+from app.domain.prize_tables import get_tiers
+
+
+def _seed_float_win_with_ticket(engine, days_ago=0, tier=1, suffix='',
+                                append=False, multiplier=1, verified=True,
+                                lottery_code=None):
+    """seed 带完整 Ticket 属性的浮动奖中奖 comparison。
+
+    lottery_code 默认根据 append 推断（dlt/ssq），可显式覆盖。
+    """
+    code = lottery_code or ('dlt' if append else 'ssq')
+    with Session(engine) as s:
+        u = User(username=f'u{suffix}', password_hash='x', role='user', invite_code='C')
+        s.add(u)
+        s.commit()
+        s.refresh(u)
+        dr = DrawResult(
+            lottery_code=code,
+            draw_no=f'082{suffix}',
+            draw_date=datetime(2026, 7, 19, 21, 30, tzinfo=ZoneInfo('Asia/Shanghai')) - timedelta(days=days_ago),
+            numbers_json='{"front":[1,2,3,4,5],"back":[1,2]}' if code == 'dlt' else '{"front":[1,2,3,4,5,6],"back":[7]}',
+            source='mxnzp',
+            verified=verified,
+            version=1,
+        )
+        s.add(dr)
+        s.commit()
+        s.refresh(dr)
+        t = Ticket(
+            user_id=u.id,
+            lottery_code=code,
+            play_type='single',
+            numbers_json='{"front":[1,2,3,4,5],"back":[1,2]}' if code == 'dlt' else '{"front":[1,2,3,4,5,6],"back":[7]}',
+            multiplier=multiplier,
+            append=append,
+            cost=200 * multiplier + (100 if append else 0),
+        )
+        s.add(t)
+        s.commit()
+        s.refresh(t)
+        cmp = Comparison(
+            user_id=u.id,
+            draw_result_id=dr.id,
+            ticket_id=t.id,
+            hits_json='{}',
+            prize_tier=tier,
+            prize_amount=None,
+            is_win=True,
+            created_at=datetime.now(UTC).replace(tzinfo=None) - timedelta(days=days_ago),
+        )
+        s.add(cmp)
+        s.commit()
+        s.refresh(cmp)
+        return cmp.id, t.id
+
+
+class TestRefillAmountFormula:
+    """金额公式正确性（OV1：倍投必须应用）。"""
+
+    def test_refill_applies_multiplier(self, db_engine):
+        """倍投注：amount = base * multiplier。"""
+        cmp_id, _ = _seed_float_win_with_ticket(db_engine, multiplier=3)
+        worker = FloatRefillWorker(
+            db_engine,
+            amount_lookup=MagicMock(return_value=1_000_000),  # 1万分
+            max_age_days=7,
+        )
+        n = worker.refill()
+        assert n == 1
+        with Session(db_engine) as s:
+            c = s.get(Comparison, cmp_id)
+            assert c.prize_amount == 1_000_000 * 3  # 3倍投
+
+    def test_refill_applies_append_multiplier(self, db_engine):
+        """追加以：amount = base * append_multiplier（dlt tier 1 = 1.8x）。"""
+        cmp_id, _ = _seed_float_win_with_ticket(db_engine, append=True, tier=1)
+        worker = FloatRefillWorker(
+            db_engine,
+            amount_lookup=MagicMock(return_value=1_000_000),
+            max_age_days=7,
+        )
+        n = worker.refill()
+        assert n == 1
+        with Session(db_engine) as s:
+            c = s.get(Comparison, cmp_id)
+            assert c.prize_amount == int(1_000_000 * 1.8)  # 追加1.8x
+
+    def test_refill_applies_both_append_and_multiplier(self, db_engine):
+        """追加+倍投：amount = base * append_multiplier * multiplier。"""
+        cmp_id, _ = _seed_float_win_with_ticket(db_engine, append=True, multiplier=5, tier=1)
+        worker = FloatRefillWorker(
+            db_engine,
+            amount_lookup=MagicMock(return_value=1_000_000),
+            max_age_days=7,
+        )
+        n = worker.refill()
+        assert n == 1
+        with Session(db_engine) as s:
+            c = s.get(Comparison, cmp_id)
+            assert c.prize_amount == int(1_000_000 * 1.8) * 5  # 追加1.8x × 5倍投
+
+    def test_refill_append_guard_none_multiplier(self, db_engine):
+        """append=True 但 _find_tier 返回 None（未知彩种）→ guard 跳过 append 乘法不 crash（4A）。
+
+        Plan 07 T4 的 guard 条件是 `if ticket.append and tier_info and tier_info.append_multiplier`。
+        要让 _find_tier 返回 None 而 comparison 仍能通过 prize_tier IN (1,2) 查询过滤，
+        必须用一个**不在 PRIZE_TABLES 的 lottery_code**（get_tiers 抛 KeyError → 返回 None）。
+        SQLite 测试库未启用 foreign_keys pragma，可插入非引用 lottery_code 而不触发 FK 错误。
+        （原 plan 草稿用 dlt + tier=99，但 tier=99 被 IN (1,2) 过滤排除，行永远到不了
+        _find_tier——本测试修正为 zzzz + tier=1 以真正到达 guard 路径，忠实 plan 文档意图。）
+        """
+        # lottery_code='zzzz' 不在 PRIZE_TABLES → _find_tier('zzzz', 1) 返回 None
+        with Session(db_engine) as s:
+            u = User(username='uguard', password_hash='x', role='user', invite_code='C')
+            s.add(u)
+            s.commit()
+            s.refresh(u)
+            dr = DrawResult(
+                lottery_code='zzzz', draw_no='082g',
+                draw_date=datetime(2026, 7, 19, 21, 30, tzinfo=ZoneInfo('Asia/Shanghai')),
+                numbers_json='{"front":[1,2,3,4,5],"back":[1,2]}',
+                source='mxnzp', verified=True, version=1,
+            )
+            s.add(dr)
+            s.commit()
+            s.refresh(dr)
+            t = Ticket(
+                user_id=u.id, lottery_code='zzzz', play_type='single',
+                numbers_json='{"front":[1,2,3,4,5],"back":[1,2]}',
+                multiplier=2, append=True, cost=400,
+            )
+            s.add(t)
+            s.commit()
+            s.refresh(t)
+            cmp = Comparison(
+                user_id=u.id, draw_result_id=dr.id, ticket_id=t.id,
+                hits_json='{}', prize_tier=1,  # tier=1 通过 IN (1,2) 过滤
+                prize_amount=None, is_win=True,
+                created_at=datetime.now(UTC).replace(tzinfo=None),
+            )
+            s.add(cmp)
+            s.commit()
+            s.refresh(cmp)
+            cmp_id = cmp.id
+
+        worker = FloatRefillWorker(
+            db_engine,
+            amount_lookup=MagicMock(return_value=1_000_000),
+            max_age_days=7,
+        )
+        n = worker.refill()
+        assert n == 1
+        with Session(db_engine) as s:
+            c = s.get(Comparison, cmp_id)
+            # _find_tier('zzzz', 1) 返回 None → guard 跳过 append 乘法
+            # 只乘 multiplier：1_000_000 * 2
+            assert c.prize_amount == 1_000_000 * 2
+
+
+class TestRefillVerifiedFilter:
+    """OV4：只回填 verified=True 的 draw_results。"""
+
+    def test_refill_skips_unverified_draw(self, db_engine):
+        """verified=False 的 comparison 不回填。"""
+        cmp_id, _ = _seed_float_win_with_ticket(db_engine, verified=False)
+        worker = FloatRefillWorker(
+            db_engine,
+            amount_lookup=MagicMock(return_value=999),
+            max_age_days=7,
+        )
+        n = worker.refill()
+        assert n == 0  # 不回填
+        with Session(db_engine) as s:
+            c = s.get(Comparison, cmp_id)
+            assert c.prize_amount is None  # 仍为 None
+
+
+class TestRefillLookupSignature:
+    """1A：amount_lookup 签名扩展 draw_date。"""
+
+    def test_lookup_receives_draw_date(self, db_engine):
+        """amount_lookup 被调用时传入 draw_date 参数。"""
+        cmp_id, _ = _seed_float_win_with_ticket(db_engine)
+        mock_lookup = MagicMock(return_value=1_000_000)
+        worker = FloatRefillWorker(db_engine, amount_lookup=mock_lookup, max_age_days=7)
+        worker.refill()
+        mock_lookup.assert_called_once()
+        args = mock_lookup.call_args
+        # 签名：(lottery_code, draw_no, draw_date, tier)
+        assert len(args[0]) == 4  # 4 个位置参数
+        assert isinstance(args[0][2], datetime)  # 第 3 个是 draw_date: datetime
+
+
+class TestRefillRateLimit:
+    """OV3：限流——按 lottery_code 分组，同组内 sleep。"""
+
+    def test_sleep_called_between_lookups(self, db_engine):
+        """验证 sleep(0.5) 在同彩种多次 lookup 间被调用（OV2：per-host 限流）。"""
+        # 两个同彩种（ssq）comparison，同组 2 行触发 1 次 sleep
+        _seed_float_win_with_ticket(db_engine, suffix='_a')
+        _seed_float_win_with_ticket(db_engine, suffix='_b')
+        worker = FloatRefillWorker(
+            db_engine,
+            amount_lookup=MagicMock(return_value=1_000_000),
+            max_age_days=7,
+        )
+        with patch('app.services.refill_service.time.sleep') as mock_sleep:
+            worker.refill()
+        # 同组 2 行，第 1 行后 sleep，第 2 行（最后）不 sleep
+        assert mock_sleep.call_count == 1
+        mock_sleep.assert_called_with(0.5)
