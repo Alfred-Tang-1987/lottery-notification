@@ -827,24 +827,28 @@ git commit -m "feat: add SportteryPrizeSource adapter (JSON + PDF fallback) for 
 
 from datetime import UTC
 from unittest.mock import MagicMock, patch, call
+from zoneinfo import ZoneInfo
 
 from app.models import DrawResult, Ticket
 from app.domain.prize_tables import get_tiers
 
 
 def _seed_float_win_with_ticket(engine, days_ago=0, tier=1, suffix='',
-                                 append=False, multiplier=1, verified=True):
-    """seed 带完整 Ticket 属性的浮动奖中奖 comparison。"""
+                                 append=False, multiplier=1, verified=True,
+                                 lottery_code=None):
+    """seed 带完整 Ticket 属性的浮动奖中奖 comparison。
+    lottery_code 默认根据 append 推断（dlt/ssq），可显式覆盖。"""
+    code = lottery_code or ('dlt' if append else 'ssq')
     with Session(engine) as s:
         u = User(username=f'u{suffix}', password_hash='x', role='user', invite_code='C')
         s.add(u)
         s.commit()
         s.refresh(u)
         dr = DrawResult(
-            lottery_code='dlt' if append else 'ssq',
+            lottery_code=code,
             draw_no=f'082{suffix}',
             draw_date=datetime(2026, 7, 19, 21, 30, tzinfo=ZoneInfo('Asia/Shanghai')) - timedelta(days=days_ago),
-            numbers_json='{"front":[1,2,3,4,5],"back":[1,2]}',
+            numbers_json='{"front":[1,2,3,4,5],"back":[1,2]}' if code == 'dlt' else '{"front":[1,2,3,4,5,6],"back":[7]}',
             source='mxnzp',
             verified=verified,
             version=1,
@@ -854,9 +858,9 @@ def _seed_float_win_with_ticket(engine, days_ago=0, tier=1, suffix='',
         s.refresh(dr)
         t = Ticket(
             user_id=u.id,
-            lottery_code='dlt' if append else 'ssq',
+            lottery_code=code,
             play_type='single',
-            numbers_json='{"front":[1,2,3,4,5],"back":[1,2]}',
+            numbers_json='{"front":[1,2,3,4,5],"back":[1,2]}' if code == 'dlt' else '{"front":[1,2,3,4,5,6],"back":[7]}',
             multiplier=multiplier,
             append=append,
             cost=200 * multiplier + (100 if append else 0),
@@ -926,10 +930,47 @@ class TestRefillAmountFormula:
             assert c.prize_amount == int(1_000_000 * 1.8) * 5  # 追加1.8x × 5倍投
 
     def test_refill_append_guard_none_multiplier(self, db_engine):
-        """append=True 但彩种非 dlt（append_multiplier=None）→ guard 跳过乘法（4A）。"""
-        cmp_id, _ = _seed_float_win_with_ticket(
-            db_engine, append=False, multiplier=2, tier=1, suffix='_ssq',
-        )
+        """append=True 但彩种无 append_multiplier（数据异常）→ guard 跳过乘法（4A）。
+
+        ssq 的 PrizeTier.append_multiplier 默认为 1.0（非 None），但 guard 条件是
+        `if ticket.append and tier_info.append_multiplier`——1.0 为 truthy 会乘。
+        真正 guard 场景是 _find_tier 返回 None（未知彩种）或 append_multiplier=0/None。
+        此处测试 _find_tier 对未知彩种返回 None 时 guard 不 crash。
+        """
+        # seed 一个 dlt 彩种但 tier=99（不在 prize_tables 中）→ _find_tier 返回 None
+        with Session(db_engine) as s:
+            u = User(username='uguard', password_hash='x', role='user', invite_code='C')
+            s.add(u)
+            s.commit()
+            s.refresh(u)
+            dr = DrawResult(
+                lottery_code='dlt', draw_no='082g',
+                draw_date=datetime(2026, 7, 19, 21, 30, tzinfo=ZoneInfo('Asia/Shanghai')),
+                numbers_json='{"front":[1,2,3,4,5],"back":[1,2]}',
+                source='mxnzp', verified=True, version=1,
+            )
+            s.add(dr)
+            s.commit()
+            s.refresh(dr)
+            t = Ticket(
+                user_id=u.id, lottery_code='dlt', play_type='single',
+                numbers_json='{"front":[1,2,3,4,5],"back":[1,2]}',
+                multiplier=2, append=True, cost=400,
+            )
+            s.add(t)
+            s.commit()
+            s.refresh(t)
+            cmp = Comparison(
+                user_id=u.id, draw_result_id=dr.id, ticket_id=t.id,
+                hits_json='{}', prize_tier=99,  # 不存在的 tier
+                prize_amount=None, is_win=True,
+                created_at=datetime.now(UTC).replace(tzinfo=None),
+            )
+            s.add(cmp)
+            s.commit()
+            s.refresh(cmp)
+            cmp_id = cmp.id
+
         worker = FloatRefillWorker(
             db_engine,
             amount_lookup=MagicMock(return_value=1_000_000),
@@ -939,7 +980,9 @@ class TestRefillAmountFormula:
         assert n == 1
         with Session(db_engine) as s:
             c = s.get(Comparison, cmp_id)
-            assert c.prize_amount == 1_000_000 * 2  # ssq 无 append_multiplier，只乘 multiplier
+            # _find_tier('dlt', 99) 返回 None → guard 跳过 append 乘法
+            # 只乘 multiplier：1_000_000 * 2
+            assert c.prize_amount == 1_000_000 * 2
 
 
 class TestRefillVerifiedFilter:
@@ -980,7 +1023,8 @@ class TestRefillRateLimit:
     """OV3：限流——按 lottery_code 分组，同组内 sleep。"""
 
     def test_sleep_called_between_lookups(self, db_engine):
-        """验证 sleep(0.5) 在多次 lookup 间被调用。"""
+        """验证 sleep(0.5) 在同彩种多次 lookup 间被调用（OV2：per-host 限流）。"""
+        # 两个同彩种（ssq）comparison，同组 2 行触发 1 次 sleep
         _seed_float_win_with_ticket(db_engine, suffix='_a')
         _seed_float_win_with_ticket(db_engine, suffix='_b')
         worker = FloatRefillWorker(
@@ -990,8 +1034,8 @@ class TestRefillRateLimit:
         )
         with patch('app.services.refill_service.time.sleep') as mock_sleep:
             worker.refill()
-        # 2 次 lookup，至少 1 次 sleep（最后一个不 sleep）
-        assert mock_sleep.call_count >= 1
+        # 同组 2 行，第 1 行后 sleep，第 2 行（最后）不 sleep
+        assert mock_sleep.call_count == 1
         mock_sleep.assert_called_with(0.5)
 ```
 
@@ -1219,6 +1263,13 @@ def _build_amount_lookup(cwl, sporttery):
         'cwl_prize': cwl,
         'sporttery_prize': sporttery,
     }
+```
+
+在 lifespan 中 `_build_scheduler_and_deps` 调用之后，将 deps 挂到 `app.state`（供 teardown close）：
+
+```python
+        sched, deps = _build_scheduler_and_deps(engine, settings)
+        app.state._deps = deps  # 供 lifespan teardown close 适配器
 ```
 
 - [ ] **Step 3: lifespan teardown 中 close 适配器**
