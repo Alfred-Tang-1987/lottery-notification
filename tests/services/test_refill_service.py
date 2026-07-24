@@ -378,10 +378,8 @@ def test_refill_marks_expired_even_when_permanent_unresolved_commit_fails(db_eng
 
 # ────────── Plan 07 T4：签名扩展 + verified 过滤 + 金额公式 + 分组限流 ──────────
 
-from datetime import UTC
-from zoneinfo import ZoneInfo
-
-from app.domain.prize_tables import get_tiers
+from datetime import UTC  # noqa: E402
+from zoneinfo import ZoneInfo  # noqa: E402
 
 
 def _seed_float_win_with_ticket(engine, days_ago=0, tier=1, suffix='',
@@ -563,7 +561,7 @@ class TestRefillLookupSignature:
 
     def test_lookup_receives_draw_date(self, db_engine):
         """amount_lookup 被调用时传入 draw_date 参数。"""
-        cmp_id, _ = _seed_float_win_with_ticket(db_engine)
+        _, _ = _seed_float_win_with_ticket(db_engine)
         mock_lookup = MagicMock(return_value=1_000_000)
         worker = FloatRefillWorker(db_engine, amount_lookup=mock_lookup, max_age_days=7)
         worker.refill()

@@ -9,6 +9,7 @@
 silent-failure 自验（L-20260706T010500Z）：测试须断言「不同 code 真的产生不同分发」，
 否则 routing 闭包是 silent-success（filter 永不命中 / preset no-op）。
 """
+import contextlib
 import logging
 from datetime import datetime
 from unittest.mock import MagicMock
@@ -217,8 +218,9 @@ def test_smoke_check_prize_sources_classifies_http_error_as_failed(monkeypatch, 
     Review round 1 [minor]：旧实现缺 raise_for_status，5xx 限流响应体被当 JSON 解析后
     误判为 schema drift，污染运维诊断（lookup 一直 None 的真实原因是 transient 而非 schema）。
     """
-    from app import main as main_mod
     import httpx
+
+    from app import main as main_mod
 
     class _Resp:
         def __init__(self, payload, status_code=500):
@@ -299,7 +301,7 @@ def test_build_scheduler_and_deps_wires_real_adapters(db_engine, monkeypatch):
     残留导致 amount_lookup 永远返回 None（silent-success：奖金永久 null）。
     """
     from app import main as main_mod
-    from app.config import Settings, get_settings
+    from app.config import get_settings
 
     settings = get_settings()
     sched, deps = main_mod._build_scheduler_and_deps(db_engine, settings)
@@ -323,9 +325,7 @@ def test_build_scheduler_and_deps_wires_real_adapters(db_engine, monkeypatch):
     finally:
         # scheduler 未 start（构造函数不 start），shutdown 会 raise——按运行态判断
         from apscheduler.schedulers import SchedulerNotRunningError
-        try:
+        with contextlib.suppress(SchedulerNotRunningError):
             sched.shutdown(wait=False)
-        except SchedulerNotRunningError:
-            pass
         deps['cwl_prize'].close()
         deps['sporttery_prize'].close()

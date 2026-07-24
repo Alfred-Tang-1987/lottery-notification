@@ -771,7 +771,6 @@ def test_period_summary_isolates_per_user_failure(db_engine):
     review round 1 important：_push_period_summary 的 per-user 循环同样无 try/except。
     user A 抛异常 → user B/C/D 当期周报/月报全丢（per-user 静默漏通知）。
     """
-    from datetime import date, timedelta
 
     from sqlmodel import Session
 
