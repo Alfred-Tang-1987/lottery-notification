@@ -3,8 +3,6 @@ import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-import pytest
-
 from app.adapters.base import rebuild_full_issue, rebuild_short_period
 
 _CST = ZoneInfo('Asia/Shanghai')

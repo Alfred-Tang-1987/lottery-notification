@@ -112,9 +112,8 @@ class TestCwlPrizeSource:
                 {'type': 1, 'typemoney': 'abc', 'typenum': '5'},
             ]))
         src = CwlPrizeSource(transport=_mock_transport(handler))
-        with caplog.at_level('WARNING', logger='app.adapters.cwl_prize'):
-            with pytest.raises(PermanentLookupError):
-                src.lookup_amount('ssq', '082', _DRAW_DATE, 1)
+        with caplog.at_level('WARNING', logger='app.adapters.cwl_prize'), pytest.raises(PermanentLookupError):
+            src.lookup_amount('ssq', '082', _DRAW_DATE, 1)
         # 必须记录原始 raw payload，便于定位上游 schema 变更根因
         assert any(
             'abc' in rec.getMessage() and rec.levelname == 'WARNING'

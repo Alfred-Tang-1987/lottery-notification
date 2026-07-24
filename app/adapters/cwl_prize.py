@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 # 重新导出：保持 `from app.adapters.cwl_prize import PermanentLookupError` 可用，
 # 既有调用方（如测试、worker 的本地 import）不需改动。规范定义在 base.py。
-__all__ = ['PermanentLookupError', 'CwlPrizeSource']
+__all__ = ['CwlPrizeSource', 'PermanentLookupError']
 
 
 class CwlPrizeSource:
@@ -100,7 +100,7 @@ class CwlPrizeSource:
                     )
                     raise PermanentLookupError(
                         f'typemoney unparseable: tier={tier} raw={typemoney!r}'
-                    )
+                    ) from None
                 logger.info('cwl_found tier=%s amount=%s', tier, amount)
                 return amount
 
