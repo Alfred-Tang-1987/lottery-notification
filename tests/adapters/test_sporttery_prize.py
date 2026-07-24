@@ -438,3 +438,75 @@ class TestSportteryDataNull:
         assert src.lookup_amount('dlt', '082', _DRAW_DATE, 1) is None
         assert json_called
         assert not pdf_called  # data:null 是「未公布」语义，不触发 PDF 降级
+
+
+class TestSportteryPdfGoldenFile:
+    """Golden-file 测试：真实 PDF 正则解析，防 pypdf 版本漂移（OV#9）。
+
+    两层防御：
+      1. test_parse_amount_regex_on_synthetic_text —— 始终运行，用模仿 sporttery 真实
+         PDF 排版的合成文本验证 _parse_pdf_amount 正则。无真实 fixture 也能抓住正则
+         /签名/单位回归（防 L-20260705T180100Z：纯 skip 测试即使方法被改名/删除也
+         永不失败 → 静默漏测）。
+      2. test_parse_real_pdf —— 仅当 tests/fixtures/dlt_sample.pdf 存在时运行（plan
+         T7 Step 1：从 sporttery 抓取真实 PDF）。EdgeOne 拦截环境下 skip，NAS 部署后补做
+         （plan line 1424 明示）。
+    """
+
+    @pytest.fixture
+    def sample_pdf_path(self):
+        from pathlib import Path
+        return Path(__file__).parent.parent / 'fixtures' / 'dlt_sample.pdf'
+
+    def test_parse_amount_regex_on_synthetic_text(self):
+        """合成文本（模拟 sporttery PDF 排版）验证 _parse_pdf_amount 正则 + 单位换算。
+
+        模仿真实 PDF 提取后的多行文本：含千分位逗号、多奖级、额外噪音行。
+        断言：tier1/tier2 金额正确解析、去逗号、元→分换算；tier 未匹配走 drift 路径。
+        """
+        # 模拟 pypdf 从真实公告 PDF 提取的文本形状（plan T3 line 800 预期格式）
+        text = (
+            '中国体育彩票超级大乐透 第26082期 开奖公告\n'
+            '一等奖  5注  5,000,000元\n'
+            '二等奖  10注  500,000元\n'
+            '三等奖  100注  50,000元\n'
+        )
+        # tier1: 5,000,000 元 → 500,000,000 分
+        amount1 = SportteryPrizeSource._parse_pdf_amount(text, 1)
+        assert amount1 == 500_000_000
+        # tier2: 500,000 元 → 50,000,000 分
+        amount2 = SportteryPrizeSource._parse_pdf_amount(text, 2)
+        assert amount2 == 50_000_000
+
+    def test_parse_real_pdf(self, sample_pdf_path):
+        """用真实 PDF 验证 _parse_pdf_amount（fixture 不可用或损坏时 skip）。
+
+        plan T7 Step 1：从 https://pdf.sporttery.cn/dlt/<period>/<period>.pdf 抓取。
+        EdgeOne 拦截环境下无法抓取 → skip（plan line 1424 明示可暂跳，NAS 部署后补做）。
+
+        额外防御（L-20260705T180100Z：勿让未处理错误路径静默掩盖预期 skip）：失败下载
+        会把 HTML 404 页面（146 字节）存成 .pdf，PdfReader 解析抛 PdfStreamError 而非
+        skip → 测试每次 error 而非干净 skip。文件缺失 OR 非 PDF 头 → skip。
+        """
+        if not sample_pdf_path.exists():
+            pytest.skip('PDF fixture not available (download from sporttery)')
+        # 校验是真 PDF（魔数 %PDF-）—— 失败下载的 HTML/JSON 404 页面会让下方 pypdf 抛
+        # PdfStreamError 而非 skip，污染 gate。文件头校验是更稳的 skip 门槛。
+        with open(sample_pdf_path, 'rb') as f:
+            header = f.read(5)
+        if header != b'%PDF-':
+            pytest.skip(
+                f'PDF fixture corrupt/non-PDF (header={header!r}); '
+                're-download from sporttery'
+            )
+        import pypdf
+        reader = pypdf.PdfReader(str(sample_pdf_path))
+        text = '\n'.join(page.extract_text() or '' for page in reader.pages)
+        # 验证能提取到一等奖金额（非 None，正数）
+        amount = SportteryPrizeSource._parse_pdf_amount(text, 1)
+        assert amount is not None
+        assert amount > 0
+        # 验证能提取到二等奖金额
+        amount2 = SportteryPrizeSource._parse_pdf_amount(text, 2)
+        assert amount2 is not None
+        assert amount2 > 0
