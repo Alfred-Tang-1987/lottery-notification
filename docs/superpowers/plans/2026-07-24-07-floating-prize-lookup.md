@@ -1,3 +1,15 @@
+---
+models:
+  T1: sonnet
+  T2: sonnet
+  T3: sonnet
+  T4: sonnet
+  T5: sonnet
+  T6: sonnet
+  T7: sonnet
+  T8: sonnet
+---
+
 # 浮动奖金查询接口对接 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

@@ -1,6 +1,9 @@
+import logging
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import Protocol
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -38,3 +41,50 @@ class DrawSource(Protocol):
     def fetch(self, lottery_code: str) -> DrawNumbers | None:
         """返回归一化号码；None = 该期未开奖（HTTP 200 但无数据）。抛异常 = 网络/服务错误。"""
         ...
+
+
+class PrizeSource(Protocol):
+    """官方奖金查询源（独立于 DrawSource——奖金查询与号码抓取是不同职责）。"""
+
+    name: str
+
+    def lookup_amount(
+        self, lottery_code: str, draw_no: str, draw_date: datetime, tier: int
+    ) -> int | None:
+        """查询浮动奖金（分）。None = 官方尚未公布/查询失败。
+
+        draw_date 为 aware CST（fetch_service 存入时的契约），期号重建 year 依赖此。
+        异常上抛——由 FloatRefillWorker 统一 catch + 隔离（不 catch httpx 异常）。
+        """
+        ...
+
+
+def _defensive_truncate(draw_no: str) -> str:
+    """draw_no 防御截断：长度 >3 时 log warning + 取后 3 位（1B 决策）。
+
+    正常路径 draw_no 已归一化（3 位零填充），此防御仅覆盖未来 adapter 绕过
+    归一化直接写入的异常场景。
+    """
+    if len(draw_no) > 3:
+        logger.warning(
+            'draw_no_too_long draw_no=%s truncated_to=%s',
+            draw_no,
+            draw_no[-3:],
+        )
+        return draw_no[-3:]
+    return draw_no
+
+
+def rebuild_full_issue(draw_date: datetime, draw_no: str) -> str:
+    """重建全年份期号（如 '2026082'）。
+
+    draw_date 必须是 aware CST（期号重建 year 依赖此时区契约）。
+    """
+    safe_no = _defensive_truncate(draw_no)
+    return f'{draw_date.year}{safe_no}'
+
+
+def rebuild_short_period(draw_date: datetime, draw_no: str) -> str:
+    """重建 2 位年份期号（如 '26082'）。用于 sporttery PDF URL。"""
+    safe_no = _defensive_truncate(draw_no)
+    return f'{draw_date.year % 100:02d}{safe_no}'
