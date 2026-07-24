@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, select
 
+from app.adapters.base import PermanentLookupError
 from app.models import Comparison, DrawResult
 
 logger = logging.getLogger(__name__)
@@ -39,6 +40,22 @@ class FloatRefillWorker:
         self._lookup = amount_lookup  # amount_lookup(lottery_code, draw_no, tier) -> 分 | None
         self._max_age = max_age_days
 
+    def _log_skip(self, event: str, cmp: Comparison, dr: DrawResult) -> None:
+        """单行隔离日志：统一 4 字段上下文（comparison_id/lottery/draw_no/tier）+ exc_info。
+
+        silent-failure：transient/permanent 故障都只隔离该行记日志不阻断后续，且必须带上
+        定位所需的 draw 上下文（lottery_code/draw_no/tier）——两处 except 分支共用本格式。
+        """
+        logger.warning(
+            '%s comparison_id=%s lottery=%s draw_no=%s tier=%s',
+            event,
+            cmp.id,
+            dr.lottery_code,
+            dr.draw_no,
+            cmp.prize_tier,
+            exc_info=True,
+        )
+
     def refill(self) -> int:
         cutoff = _cutoff_naive_utc(self._max_age)
         refilled = 0
@@ -60,36 +77,56 @@ class FloatRefillWorker:
             drs = {dr.id: dr for dr in s.exec(select(DrawResult).where(DrawResult.id.in_(dr_ids))).all()}
         # 每行回填独立：单行 lookup 抛异常（源 5xx/超时/解析错）只隔离该行，不阻断后续行
         # （silent-failure C1：旧版无 try/except，一行 raise 中断整批 → 后续行静默丢失）。
-        for cmp in pending:
-            dr = drs.get(cmp.draw_result_id)
-            if dr is None or cmp.prize_tier is None:
-                continue
+        # 批末 expired 兜底标记移入 finally：即便下方任一分支（成功 line ~108 / permanent
+        # line ~82）的 s.commit() 抛 DB 异常（database is locked / disk full / constraint），
+        # 超期行仍被标 unresolved——否则异常冒泡出 refill()，_mark_expired_unresolved 不可达，
+        # 超期行永不标记、每轮重查、terminal-state 契约破坏（review round 3 important）。
+        try:
+            for cmp in pending:
+                dr = drs.get(cmp.draw_result_id)
+                if dr is None or cmp.prize_tier is None:
+                    continue
+                try:
+                    amount = self._lookup(dr.lottery_code, dr.draw_no, cmp.prize_tier)
+                except PermanentLookupError:
+                    # 永久形状错误（如 typemoney 非数字）：立即标 unresolved，不再下轮重试
+                    # （spec §7.1 line 276「超期标 unresolved 不再查」精神延伸到「永久错误」）。
+                    # 旧实现无此分支 → PermanentLookupError 被下方通用 except 当 transient 隔离 →
+                    # 下轮 pending 过滤仍命中 → 每轮重查 7 天，期间日志噪声大且定位困难，最终才由
+                    # _mark_expired_unresolved 兜底标记——永久 schema bug 静默耗满 7 天窗口
+                    # （review round 2 critical）。
+                    # 单行 savepoint 隔离 + 单事务 commit：状态变更与日志（如未来加审计）同事务，
+                    # 不 split-commit（L-20260706T010400Z）。
+                    with Session(self._engine) as s:
+                        c = s.get(Comparison, cmp.id)
+                        c.unresolved = True
+                        s.commit()
+                    self._log_skip('refill_marked_unresolved_permanent_error', cmp, dr)
+                    continue
+                except Exception:
+                    # transient 源故障（5xx/超时）：隔离到该行记日志，不阻断其他行回填，
+                    # 不标 unresolved（区别于 PermanentLookupError）——下轮重试。
+                    self._log_skip('refill_skip_lookup_failed', cmp, dr)
+                    continue
+                if amount is not None:
+                    with Session(self._engine) as s:
+                        c = s.get(Comparison, cmp.id)
+                        c.prize_amount = amount
+                        s.commit()
+                    refilled += 1
+                    # 补推：回填后金额变更，由 Plan 04 Notifier 监听 prize_amount 变更事件推送
+                    # （本 plan 仅回填数据；推送在 Plan 04 接线，避免循环依赖与跨 plan 耦合）
+        finally:
+            # 超期未回填的标 unresolved（spec §7.1 line 276「超期标 unresolved 不再查」）。
+            # 必须无条件执行（即便上方回填循环任一行 raise 或 commit 抛 DB 异常冒泡）——否则
+            # 超期行永不标记、每轮重查、永不 resolve，T5 的 terminal-state 契约被破坏
+            # （silent-failure C1 + review round 3 important：旧实现在循环外顺序代码路径，
+            # commit 异常即跳过）。finally 自身再 try/except 兜底：marker 故障只记日志，
+            # 不吞掉 try 体内正在传播的原异常（调用方须知晓回填/回填-commit 失败）。
             try:
-                amount = self._lookup(dr.lottery_code, dr.draw_no, cmp.prize_tier)
+                self._mark_expired_unresolved(cutoff)
             except Exception:
-                # 源故障隔离到该行：记日志（含 traceback），不阻断其他行回填
-                logger.warning(
-                    'refill_skip_lookup_failed comparison_id=%s lottery=%s draw_no=%s tier=%s',
-                    cmp.id,
-                    dr.lottery_code,
-                    dr.draw_no,
-                    cmp.prize_tier,
-                    exc_info=True,
-                )
-                continue
-            if amount is not None:
-                with Session(self._engine) as s:
-                    c = s.get(Comparison, cmp.id)
-                    c.prize_amount = amount
-                    s.commit()
-                refilled += 1
-                # 补推：回填后金额变更，由 Plan 04 Notifier 监听 prize_amount 变更事件推送
-                # （本 plan 仅回填数据；推送在 Plan 04 接线，避免循环依赖与跨 plan 耦合）
-
-        # 超期未回填的标 unresolved（spec §7.1 line 276「超期标 unresolved 不再查」）。
-        # 必须无条件执行（即便上方回填循环某行 raise 被隔离）——否则超期行永不标记、
-        # 每轮重查、永不 resolve，T5 的 terminal-state 契约被破坏（silent-failure C1）。
-        self._mark_expired_unresolved(cutoff)
+                logger.warning('refill_expired_marker_failed', exc_info=True)
 
         return refilled
 

@@ -59,6 +59,21 @@ class PrizeSource(Protocol):
         ...
 
 
+class PermanentLookupError(Exception):
+    """永久性查询错误——上游数据形状/契约错误，重试无意义。
+
+    区别于 transient HTTP 错误（5xx/超时，下轮重试可能成功）与「未公布」（返回 None，
+    下轮重试直到官方派奖）。典型场景：typemoney 为非数字/非 '_'（上游 schema 变更）。
+
+    FloatRefillWorker.except 分支识别本异常类型后立即把 comparison 标 unresolved
+    （不再重试），避免永久 schema bug 被当 transient 每轮重查 7 天、日志噪声巨大且
+    最终才由 _mark_expired_unresolved 兜底标记（spec §7.1 line 276 精神延伸）。
+
+    定义在 base.py 而非具体 adapter：worker 通过 Callable 注入 lookup，应只依赖
+    PrizeSource Protocol 共享的类型（本异常 + Protocol 同位），避免耦合具体 adapter。
+    """
+
+
 def _defensive_truncate(draw_no: str) -> str:
     """draw_no 防御截断：长度 >3 时 log warning + 取后 3 位（1B 决策）。
 

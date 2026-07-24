@@ -1,5 +1,8 @@
 from datetime import datetime, timedelta
+from unittest.mock import MagicMock
 
+import pytest
+from sqlalchemy.orm import session as sa_session_module
 from sqlmodel import Session
 
 from app.models import Comparison, DrawResult, Ticket, User
@@ -223,3 +226,151 @@ def test_refill_boundary_not_misclassified_expired_by_tz(db_engine):
         assert n == 1, f'恰好 7 天的行应 refillable（窗口内），实际回填 {n}'
         assert cmp.prize_amount == 5_000_000, '边界行应被回填'
         assert cmp.unresolved is not True, '边界行不得因 tz 字符串比较被误判超期标 unresolved → 永久排除回填'
+
+
+# ────────── PermanentLookupError 契约（plan 07 T2 fix-issue critical）──────────
+
+
+def test_refill_permanent_lookup_error_marks_unresolved_immediately(db_engine):
+    """PermanentLookupError（永久形状错误，如 typemoney='abc'）→ 立即标 unresolved=True。
+
+    回归 fix-issue（review round 2 critical）：CwlPrizeSource 在永久数据形状错误时 raise
+    PermanentLookupError（区别于「未公布」返回 None、transient HTTP 错误 raise 其他异常）。
+    worker except 分支须识别该异常类型并立即标 unresolved——避免永久 schema bug 被当
+    「未公布」每轮重查 7 天，期间日志噪声大且定位困难，最终才由 _mark_expired_unresolved
+    兜底标记。
+
+    三态语义（spec §7.1 line 276「超期标 unresolved 不再查」的精神延伸到「永久错误」）：
+      - 返回 None       → 暂未公布，下轮重试（unresolved=False）
+      - PermanentLookupError → 永久错误，立即标 unresolved（不再重试）
+      - 其他 Exception  → transient，下轮重试（unresolved=False，保持既有隔离行为）
+    """
+    from app.adapters.cwl_prize import PermanentLookupError
+
+    perm_id, perm_no = _seed_float_win(db_engine, days_ago=1, suffix='P')
+
+    def lookup(lottery_code, draw_no, tier):
+        if draw_no == perm_no:
+            raise PermanentLookupError('typemoney=abc not parseable')
+        return 5_000_000
+
+    worker = FloatRefillWorker(db_engine, amount_lookup=lookup, max_age_days=7)
+    n = worker.refill()
+    assert n == 0, 'permanent error 不回填'
+    with Session(db_engine) as s:
+        cmp = s.get(Comparison, perm_id)
+        assert cmp.prize_amount is None, 'permanent error 不回填金额'
+        # 关键断言：永久错误**立即**标 unresolved（不等 7 天超期兜底）
+        assert cmp.unresolved is True, (
+            'PermanentLookupError 须立即标 unresolved，避免永久 schema bug 被当未公布重试 7 天'
+        )
+
+
+def test_refill_transient_exception_still_retries_not_unresolved(db_engine):
+    """transient Exception（非 PermanentLookupError）→ 保持既有隔离行为，下轮重试不标 unresolved。
+
+    防回归：PermanentLookupError 分支引入后，通用 transient 异常路径不得被误改为也标
+    unresolved（会破坏 test_refill_lookup_raises_isolates_row_and_still_marks_expired line 134
+    既有契约：transient raise → unresolved is not True，下轮重试）。
+    """
+    trans_id, trans_no = _seed_float_win(db_engine, days_ago=1, suffix='T')
+
+    def lookup(lottery_code, draw_no, tier):
+        if draw_no == trans_no:
+            raise RuntimeError('source 5xx transient')
+        return 5_000_000
+
+    worker = FloatRefillWorker(db_engine, amount_lookup=lookup, max_age_days=7)
+    worker.refill()
+    with Session(db_engine) as s:
+        cmp = s.get(Comparison, trans_id)
+        # transient 异常：下轮重试，不立即标 unresolved
+        assert cmp.unresolved is not True, (
+            'transient Exception 不得标 unresolved（区别于 PermanentLookupError）'
+        )
+
+
+# ────────── 批末兜底标记 unconditional（fix-round ★ OPEN）──────────
+
+
+def test_refill_marks_expired_even_when_success_commit_fails(db_engine, monkeypatch):
+    """成功回填路径 s.commit() 抛 DB 异常时，批末 _mark_expired_unresolved 仍须执行（finally 兜底）。
+
+    回归 fix-round（review round 3 important）：旧实现 _mark_expired_unresolved(cutoff) 只在
+    for 循环正常走完后才执行（refill_service.py line 116 位于循环外的顺序代码路径）——
+    成功分支 s.commit()（line 108）抛 database is locked / disk full 时异常冒泡出 refill()，
+    expired 行**永不标记 unresolved** → 下轮仍被 pending 选中（created_at < cutoff 但未标
+    unresolved）→ 每轮重查永不终止，terminal-state 契约被破坏（silent-failure）。
+
+    修法契约：_mark_expired_unresolved 移入 try/finally，即便循环内任意 commit 抛异常，
+    超期行仍被标 unresolved；原异常向上传播（调用方知晓回填失败）。
+    """
+    a_id, _ = _seed_float_win(db_engine, days_ago=1, suffix='F')  # cutoff 内，可回填成功
+    c_id, _ = _seed_float_win(db_engine, days_ago=10, suffix='G')  # 超期，应标 unresolved
+
+    orig_commit = sa_session_module.Session.commit
+    refill_commits = {'n': 0}
+
+    def fail_on_refill_success_commit(self):
+        refill_commits['n'] += 1
+        if refill_commits['n'] == 1:
+            # refill() 主循环内第一次 commit = 成功回填 a 的 prize_amount——模拟 DB 故障
+            raise RuntimeError('database is locked')
+        return orig_commit(self)
+
+    monkeypatch.setattr(sa_session_module.Session, 'commit', fail_on_refill_success_commit)
+
+    worker = FloatRefillWorker(db_engine, amount_lookup=MagicMock(return_value=5_000_000), max_age_days=7)
+
+    with pytest.raises(RuntimeError, match='database is locked'):
+        worker.refill()
+
+    # 关键断言：即便成功分支 commit 抛异常冒泡，超期行 C 仍须被标 unresolved
+    # （finally 兜底，terminal-state 契约不因单行 commit 故障被破坏）。
+    with Session(db_engine) as s:
+        c = s.get(Comparison, c_id)
+        assert c.unresolved is True, (
+            '成功分支 commit 抛异常时，批末 expired 标记仍须执行（finally）——'
+            '否则超期行永不标记、每轮重查、terminal-state 契约破坏'
+        )
+
+
+def test_refill_marks_expired_even_when_permanent_unresolved_commit_fails(db_engine, monkeypatch):
+    """PermanentLookupError 分支 s.commit()（标 unresolved 那次）抛异常时，expired 标记仍执行。
+
+    同 fix-round OPEN：except PermanentLookupError 分支内 s.commit()（refill_service.py
+    line 82）也可能抛 DB 异常——旧实现该异常冒泡出 refill()，_mark_expired_unresolved
+    不可达 → 超期行静默漏标。finally 兜底后即便该分支 commit 失败，expired 行仍标记。
+    """
+    from app.adapters.cwl_prize import PermanentLookupError
+
+    p_id, p_no = _seed_float_win(db_engine, days_ago=1, suffix='H')  # cutoff 内，触发 permanent error
+    c_id, _ = _seed_float_win(db_engine, days_ago=10, suffix='I')  # 超期，应标 unresolved
+
+    orig_commit = sa_session_module.Session.commit
+    refill_commits = {'n': 0}
+
+    def fail_on_permanent_mark_commit(self):
+        refill_commits['n'] += 1
+        if refill_commits['n'] == 1:
+            # refill() 内第一次 commit = PermanentLookupError 分支标 p 为 unresolved——模拟故障
+            raise RuntimeError('disk full')
+        return orig_commit(self)
+
+    monkeypatch.setattr(sa_session_module.Session, 'commit', fail_on_permanent_mark_commit)
+
+    def lookup(lottery_code, draw_no, tier):
+        if draw_no == p_no:
+            raise PermanentLookupError('typemoney=abc')
+        return None
+
+    worker = FloatRefillWorker(db_engine, amount_lookup=lookup, max_age_days=7)
+
+    with pytest.raises(RuntimeError, match='disk full'):
+        worker.refill()
+
+    with Session(db_engine) as s:
+        c = s.get(Comparison, c_id)
+        assert c.unresolved is True, (
+            'PermanentLookupError 分支 commit 抛异常时，批末 expired 标记仍须执行（finally）'
+        )
