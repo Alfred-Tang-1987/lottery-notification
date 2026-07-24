@@ -230,9 +230,8 @@ class TestSportteryPermanentSchemaErrors:
                 ],
             }]))
         src = SportteryPrizeSource(transport=_mock_transport(handler))
-        with caplog.at_level(logging.WARNING):
-            with pytest.raises(PermanentLookupError):
-                src.lookup_amount('dlt', '082', _DRAW_DATE, 1)
+        with caplog.at_level(logging.WARNING), pytest.raises(PermanentLookupError):
+            src.lookup_amount('dlt', '082', _DRAW_DATE, 1)
         # raw payload 落 WARNING 日志便于定位上游 schema 变更
         assert 'abc' in caplog.text
 
@@ -266,9 +265,8 @@ class TestSportteryPermanentSchemaErrors:
             # 非 404、未超限、但内容无法被 pypdf 解析
             return httpx.Response(200, content=b'%PDF-1.4 \x00\x01\x02 corrupted')
         src = SportteryPrizeSource(transport=_mock_transport(handler))
-        with caplog.at_level(logging.WARNING):
-            with pytest.raises(PermanentLookupError):
-                src.lookup_amount('dlt', '082', _DRAW_DATE, 1)
+        with caplog.at_level(logging.WARNING), pytest.raises(PermanentLookupError):
+            src.lookup_amount('dlt', '082', _DRAW_DATE, 1)
         assert 'sporttery_pdf_parse_failed' in caplog.text
 
     def test_pdf_text_present_regex_no_match_raises_permanent(self, caplog):
@@ -280,12 +278,10 @@ class TestSportteryPermanentSchemaErrors:
         # 构造一个合法 PDF（pypdf 能解析、能提取文本），但文本不符合既有正则格式
         # 用 reportlab 不可用则用 pypdf 直接构造——这里用 fpdf 风格的极简 PDF 太复杂，
         # 改为更直接的：直接验证 _parse_pdf_amount 的契约（非空文本+无匹配 → raise）。
-        src = SportteryPrizeSource(transport=_mock_transport(lambda r: httpx.Response(200)))
         # 文本非空但格式不匹配既有正则 → 永久格式 drift
-        with caplog.at_level(logging.WARNING):
-            with pytest.raises(PermanentLookupError):
-                # 调用内部静态方法直接验证契约（避免构造真实 PDF 的复杂性）
-                SportteryPrizeSource._parse_pdf_amount('一等奖：500万元（格式已变更）', 1)
+        with caplog.at_level(logging.WARNING), pytest.raises(PermanentLookupError):
+            # 调用内部静态方法直接验证契约（避免构造真实 PDF 的复杂性）
+            SportteryPrizeSource._parse_pdf_amount('一等奖：500万元（格式已变更）', 1)
         assert 'pdf_format_drift' in caplog.text or 'pdf' in caplog.text.lower()
 
     def test_pdf_text_empty_returns_none(self):
@@ -380,9 +376,8 @@ class TestSportteryStateNonzero:
                 'data': {'total': 0, 'list': []},
             })
         src = SportteryPrizeSource(transport=_mock_transport(handler))
-        with caplog.at_level(logging.WARNING):
-            with pytest.raises(httpx.HTTPError):
-                src.lookup_amount('dlt', '082', _DRAW_DATE, 1)
+        with caplog.at_level(logging.WARNING), pytest.raises(httpx.HTTPError):
+            src.lookup_amount('dlt', '082', _DRAW_DATE, 1)
         # state + message 必须落 WARNING 日志便于运维诊断（区分上游报错 vs 未公布）
         assert 'state=2' in caplog.text
         assert '接口请求过于频繁' in caplog.text
