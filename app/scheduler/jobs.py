@@ -109,6 +109,20 @@ def register_all_jobs(sched: BackgroundScheduler, deps: _JobDeps) -> None:
         replace_existing=True,
     )
 
+    # 浮奖回填（开奖日当晚补充轮）：每晚 22:00。
+    # 1C 决策——开奖后不久官方可能已公布浮动奖金额，补一轮回填提升时效性。
+    # 复用 _run_float_refill（内部按 verified + draw_date 过滤，仅在确有未回填的
+    # 开奖结果时才发起请求），故 22:00 这一轮对非开奖日为天然 no-op，不会过度拉取。
+    sched.add_job(
+        _run_float_refill,
+        'cron',
+        hour=22,
+        minute=0,
+        id='float_refill_night',
+        args=[db_url],
+        replace_existing=True,
+    )
+
     # 兑奖过期扫描：每日 07:30
     sched.add_job(
         _expire_claims,
@@ -167,8 +181,13 @@ def _path_a_tick(db_url: str) -> None:
         logger.error('path_a_compare_failed', exc_info=True)
 
     today = datetime.now(_CST).date()
-    day_start = datetime.combine(today, datetime.min.time())
-    day_end = datetime.combine(today + timedelta(days=1), datetime.min.time())
+    # L-20260725T064200Z: day-window bounds 必须与 DrawResult.draw_date 同 tz 表示。
+    # fetch_service.py:229 写 draw_date 为 aware-CST（datetime.combine(d, min.time(), tzinfo=_CST)）。
+    # 若 bounds 用 naive（旧实现），SQLite 字符串比较依赖方言 strip-tzinfo 才侥幸一致——
+    # 方言/版本漂移即静默漏比对当日大奖（违反「中奖永不静默漏通知」核心价值，spec §10；
+    # CLAUDE.md datetime 时区对齐纪律：bounds 与列须同时区同数值）。
+    day_start = datetime.combine(today, datetime.min.time(), tzinfo=_CST)
+    day_end = datetime.combine(today + timedelta(days=1), datetime.min.time(), tzinfo=_CST)
     code_to_name = {x['code']: x['name'] for x in SPECS}
 
     pending_push = []
@@ -244,7 +263,14 @@ def _path_b_summary(db_url: str) -> None:
     yesterday = (datetime.now(_CST).date() - timedelta(days=1)).isoformat()
     with Session(engine) as s:
         for user in s.exec(select(User).where(User.enabled == True)).all():  # noqa: E712
-            notifier.notify_path_b(user_id=user.id, date_str=yesterday)
+            # L-20260725T064200Z: per-user 隔离——单个用户的 notify_path_b 抛任何异常
+            # （transient DB 错 / 渠道配置解密失败 / httpx 传输异常 / admin bark 误抛）
+            # 不得冒泡中断 for 循环，否则后续用户当日汇总静默漏通知（CLAUDE.md：批量循环里
+            # 单行故障不得中断整批）。与 _path_a_tick 已隔离的 per-lottery fetch 循环同构。
+            try:
+                notifier.notify_path_b(user_id=user.id, date_str=yesterday)
+            except Exception:
+                logger.error('path_b_user_failed user_id=%s', user.id, exc_info=True)
 
 
 def _weekly_report(db_url: str) -> None:
@@ -296,12 +322,22 @@ def _push_period_summary(engine: Engine, notifier: Notifier, start: date, end: d
     label = f'{start.isoformat()} ~ {end.isoformat()}'
     with Session(engine) as s:
         for user in s.exec(select(User).where(User.enabled == True)).all():  # noqa: E712
-            notifier.notify_period_summary(
-                user_id=user.id,
-                start_date_str=start.isoformat(),
-                end_date_str=end.isoformat(),
-                period_label=label,
-            )
+            # L-20260725T064200Z: per-user 隔离——与 _path_b_summary 同构。单用户抛异常不得
+            # 中断后续用户的周报/月报推送（per-user 静默漏通知）。
+            try:
+                notifier.notify_period_summary(
+                    user_id=user.id,
+                    start_date_str=start.isoformat(),
+                    end_date_str=end.isoformat(),
+                    period_label=label,
+                )
+            except Exception:
+                logger.error(
+                    'period_summary_user_failed user_id=%s period=%s',
+                    user.id,
+                    label,
+                    exc_info=True,
+                )
 
 
 def _defer_summary(

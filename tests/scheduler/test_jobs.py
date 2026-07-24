@@ -39,6 +39,48 @@ def test_register_all_jobs_adds_expected_jobs(db_engine):
     assert 'monthly_report' in job_ids
 
 
+def test_register_all_jobs_adds_float_refill_night_at_22(db_engine):
+    """开奖日当晚 22:00 应登记额外的浮奖回填轮（plan 07/T6，1C 决策）。
+
+    现有 float_refill（每日 08:00）不变；新增 float_refill_night（每晚 22:00）
+    在开奖后不久官方可能已公布浮动奖金额时再补一轮。本测试断言新 job 被注册、
+    触发时刻为 22:00、复用 _run_float_refill，且与 08:00 的 float_refill 区分
+    （不是同一个 job id）—— 防止「新增了但被 replace_existing 合并/未生效」的
+    silent-success（L-20260706T010500Z）。
+    """
+    from app.scheduler.jobs import _run_float_refill, register_all_jobs
+
+    sched = build_scheduler(db_engine)
+    register_all_jobs(
+        sched,
+        {
+            'engine': db_engine,
+            'fetch_service': MagicMock(),
+            'compare_service': MagicMock(),
+            'refill_worker': MagicMock(),
+            'notifier': MagicMock(),
+        },
+    )
+    jobs_by_id = {j.id: j for j in sched.get_jobs()}
+    assert 'float_refill_night' in jobs_by_id
+    night_job = jobs_by_id['float_refill_night']
+    # 复用现有 _run_float_refill（签名/行为不变），仅触发时刻不同。
+    assert night_job.func is _run_float_refill
+    # 触发器为 22:00 每日（CST 时区由 scheduler 统一配置）。
+    trigger = night_job.trigger
+    from apscheduler.triggers.cron import CronTrigger
+
+    assert isinstance(trigger, CronTrigger)
+    fields = {f.name: str(f) for f in trigger.fields}
+    assert fields['hour'] == '22'
+    assert fields['minute'] == '0'
+    # 与 08:00 float_refill 互不覆盖（两个独立 job id）。
+    assert 'float_refill' in jobs_by_id
+    assert jobs_by_id['float_refill'].func is _run_float_refill
+    morning_fields = {f.name: str(f) for f in jobs_by_id['float_refill'].trigger.fields}
+    assert morning_fields['hour'] == '8'
+
+
 def test_path_b_summary_calls_notifier(db_engine):
     """路径B汇总任务应遍历用户并调用 notifier.notify_path_b。"""
     from sqlmodel import Session
@@ -674,3 +716,197 @@ def test_path_a_big_win_push_job_pickles_through_jobstore(db_engine):
     finally:
         _base_exec.BaseExecutor.submit_job = orig_submit
         notifier.close()
+
+
+def test_path_b_summary_isolates_per_user_failure(db_engine):
+    """路径B汇总：单个用户的 notify_path_b 抛异常不得阻断后续用户（silent-failure 纪律）。
+
+    review round 1 important：_path_b_summary 的 per-user 循环此前无 try/except，user A
+    的 notify_path_b 抛任何异常（transient DB 错 / 解密失败 / httpx 传输异常）都会冒泡
+    中断 for 循环 → user B/C/D 收不到当日汇总（per-user 静默漏通知）。与 _path_a_tick 已
+    正确隔离的 per-lottery fetch 循环同构（CLAUDE.md：批量循环里单行故障不得中断整批）。
+
+    RED 断言：user A 抛异常后，user B 的 notify_path_b 仍被调用（call_count == 2，而非
+    在 user A 处中断为 1）。用真实 side_effect 抛 RuntimeError 复现 user A 故障。
+    """
+    from sqlmodel import Session
+
+    from app.models import User
+    from app.scheduler.jobs import register_all_jobs
+
+    sched = build_scheduler(db_engine)
+    with Session(db_engine) as s:
+        s.add(User(username='user_a', password_hash='x', role='user', invite_code='A1'))
+        s.add(User(username='user_b', password_hash='x', role='user', invite_code='B1'))
+        s.commit()
+
+    notifier = MagicMock()
+    notifier.is_dnd_active.return_value = False
+    call_log = []
+
+    def side_effect(*, user_id, date_str):
+        call_log.append(user_id)
+        if len(call_log) == 1:
+            raise RuntimeError('user_a notifier outage (transient DB/decrypt/network)')
+
+    notifier.notify_path_b.side_effect = side_effect
+    register_all_jobs(
+        sched,
+        {
+            'engine': db_engine,
+            'fetch_service': MagicMock(),
+            'compare_service': MagicMock(),
+            'refill_worker': MagicMock(),
+            'notifier': notifier,
+        },
+    )
+    _invoke_job(sched, 'path_b_summary')
+    # 两个用户都被尝试（user A 抛异常后循环继续到 user B），而非中断在 user A。
+    assert len(call_log) == 2, f'user B 应被处理，实际 call_log={call_log}'
+
+
+def test_period_summary_isolates_per_user_failure(db_engine):
+    """周/月报汇总：单个用户的 notify_period_summary 抛异常不得阻断后续用户。
+
+    review round 1 important：_push_period_summary 的 per-user 循环同样无 try/except。
+    user A 抛异常 → user B/C/D 当期周报/月报全丢（per-user 静默漏通知）。
+    """
+    from datetime import date, timedelta
+
+    from sqlmodel import Session
+
+    from app.models import User
+    from app.scheduler.jobs import register_all_jobs
+
+    sched = build_scheduler(db_engine)
+    with Session(db_engine) as s:
+        s.add(User(username='weekly_a', password_hash='x', role='user', invite_code='WA1'))
+        s.add(User(username='weekly_b', password_hash='x', role='user', invite_code='WB1'))
+        s.commit()
+
+    notifier = MagicMock()
+    notifier.is_dnd_active.return_value = False
+    call_log = []
+
+    def side_effect(*, user_id, start_date_str, end_date_str, period_label):
+        call_log.append(user_id)
+        if len(call_log) == 1:
+            raise RuntimeError('weekly_a notifier outage')
+
+    notifier.notify_period_summary.side_effect = side_effect
+    register_all_jobs(
+        sched,
+        {
+            'engine': db_engine,
+            'fetch_service': MagicMock(),
+            'compare_service': MagicMock(),
+            'refill_worker': MagicMock(),
+            'notifier': notifier,
+        },
+    )
+    _invoke_job(sched, 'weekly_report')
+    assert len(call_log) == 2, f'user B 应被处理，实际 call_log={call_log}'
+
+
+def test_path_a_tick_day_window_matches_aware_cst_draw_date(db_engine):
+    """路径A 日窗口查询的 bounds 必须与 DrawResult.draw_date 同 tz 表示（critical）。
+
+    review round 1 critical：fetch_service.py:229 写 DrawResult.draw_date 为 aware-CST
+    （datetime.combine(d, min.time(), tzinfo=_CST)）。jobs.py 此前用 naive bounds
+    （datetime.combine(today, min.time()) 无 tzinfo）过滤该列。CLAUDE.md 明文：「SQLite
+    对 datetime 做字符串比较且存取会剥离 tzinfo……凡与其他 datetime 字段比较的写入值，
+    须与 TimestampMixin.created_at（naive UTC）同时区同数值」——bounds 与列的 tz 表示
+    必须一致，依赖 SQLAlchemy 方言内部 strip-tzinfo 是脆弱的（方言/版本漂移即静默漏比对
+    当天大奖，违反「中奖永不静默漏通知」核心价值，spec §10）。
+
+    本测试不强依赖方言 strip 行为：种一笔今日 aware-CST draw 命中大奖，断言 _path_a_tick
+    查询命中并登记推送 job。同时用 runtime introspection 断言 day_start/day_end 的 tzinfo
+    与列写入值同表示（aware CST），锁定「bounds 与列同 tz」这一防回归契约——若未来有人把
+    bounds 改回 naive，本断言会先于生产差异报警。
+    """
+    import inspect
+
+    from sqlmodel import Session
+
+    from app.models import Comparison, DrawResult, LotteryType, Ticket, User
+    from app.scheduler import jobs
+    from app.scheduler.jobs import _push_big_win, register_all_jobs
+
+    sched = build_scheduler(db_engine)
+    with Session(db_engine) as s:
+        s.add(
+            LotteryType(
+                code='ssq',
+                name='双色球',
+                category='welfare',
+                spec_json='{"code": "ssq"}',
+                draw_schedule_json='{"draw_days": [1, 3, 6]}',
+                enabled=True,
+            )
+        )
+        user = User(username='tz_bounds', password_hash='x', role='user', invite_code='TZ1')
+        s.add(user)
+        s.commit()
+        s.refresh(user)
+        # fetch_service 写 aware-CST；测试镜像该写入路径（非 naive）。
+        from datetime import datetime, time
+        from zoneinfo import ZoneInfo
+
+        cst = ZoneInfo('Asia/Shanghai')
+        dr = DrawResult(
+            lottery_code='ssq',
+            draw_no='062',
+            draw_date=datetime.combine(datetime.now(cst).date(), time.min, tzinfo=cst),
+            numbers_json='{}',
+            source='mxnzp',
+            verified=True,
+            version=1,
+        )
+        s.add(dr)
+        s.commit()
+        s.refresh(dr)
+        ticket = Ticket(
+            user_id=user.id,
+            lottery_code='ssq',
+            play_type='single',
+            numbers_json='{}',
+            multiplier=1,
+            cost=200,
+        )
+        s.add(ticket)
+        s.commit()
+        s.refresh(ticket)
+        cmp = Comparison(
+            user_id=user.id,
+            draw_result_id=dr.id,
+            ticket_id=ticket.id,
+            hits_json='{}',
+            prize_tier=1,
+            prize_amount=None,
+            is_win=True,
+        )
+        s.add(cmp)
+        s.commit()
+
+    notifier = MagicMock()
+    register_all_jobs(
+        sched,
+        {
+            'engine': db_engine,
+            'fetch_service': MagicMock(),
+            'compare_service': MagicMock(),
+            'refill_worker': MagicMock(),
+            'notifier': notifier,
+        },
+    )
+    _invoke_job(sched, 'path_a_poll_evening')
+    # aware-CST 列 + bounds 同 tz → 今日大奖被命中，登记推送 job。
+    push_jobs = [j for j in sched.get_jobs() if j.func is _push_big_win]
+    assert len(push_jobs) == 1, '今日 aware-CST 大奖应被日窗口命中并登记推送'
+
+    # 防回归：源码级断言 day_start/day_end 以 aware-CST 构造（与列同 tz 表示）。
+    src = inspect.getsource(jobs._path_a_tick)
+    assert 'tzinfo=_CST' in src, (
+        'day_start/day_end 必须以 tzinfo=_CST 构造，与 DrawResult.draw_date（aware CST）'
+        '同 tz 表示——依赖方言 strip 是脆弱的，见 CLAUDE.md datetime 时区对齐纪律'
+    )
