@@ -42,6 +42,7 @@ async def lifespan(app: FastAPI):
         sched.start()
         app.state.scheduler = sched
         app.state.notifier = deps['notifier']
+        app.state._deps = deps  # 供 lifespan teardown close 奖金查询适配器 client
     yield
     # 关闭：先停调度器（不再派发新 job），再释放渠道资源（httpx 连接池）。
     sched = getattr(app.state, 'scheduler', None)
@@ -52,15 +53,39 @@ async def lifespan(app: FastAPI):
     if notifier is not None:
         notifier.close()
         app.state.notifier = None
+    # close 奖金查询适配器 client（httpx 连接池），防泄漏。单 adapter 故障不阻断其余 close。
+    deps = getattr(app.state, '_deps', None)
+    if deps:
+        for key in ('cwl_prize', 'sporttery_prize'):
+            adapter = deps.get(key)
+            if adapter is not None and hasattr(adapter, 'close'):
+                try:
+                    adapter.close()
+                except Exception:
+                    logger.warning('adapter_close_failed key=%s', key, exc_info=True)
+        app.state._deps = None
 
 
-def _amount_lookup_stub(lottery_code: str, draw_no: str, tier: int) -> int | None:
-    """官方浮动奖金查询占位（spec §7.1 浮动奖回填）。
+def _build_amount_lookup(cwl, sporttery):
+    """构建路由闭包：按彩种分发到对应 PrizeSource（spec §7.1 浮动奖回填）。
 
-    MVP 返回 None：FloatRefillWorker 查不到金额即不回填、不补推（待 Plan 05/06 接真实
-    奖金接口）。真实实现接 MXNZP/聚合奖金接口后替换此函数。
+    ssq/qlc → cwl（中彩网）；dlt/qxc → sporttery（中国体彩网）；
+    其他（fc3d/pl3/pl5 固定档）→ None（不查询）。
+
+    闭包内嵌 code→adapter 集合：固定档直接返回 None，避免被错误地转发到任一 adapter
+    产生 silent-success（L-20260706T010500Z：filter 必须真能区分行为）。
     """
-    return None
+    _CWL_CODES = frozenset({'ssq', 'qlc'})
+    _SPORTTERY_CODES = frozenset({'dlt', 'qxc'})
+
+    def amount_lookup(lottery_code: str, draw_no: str, draw_date, tier: int) -> int | None:
+        if lottery_code in _CWL_CODES:
+            return cwl.lookup_amount(lottery_code, draw_no, draw_date, tier)
+        if lottery_code in _SPORTTERY_CODES:
+            return sporttery.lookup_amount(lottery_code, draw_no, draw_date, tier)
+        return None  # 固定档彩种不查询
+
+    return amount_lookup
 
 
 def _build_scheduler_and_deps(engine: Engine, settings: Settings):
@@ -75,8 +100,10 @@ def _build_scheduler_and_deps(engine: Engine, settings: Settings):
     """
     from apscheduler.schedulers.background import BackgroundScheduler
 
+    from app.adapters.cwl_prize import CwlPrizeSource
     from app.adapters.juhe import JuheAdapter
     from app.adapters.mxnzp import MxnzpAdapter
+    from app.adapters.sporttery_prize import SportteryPrizeSource
     from app.infrastructure.crypto import CryptoService
     from app.notifications.bark import BarkChannel
     from app.notifications.email_channel import EmailChannel
@@ -123,13 +150,19 @@ def _build_scheduler_and_deps(engine: Engine, settings: Settings):
         engine,
     )
     compare = CompareService(engine)
-    refill = FloatRefillWorker(engine, amount_lookup=_amount_lookup_stub)
+    # 奖金查询适配器（各建独立 httpx.Client，D1 决策）——供 lifespan teardown close。
+    cwl = CwlPrizeSource()
+    sporttery = SportteryPrizeSource()
+    amount_lookup = _build_amount_lookup(cwl, sporttery)
+    refill = FloatRefillWorker(engine, amount_lookup=amount_lookup)
     deps = {
         'engine': engine,
         'fetch_service': fetch,
         'compare_service': compare,
         'refill_worker': refill,
         'notifier': notifier,
+        'cwl_prize': cwl,
+        'sporttery_prize': sporttery,
     }
     sched: BackgroundScheduler = build_scheduler(engine)
     register_all_jobs(sched, deps)
@@ -161,6 +194,78 @@ def validate_startup() -> None:
     _smoke = crypto.encrypt('__startup_probe__', version=settings.current_key_version)
     crypto.decrypt(_smoke)
     settings.validate_email_bark_fallback()
+    # 奖金查询 API 字段名冒烟验证（OV2/OV8）：启动时确认 API 可用且字段名匹配。
+    # 不匹配则 log error 但不阻止启动——PDF 降级可能仍可用（spec §10/§11）。
+    _smoke_check_prize_sources(settings, log)
+
+
+def _smoke_check_prize_sources(settings: Settings, log: logging.Logger) -> None:
+    """启动冒烟：验证 cwl + sporttery API 字段名匹配。
+
+    非启动门禁——网络故障/字段漂移只 log error，不 raise。原因：
+    1. PDF 降级（sporttery）可能仍可用；
+    2. 启动期网络抖动不应阻塞整个服务拉起（spec §10 容错优先于立即失败）。
+    字段名缺失 → log error 而非 info：让运维在日志察觉 schema 漂移（silent-failure
+    纪律：schema 漂移若静默，下游 lookup 永远返回 None 被当「未公布」，奖金永久 null）。
+    """
+    import httpx
+
+    # cwl 冒烟：ssq 任取一期，验证响应含 result[*].prizegrades（T2 lookup_amount 依赖）。
+    try:
+        r = httpx.get(
+            'https://www.cwl.gov.cn/cwl_admin/front/cwlkj/search/kjxx/findDrawNotice',
+            params={'name': 'ssq', 'code': '2026082'},
+            headers={'User-Agent': 'Mozilla/5.0'},
+            timeout=5.0,
+        )
+        # L-20260706T010500Z（review round 1 [minor]）：raise_for_status 让 5xx/4xx 落入
+        # except 分支报 smoke_*_failed（transient），而非被当 JSON 误判为 field_mismatch
+        # （schema drift）——保持 schema-drift 信号纯净，避免运维误诊 lookup None 成因。
+        r.raise_for_status()
+        body = r.json()
+        if 'result' not in body or 'state' not in body:
+            log.error('smoke_cwl_field_mismatch: missing result/state in response')
+        elif not body.get('result'):
+            # L-20260706T010500Z（review round 1 [important]）：空 result 是「未查到该期」，
+            # 非验证而非 schema-OK。旧实现 else 分支对空 result 直接报 ok，导致上游返回
+            # 空时冒烟被当成功——schema 漂移永远沉默（本函数 docstring 自警的 trap）。
+            log.warning('smoke_cwl_no_data_to_verify: empty result for code=2026082')
+        elif 'prizegrades' not in body['result'][0]:
+            log.error('smoke_cwl_field_mismatch: missing prizegrades in result[0]')
+        else:
+            log.info('smoke_cwl_ok')
+    except Exception as exc:
+        log.error('smoke_cwl_failed: %s', exc)
+
+    # sporttery 冒烟：dlt（gameNo=85）任取一期，验证 list[*] 含 prizeLevelList（T3 依赖）。
+    try:
+        r = httpx.get(
+            'https://webapi.sporttery.cn/gateway/lottery/getHistoryPageListV1.qry',
+            params={
+                'gameNo': '85', 'provinceId': '0', 'pageSize': '1',
+                'isVerify': '1', 'pageNo': '1',
+                # L-20260706T010500Z（review round 1 [important]）：传 term（期号）定位具体开奖，
+                # 否则 API 返回摘要列表（无 prizeLevelList）——smoke 永不命中真实开奖详情页，
+                # 沦为 silent-success。cwl 用 code 精确定位，sporttery 须用 term 对齐语义。
+                'term': '2026099',
+            },
+            headers={'User-Agent': 'Mozilla/5.0'},
+            timeout=5.0,
+        )
+        r.raise_for_status()  # 同 cwl：5xx/4xx 须分类为 failed 而非 field_mismatch
+        body = r.json()
+        data = body.get('data', {})
+        items = data.get('list', [])
+        if not items:
+            # L-20260706T010500Z（review round 1 [important]）：空 list 是非验证而非 schema-OK。
+            # 旧实现 `if items and ...` 对空 list 走 else 直接 ok，false-positive schema-OK。
+            log.warning('smoke_sporttery_no_data_to_verify: empty list for term=2026099')
+        elif 'prizeLevelList' not in items[0]:
+            log.error('smoke_sporttery_field_mismatch: missing prizeLevelList in list[0]')
+        else:
+            log.info('smoke_sporttery_ok')
+    except Exception as exc:
+        log.error('smoke_sporttery_failed: %s', exc)
 
 
 def get_db_for_health() -> Engine:
