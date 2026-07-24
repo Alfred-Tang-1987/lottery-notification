@@ -148,10 +148,11 @@ title: Plan gate 的 ruff check 与 pytest 同级——全测试绿 ≠ done；�
 detail: plan gate 同时跑 pytest + ruff check + lint-imports，三者任一非零即 halt「plan gate failed」。本次 run（SHA fdb0a5a）pytest 470 passed、lint-imports PASSED，但 ruff 11 errors → gate 直接判失败。教训：**「测试全绿」自报不代表 gate 过**——implementor 交付前必须自跑 gate 的全部命令，不只是 pytest。
 11 errors 三类根因与修法：(1) **机械类（7 条可 --fix）**——I001 import 未排序（app/api/dashboard.py、app/cli.py、tests/api/test_settings_t6e.py、tests/conftest.py、tests/webui/test_tokens.py）、F401 未用 import（tests/test_cli_t10.py 的 io/redirect_stdout）、F841 未用局部变量（tests/api/test_dashboard.py:331 cst_now）。修法：`uv run ruff check . --fix` 一把清零，不该留到 gate。(2) **F821 forward-ref 字符串注解未解析**——app/models/notification.py:43 注解引用 'User'、app/models/user.py:17 引用 'NotificationSettings'，但两名字连 TYPE_CHECKING 块里都没 import。SQLModel 循环引用须用 `if TYPE_CHECKING: from app.models.user import User` 形式导入——ruff 静态分析认 TYPE_CHECKING import，裸字符串注解不导入必报 F821。(3) **F811 重复测试定义（最危险）**——tests/api/test_dashboard.py 同一测试函数名 test_dashboard_custom_period_with_date_range 在 326 行与 509 行各定义一次，Python 后定义遮蔽先定义 → 326 行版本**静默永不运行**，pytest 仍全绿（运行数不差，无人察觉）。这是 test-suite 维度的 silent-failure：与 L-20260705T180000Z（stub 不命中删测试掩盖回归）同根——测试套件「看起来绿」但断言在流失。修法：改名合并两版本，不得放任遮蔽。
 修法（纪律）：(1) implementor commit/交付前跑 gate 同款三件套 `uv run pytest && uv run ruff check . && uv run lint-imports`，任一非零不交付；(2) 新增 SQLModel model 互相引用时统一 TYPE_CHECKING import 模式；(3) review 链/gate 对 F811 单独高亮——它不是风格问题，是「某测试从此不运行」的覆盖率洞，须视为 critical 而非可忽略 warning。
-source: plan-06/gate@2026-07-21
+新增证据（plan-07/gate，SHA d901ea2，2026-07-25）：**同根因跨 plan 复发**——本条 4 天前已记录，plan-07 仍在 gate 被 ruff 拦下（pytest 绿、lint-imports kept，15 errors 全在 test 文件）。错误类别换了一批但同为「交付前没跑 ruff」：SIM117 嵌套 with 未合并（tests/adapters/test_sporttery_prize.py:233/269/285/383）、F841 未用局部变量 `src`（同文件:283）、SIM105 try/except/pass 未用 contextlib.suppress（tests/test_main_prize_wiring_t5.py:326）、F401 未用 import `app.config.Settings`。15 条中 9 条 `ruff check --fix` 可自动清零。两点增量：(a) **教训入库 ≠ 教训被吸取**——lessons.md 存在本条，但 implementor prompt 若未被注入相关 lesson，跨 plan 必复发；orchestrator bootstrap 应按 category=test-strategy/convention 把 active lesson 注入 implementor/review prompt，而非只存档；(b) 测试文件的「风格类」lint（SIM117/SIM105/F841/F401）不是可豁免项——gate 对 tests/ 与 app/ 同标准，`--fix` 能清的绝不留到人工修。
+source: plan-06/gate@2026-07-21, plan-07/gate@2026-07-25
 category: test-strategy
 status: active
-last_verified: 2026-07-21
+last_verified: 2026-07-25
 
 ## L-20260721T130000Z
 title: API router 前缀须全局统一——半数 router 漏 /api 前缀致路径记忆分裂、冒烟易误测 404 当 bug
