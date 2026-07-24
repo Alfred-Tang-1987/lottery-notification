@@ -305,7 +305,7 @@ def test_refill_marks_expired_even_when_success_commit_fails(db_engine, monkeypa
     修法契约：_mark_expired_unresolved 移入 try/finally，即便循环内任意 commit 抛异常，
     超期行仍被标 unresolved；原异常向上传播（调用方知晓回填失败）。
     """
-    a_id, _ = _seed_float_win(db_engine, days_ago=1, suffix='F')  # cutoff 内，可回填成功
+    _, _ = _seed_float_win(db_engine, days_ago=1, suffix='F')  # cutoff 内，可回填成功
     c_id, _ = _seed_float_win(db_engine, days_ago=10, suffix='G')  # 超期，应标 unresolved
 
     orig_commit = sa_session_module.Session.commit
@@ -344,7 +344,7 @@ def test_refill_marks_expired_even_when_permanent_unresolved_commit_fails(db_eng
     """
     from app.adapters.cwl_prize import PermanentLookupError
 
-    p_id, p_no = _seed_float_win(db_engine, days_ago=1, suffix='H')  # cutoff 内，触发 permanent error
+    _, p_no = _seed_float_win(db_engine, days_ago=1, suffix='H')  # cutoff 内，触发 permanent error
     c_id, _ = _seed_float_win(db_engine, days_ago=10, suffix='I')  # 超期，应标 unresolved
 
     orig_commit = sa_session_module.Session.commit
