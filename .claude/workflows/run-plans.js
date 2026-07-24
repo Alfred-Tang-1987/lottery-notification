@@ -1,5 +1,5 @@
 // STATIC: 此文件由 esbuild 生成，请勿手动编辑。
-// DO NOT EDIT — generated from workflow-engine@d4814be51de7c774cbfba8637567f2991300ddf216a304ace57b28fe90fa29ce by sync.mjs
+// DO NOT EDIT — generated from workflow-engine@98af8030955f4d2e92d1076c227b5d7a98fd715008292302e59e9de7e6144090 by sync.mjs
 // 源文件：src/index.js
 // 生成命令：npm run build
 
@@ -1499,9 +1499,13 @@ var PLAN_PLACEHOLDER_PATTERNS_B = [
   /similar to task \w+/i,
   /待定|待完善/
 ];
+var NEGATION_MARKERS = /(无|没有|不含|不存在|不包含|并非|非\s*\b|未出现|未含|no\s|without\b|absent\b|none\b)/i;
 function matchPlaceholderClass(text) {
-  if (PLAN_PLACEHOLDER_PATTERNS_A.some((re) => re.test(text))) return "L1a";
-  if (PLAN_PLACEHOLDER_PATTERNS_B.some((re) => re.test(text))) return "L1b";
+  for (const line of String(text).split("\n")) {
+    const hitA = PLAN_PLACEHOLDER_PATTERNS_A.some((re) => re.test(line));
+    const hitB = !hitA && PLAN_PLACEHOLDER_PATTERNS_B.some((re) => re.test(line));
+    if ((hitA || hitB) && !NEGATION_MARKERS.test(line)) return hitA ? "L1a" : "L1b";
+  }
   return null;
 }
 function lintPlans(plans, taskWriteFiles, { allLessons = [] } = {}) {
@@ -2150,8 +2154,10 @@ ${regressedMd}`;
   for (const twf of parsed.evidence.task_write_files || []) twf.task_id = bareTaskId(twf.task_id);
   const _regexCompleted = Array.isArray(boot.evidence.git_log_subjects) && boot.evidence.git_log_subjects.length ? extractCompletedFromSubjects(boot.evidence.git_log_subjects) : [];
   const _llmCompleted = Array.isArray(boot.evidence.completed) ? boot.evidence.completed : [];
-  const _rawCompleted = Array.isArray(args.completed) && args.completed.length ? args.completed : [.../* @__PURE__ */ new Set([..._regexCompleted, ..._llmCompleted])];
+  const _argsCompleted = Array.isArray(args.completed) ? args.completed : [];
+  const _rawCompleted = [.../* @__PURE__ */ new Set([..._argsCompleted, ..._regexCompleted, ..._llmCompleted])];
   state.completed = normalizeCompleted(_rawCompleted);
+  log(`bootstrap: completed merge \u2014 args=${_argsCompleted.length}, regex=${_regexCompleted.length}, llm=${_llmCompleted.length} \u2192 total=${state.completed.length}`);
   if (Array.isArray(boot.evidence.failed_approaches)) {
     for (const fa of boot.evidence.failed_approaches) {
       const faKey = fa.task_id.includes("/") ? fa.task_id : taskKey(fa.plan_seq, fa.task_id);
@@ -2401,11 +2407,23 @@ ${regressedMd}`;
         }
       }
     }
-    if (lastSha) {
+    let gateSha = lastSha;
+    if (!gateSha) {
+      const headResult = await safeAgent(
+        buildPrompt("contextFetcher", { needType: "head_sha", query: "", specPath: "", workdir: "" }),
+        { schema: SCHEMAS.contextFetcher, model: "sonnet", label: `head-sha:${plan.id}` }
+      );
+      const headSha = (headResult?.diagnostics?.context || "").trim();
+      if (headSha && /^[0-9a-f]{40}$/i.test(headSha) && headSha !== planStartSha) {
+        gateSha = headSha;
+        log(`plan ${plan.id}: no new task commits, but HEAD advanced to ${headSha.slice(0, 8)} since plan start \u2014 re-running gate to verify non-task fixes`);
+      }
+    }
+    if (gateSha) {
       const cmds = gateCommands(state.config);
       let gate;
       try {
-        gate = await dispatchImpl(buildPrompt("gate", { sha: lastSha, gateCommands: JSON.stringify(cmds), schemaCheck: formatSchemaCheck(state.config?.schema_tool || "", state.config?.model_paths || [], state.config?.migration_paths || []) }), { schema: SCHEMAS.gate, label: `gate:${plan.id}`, phase: `Plan ${plan.id}` }, "sonnet");
+        gate = await dispatchImpl(buildPrompt("gate", { sha: gateSha, gateCommands: JSON.stringify(cmds), schemaCheck: formatSchemaCheck(state.config?.schema_tool || "", state.config?.model_paths || [], state.config?.migration_paths || []) }), { schema: SCHEMAS.gate, label: `gate:${plan.id}`, phase: `Plan ${plan.id}` }, "sonnet");
       } catch (e) {
         return await halt(plan, null, { reason: "agent_error", diag: { model: "sonnet", error: errStr(e) } });
       }
@@ -2413,21 +2431,23 @@ ${regressedMd}`;
         return await halt(plan, null, { reason: gate.reason, diag: gate.diag });
       }
       if (gate.status !== "ok" || gate.evidence?.migration_missing) {
-        return await halt(plan, null, { reason: "plan gate failed", diag: { sha: lastSha, tests_exit_code: gate.evidence?.tests_exit_code, summary: gate.evidence?.pytest_summary, lint_results: gate.evidence?.lint_results, migration_missing: gate.evidence?.migration_missing } });
+        const failedCmds = (gate.evidence?.lint_results || []).filter((r) => r && r.exit_code !== 0);
+        const gateSummary = failedCmds.length ? failedCmds.map((r) => `${r.command} \u2192 exit ${r.exit_code}${r.summary ? `: ${r.summary}` : ""}`).join("; ") : gate.evidence?.pytest_summary;
+        return await halt(plan, null, { reason: "plan gate failed", diag: { sha: gateSha, tests_exit_code: gate.evidence?.tests_exit_code, summary: gateSummary, lint_results: gate.evidence?.lint_results, migration_missing: gate.evidence?.migration_missing } });
       }
       if (state.config?.smoke_command) {
         const lintResults = gate.evidence?.lint_results || [];
         if (!lintResults.some((r) => r.command === state.config.smoke_command)) {
-          return await halt(plan, null, { reason: "gate incomplete: smoke missing", diag: { sha: lastSha, smoke_command: state.config.smoke_command, lint_results: lintResults } });
+          return await halt(plan, null, { reason: "gate incomplete: smoke missing", diag: { sha: gateSha, smoke_command: state.config.smoke_command, lint_results: lintResults } });
         }
       }
       const headVerify = await dispatchImpl(buildPrompt("headVerifier", {}), { schema: { type: "object", required: ["status", "evidence"], additionalProperties: true, properties: { status: { type: "string", enum: ["ok"] }, evidence: { type: "object", required: ["head"], properties: { head: { type: "string" } } }, summary: { type: "string" } } }, label: `head-verify:${plan.id}`, phase: `Plan ${plan.id}` }, "sonnet");
       if (headVerify.halted || headVerify.status !== "ok" || headVerify.evidence?.head !== gate.evidence?.restored_head) {
-        return await halt(plan, null, { reason: "gate head restore verification failed", diag: { expected: gate.evidence?.restored_head, actual: headVerify.evidence?.head, sha: lastSha } });
+        return await halt(plan, null, { reason: "gate head restore verification failed", diag: { expected: gate.evidence?.restored_head, actual: headVerify.evidence?.head, sha: gateSha } });
       }
-      log(`\u2713 plan ${plan.id} gate green @ ${lastSha} (${cmds.length} cmd${cmds.length === 1 ? "" : "s"})`);
+      log(`\u2713 plan ${plan.id} gate green @ ${gateSha} (${cmds.length} cmd${cmds.length === 1 ? "" : "s"})`);
     } else {
-      log(`plan ${plan.id}: no new commits, gate skipped`);
+      log(`plan ${plan.id}: no new commits and HEAD unchanged since plan start, gate skipped`);
     }
   }
   phase("Finalize");
