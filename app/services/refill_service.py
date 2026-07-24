@@ -120,8 +120,12 @@ class FloatRefillWorker:
         # 超期行仍被标 unresolved——否则异常冒泡出 refill()，_mark_expired_unresolved 不可达，
         # 超期行永不标记、每轮重查、terminal-state 契约破坏（review round 3 important）。
         try:
-            for lottery_code, rows in grouped.items():
+            for _lottery_code, rows in grouped.items():
                 for i, (cmp, dr, ticket) in enumerate(rows):
+                    # 三态分发：PermanentLookupError 立即标 unresolved（review round 2 critical）；
+                    # transient Exception 仅隔离日志（下轮重试）；无异常走 else 回填。三态共用
+                    # 循环末尾的同组限流（OV3）——本行无论哪个分支都已访问外部源，非本组最后一
+                    # 行则 sleep 避免被 ban；跨彩种（不同组）之间不 sleep（不同 host 无共享限流）。
                     try:
                         amount = self._lookup(
                             dr.lottery_code, dr.draw_no, dr.draw_date, cmp.prize_tier
@@ -129,50 +133,40 @@ class FloatRefillWorker:
                     except PermanentLookupError:
                         # 永久形状错误（如 typemoney 非数字）：立即标 unresolved，不再下轮重试
                         # （spec §7.1 line 276「超期标 unresolved 不再查」精神延伸到「永久错误」）。
-                        # 旧实现无此分支 → PermanentLookupError 被下方通用 except 当 transient 隔离 →
-                        # 下轮 pending 过滤仍命中 → 每轮重查 7 天，期间日志噪声大且定位困难，最终才由
-                        # _mark_expired_unresolved 兜底标记——永久 schema bug 静默耗满 7 天窗口
-                        # （review round 2 critical）。
-                        # 单行 savepoint 隔离 + 单事务 commit：状态变更与日志（如未来加审计）同事务，
-                        # 不 split-commit（L-20260706T010400Z）。
+                        # 旧实现无此分支 → PermanentLookupError 被通用 except 当 transient 隔离 →
+                        # 每轮重查 7 天，期间日志噪声大且定位困难，最终才由 _mark_expired_unresolved
+                        # 兜底标记——永久 schema bug 静默耗满 7 天窗口。
+                        # 单事务 commit：状态变更与日志（如未来加审计）同事务，不 split-commit。
                         with Session(self._engine) as s:
                             c = s.get(Comparison, cmp.id)
                             c.unresolved = True
                             s.commit()
                         self._log_skip('refill_marked_unresolved_permanent_error', cmp, dr)
-                        # 同组限流：本行已访问外部源（虽抛 permanent），下一行前需间隔
-                        if i < len(rows) - 1:
-                            time.sleep(_LOOKUP_INTERVAL_SECONDS)
-                        continue
                     except Exception:
                         # transient 源故障（5xx/超时）：隔离到该行记日志，不阻断其他行回填，
                         # 不标 unresolved（区别于 PermanentLookupError）——下轮重试。
                         self._log_skip('refill_skip_lookup_failed', cmp, dr)
-                        # 同组限流：transient 也已访问外部源，下一行前需间隔
-                        if i < len(rows) - 1:
-                            time.sleep(_LOOKUP_INTERVAL_SECONDS)
-                        continue
-                    if amount is not None:
-                        # 金额公式（Plan 07 T4 OV1/4A）：
-                        #   base → append_multiplier（仅大乐透一二等奖 + 追加投注）→ multiplier（倍投）
-                        # guard: tier_info is None（未知彩种/未知 tier，如 tier=99）时跳过 append 乘法
-                        # 仅乘 multiplier，避免 AttributeError（4A）。PrizeTier.append_multiplier
-                        # 默认 1.0（truthy），故 ssq 等非追加彩种即使 ticket.append=True 也会乘 1.0
-                        # （no-op）——这是数据一致性问题而非回填逻辑问题，由 Ticket.append 入库校验保证。
-                        tier_info = self._find_tier(dr.lottery_code, cmp.prize_tier)
-                        if ticket is not None and ticket.append and tier_info and tier_info.append_multiplier:
-                            amount = int(amount * tier_info.append_multiplier)  # 追加 1.8x
-                        if ticket is not None:
-                            amount *= ticket.multiplier  # 倍投（OV1）
-                        with Session(self._engine) as s:
-                            c = s.get(Comparison, cmp.id)
-                            c.prize_amount = amount
-                            s.commit()
-                        refilled += 1
-                        # 补推：回填后金额变更，由 Plan 04 Notifier 监听 prize_amount 变更事件推送
-                        # （本 plan 仅回填数据；推送在 Plan 04 接线，避免循环依赖与跨 plan 耦合）
-                    # 同组内限流（OV3）：本行 lookup 完成后，若非本组最后一行，sleep 避免被 ban。
-                    # 跨彩种（不同组）之间不 sleep——不同 host 无共享限流。
+                    else:
+                        if amount is not None:
+                            # 金额公式（Plan 07 T4 OV1/4A）：
+                            #   base → append_multiplier（仅大乐透一二等奖 + 追加投注）→ multiplier（倍投）
+                            # guard: tier_info is None（未知彩种/未知 tier，如 tier=99）时跳过 append 乘法
+                            # 仅乘 multiplier，避免 AttributeError（4A）。PrizeTier.append_multiplier
+                            # 默认 1.0（truthy），故 ssq 等非追加彩种即使 ticket.append=True 也会乘 1.0
+                            # （no-op）——这是数据一致性问题而非回填逻辑问题，由 Ticket.append 入库校验保证。
+                            tier_info = self._find_tier(dr.lottery_code, cmp.prize_tier)
+                            if ticket is not None and ticket.append and tier_info and tier_info.append_multiplier:
+                                amount = int(amount * tier_info.append_multiplier)  # 追加 1.8x
+                            if ticket is not None:
+                                amount *= ticket.multiplier  # 倍投（OV1）
+                            with Session(self._engine) as s:
+                                c = s.get(Comparison, cmp.id)
+                                c.prize_amount = amount
+                                s.commit()
+                            refilled += 1
+                            # 补推：回填后金额变更，由 Plan 04 Notifier 监听 prize_amount 变更事件推送
+                            # （本 plan 仅回填数据；推送在 Plan 04 接线，避免循环依赖与跨 plan 耦合）
+                    # 同组内限流（OV3）：非本组最后一行则 sleep；跨组不 sleep（不同 host 无共享限流）。
                     if i < len(rows) - 1:
                         time.sleep(_LOOKUP_INTERVAL_SECONDS)
         finally:
