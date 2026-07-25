@@ -801,6 +801,104 @@ def test_agencies_queries_amap_when_lat_lng_provided(db_engine, monkeypatch):
         dash_mod._amap_client = original_client
 
 
+def test_agencies_computes_distance_and_sorts_by_distance(db_engine, monkeypatch):
+    """高德 POI 结果按距用户位置的距离升序排列，并计算 distance_m。
+
+    高德 /place/around base 扩展不返回距离，后端须用 haversine 公式
+    根据用户 lat/lng 和 POI lat/lng 自行计算。
+    """
+    import httpx
+
+    from app.api import dashboard as dash_mod
+
+    monkeypatch.setattr(dash_mod, 'get_settings', lambda: MagicMock(amap_api_key='test-amap-key'))
+
+    # 用户位置：朝阳路参考点
+    # POI A：距用户 ~100m（近）
+    # POI B：距用户 ~2000m（远）
+    # POI C：距用户 ~500m（中）
+    # 期望返回顺序：A → C → B（按距离升序）
+    def amap_handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            'status': '1',
+            'pois': [
+                {'name': '远店', 'address': 'addr_far', 'location': '116.5200,39.9000', 'typecode': '160500'},
+                {'name': '近店', 'address': 'addr_near', 'location': '116.4990,39.9250', 'typecode': '160500'},
+                {'name': '中店', 'address': 'addr_mid', 'location': '116.5050,39.9200', 'typecode': '160500'},
+            ],
+        })
+
+    original_client = dash_mod._amap_client
+    dash_mod._amap_client = httpx.Client(transport=httpx.MockTransport(amap_handler), timeout=5.0)
+    try:
+        uid = _make_user(db_engine, 'amap_dist')
+        client = _auth_client(db_engine, uid)
+        r = client.get('/api/dashboard/agencies?lat=39.9242&lng=116.4987')
+        assert r.status_code == 200, r.text
+        items = r.json()
+        assert len(items) == 3
+        # 按距离升序：近 → 中 → 远
+        assert items[0]['name'] == '近店'
+        assert items[1]['name'] == '中店'
+        assert items[2]['name'] == '远店'
+        # distance_m 已计算（非 None）
+        assert items[0]['distance_m'] is not None
+        assert items[1]['distance_m'] is not None
+        assert items[2]['distance_m'] is not None
+        # 距离单调递增
+        assert items[0]['distance_m'] < items[1]['distance_m'] < items[2]['distance_m']
+    finally:
+        dash_mod._amap_client = original_client
+
+
+def test_agencies_limits_result_count(db_engine, monkeypatch):
+    """高德 POI 返回数量过多时，限制为固定数量（默认 10 条）。
+
+    用户不需要 20+ 个代销点，最近 10 个足够决策。限制在后端做（前端不可信）。
+    """
+    import httpx
+
+    from app.api import dashboard as dash_mod
+
+    monkeypatch.setattr(dash_mod, 'get_settings', lambda: MagicMock(amap_api_key='test-amap-key'))
+
+    # 返回 15 条 POI（全部在同一位置，距离相同，避免排序干扰数量限制测试）
+    pois = [
+        {'name': f'彩票店{i}', 'address': f'addr{i}', 'location': '116.4990,39.9250', 'typecode': '160500'}
+        for i in range(15)
+    ]
+
+    def amap_handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={'status': '1', 'pois': pois})
+
+    original_client = dash_mod._amap_client
+    dash_mod._amap_client = httpx.Client(transport=httpx.MockTransport(amap_handler), timeout=5.0)
+    try:
+        uid = _make_user(db_engine, 'amap_limit')
+        client = _auth_client(db_engine, uid)
+        r = client.get('/api/dashboard/agencies?lat=39.9242&lng=116.4987')
+        assert r.status_code == 200, r.text
+        items = r.json()
+        # 限制为 10 条
+        assert len(items) == 10
+    finally:
+        dash_mod._amap_client = original_client
+
+
+def test_agencies_distance_accuracy(db_engine, monkeypatch):
+    """haversine 距离计算精度验证：已知坐标对的距离误差 < 5%。
+
+    用上海→杭州的已知距离（~170km）验证公式正确性，避免经纬度反转等 bug。
+    """
+    from app.api.dashboard import _haversine_distance
+
+    # 上海人民广场 (31.2304, 121.4737) → 杭州西湖 (30.2592, 120.1303)
+    # 已知直线距离约 170km
+    dist = _haversine_distance(31.2304, 121.4737, 30.2592, 120.1303)
+    # 误差 < 5%（170km 的 5% = 8.5km）
+    assert 160000 < dist < 180000, f'haversine distance {dist} not in expected range'
+
+
 def test_agencies_falls_back_to_mock_without_lat_lng(db_engine, monkeypatch):
     """无 lat/lng 参数 → 回退 mock 数据（用户未授权定位）。"""
     from app.api import dashboard as dash_mod
