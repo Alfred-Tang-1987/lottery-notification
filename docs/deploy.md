@@ -70,7 +70,9 @@ curl http://<NAS>:8280/health
 # 期望: {"status":"ok","tz":"Asia/Shanghai","db":"ok"}
 ```
 
-> **首次启动注意**：若 `JUHE_API_KEY` 为空（单源模式），startup backfill 会对 7 个彩种各跑 juhe 404 重试 6 次（约 35s/彩种，串行约 4-5 分钟）。期间 uvicorn lifespan 未完成，healthcheck 显示 `starting`/`unhealthy`。**backfill 跑完后自动转 `healthy`**，无需干预。
+> **单源模式启动**：若 `JUHE_API_KEY` 为空，`JuheAdapter` 会抛 `PermanentLookupError`，
+> `FetchService._fetch_with_backoff` 识别此异常**不重试**（永久性错误重试无意义），
+> 立即走单源兜底。启动速度与双源模式一致（仅 mxnzp 一次请求/彩种），不会阻塞 healthcheck。
 
 ### 6. 创建首个 admin
 
@@ -87,10 +89,9 @@ docker compose exec app uv run python -m app.cli create-admin --username admin -
 双源交叉校验是 spec §7.2 金标准，但单源降级部署也合规（`verified=True single_source=True`）。需知悉的副作用：
 
 1. **MXNZP 故障时无备源**——该期可能漏抓，需人工补抓或等下个 tick 重试。
-2. **启动慢**——startup backfill 对 7 彩种各跑 juhe 404 重试 6 次，约 4-5 分钟（详见上方「健康检查」）。
-3. **path_a_tick 每期耗时增加**——每期 juhe 重试约 35s × 彩种数。
+2. **启动速度与双源一致**——`JuheAdapter` key 空时抛 `PermanentLookupError`，`_fetch_with_backoff` 识别此异常不重试，立即走单源兜底（详见 [fetch_service.py](../app/services/fetch_service.py) 的 `PermanentLookupError` 处理）。
 
-补 `JUHE_API_KEY` 后上述副作用全部消失，且恢复双源交叉校验。生产建议补齐。
+补 `JUHE_API_KEY` 后恢复双源交叉校验（核心安全网）。生产建议补齐。
 
 ## 日常运维
 

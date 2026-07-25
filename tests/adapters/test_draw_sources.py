@@ -201,3 +201,42 @@ def test_juhe_adapter_shanghai_date():
         d = adapter.fetch('ssq')
     assert d is not None
     assert d.draw_date == date(2026, 6, 22)  # Shanghai 日期是 6/22，不是 UTC 的 6/21
+
+
+def test_juhe_adapter_empty_key_raises_permanent_lookup_error():
+    """[critical] api_key 空 → PermanentLookupError，不发无意义的 HTTP 请求。
+
+    silent-failure 陷阱：单源模式部署时 JUHE_API_KEY 空。若 JuheAdapter 仍发 HTTP 请求，
+    juhe 返回 404，FetchService._fetch_with_backoff 重试 6 次（指数退避累计 ~35s），
+    7 彩种串行约 4-5 分钟阻塞 uvicorn lifespan，healthcheck 超时显示 unhealthy
+    （2026-07-25 部署实测）。key 空是配置错误，重试注定失败，应立即抛
+    PermanentLookupError 由 _fetch_with_backoff 识别不重试，走单源兜底。
+
+    另一层防护：不发 HTTP 请求避免无意义的网络 IO + 日志噪声（每期 7 彩种 × 6 重试
+    = 42 条 404 warning 日志）。
+    """
+    import pytest
+
+    from app.adapters.base import PermanentLookupError
+
+    adapter = JuheAdapter(api_key='')
+    with pytest.raises(PermanentLookupError, match='api_key'):
+        adapter.fetch('ssq')
+
+
+def test_mxnzp_adapter_empty_key_raises_permanent_lookup_error():
+    """[critical] MxnzpAdapter api_key 空同样抛 PermanentLookupError（与 JuheAdapter 对称）。
+
+    防护 mxnzp key 未配置时无意义重试。MxnzpAdapter 需双参数（api_key + app_secret），
+    任一空都应抛。
+    """
+    import pytest
+
+    from app.adapters.base import PermanentLookupError
+
+    # api_key 空
+    with pytest.raises(PermanentLookupError, match='api_key'):
+        MxnzpAdapter(api_key='', app_secret='secret').fetch('ssq')
+    # app_secret 空
+    with pytest.raises(PermanentLookupError, match='app_secret'):
+        MxnzpAdapter(api_key='key', app_secret='').fetch('ssq')
