@@ -95,20 +95,15 @@ describe("MyNumbers.vue (T7 A11y)", () => {
     expect(cta).toBeTruthy();
     cta!.click();
     await nextTick();
-    // numbers_json input 是 required（CSV 为空时），不填会触发 HTML5 校验阻止 submit。
-    // 填入有效 JSON 让表单可提交，聚焦验证 multiplier=1 是否被接受。
-    const jsonInput = host.querySelector('input[type="text"]') as HTMLInputElement;
-    expect(jsonInput).toBeTruthy();
-    const jsonSetter = Object.getOwnPropertyDescriptor(
-      HTMLInputElement.prototype,
-      "value"
-    )!.set!;
-    jsonSetter.call(jsonInput, '{"front":[1,2,3,4,5,6],"back":[7]}');
-    jsonInput.dispatchEvent(new Event("input", { bubbles: true }));
+    // 点击「机选一注」自动选号（填充 padFront/padBack → syncPadToJson → numbers_json）
+    const randomBtn = Array.from(host.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("机选一注")
+    ) as HTMLButtonElement | undefined;
+    expect(randomBtn).toBeTruthy();
+    randomBtn!.click();
     await nextTick();
-    // Find multiplier input (type="number"). 表单里 multiplier 在 cost 之前，取第一个。
-    const numberInputs = host.querySelectorAll('input[type="number"]');
-    const multInput = numberInputs[0] as HTMLInputElement;
+    // Find multiplier input (type="number")。表单里只有 multiplier 是 number input（cost 已改为只读展示）。
+    const multInput = host.querySelector('input[type="number"]') as HTMLInputElement;
     expect(multInput).toBeTruthy();
     // Set to 1 (single bet). jsdom 对 input[type=number] 的 valueAsNumber 支持不完整，
     // 直接赋 value 不触发 v-model.number 更新——用 native setter 走真实 input 行为。
@@ -119,8 +114,7 @@ describe("MyNumbers.vue (T7 A11y)", () => {
     nativeSetter.call(multInput, "1");
     multInput.dispatchEvent(new Event("input", { bubbles: true }));
     await nextTick();
-    // 直接 dispatch submit 事件绕过 jsdom HTML5 form validation（点击 submit 按钮
-    // 时 jsdom 会检查 required 字段，可能因同步问题阻止 submit）。
+    // 直接 dispatch submit 事件绕过 jsdom HTML5 form validation。
     const formEl = host.querySelector("form") as HTMLFormElement;
     expect(formEl).toBeTruthy();
     formEl.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
@@ -129,6 +123,108 @@ describe("MyNumbers.vue (T7 A11y)", () => {
     // Assert: no "倍投必须是 2–99" validation error (single bet accepted)
     const errorText = host.textContent || "";
     expect(errorText).not.toMatch(/倍投必须是\s*2[\u2013-]99/);
+  });
+
+  it("cost 自动计算：ssq 单式 1 倍 = 2.00 元", async () => {
+    await mount([]);
+    const cta = Array.from(host.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("去选一注") || b.textContent?.includes("添加号码")
+    ) as HTMLButtonElement | undefined;
+    cta!.click();
+    await nextTick();
+    // 机选一注（ssq 默认 6+1）
+    const randomBtn = Array.from(host.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("机选一注")
+    ) as HTMLButtonElement;
+    randomBtn.click();
+    await nextTick();
+    // 倍投默认 1，cost 应显示 2.00 元
+    const costEl = host.querySelector(".cost-display") as HTMLElement;
+    expect(costEl).toBeTruthy();
+    expect(costEl.textContent?.trim()).toBe("2.00 元");
+  });
+
+  it("cost 自动计算：倍投 5 倍 = 10.00 元", async () => {
+    await mount([]);
+    const cta = Array.from(host.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("去选一注") || b.textContent?.includes("添加号码")
+    ) as HTMLButtonElement | undefined;
+    cta!.click();
+    await nextTick();
+    const randomBtn = Array.from(host.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("机选一注")
+    ) as HTMLButtonElement;
+    randomBtn.click();
+    await nextTick();
+    // 倍投改 5
+    const multInput = host.querySelector('input[type="number"]') as HTMLInputElement;
+    const nativeSetter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value"
+    )!.set!;
+    nativeSetter.call(multInput, "5");
+    multInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await nextTick();
+    const costEl = host.querySelector(".cost-display") as HTMLElement;
+    expect(costEl.textContent?.trim()).toBe("10.00 元");
+  });
+
+  it("「保存并继续」按钮：保存后不关 modal，清空号码盘", async () => {
+    await mount([]);
+    const cta = Array.from(host.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("去选一注") || b.textContent?.includes("添加号码")
+    ) as HTMLButtonElement | undefined;
+    cta!.click();
+    await nextTick();
+    // 机选一注
+    const randomBtn = Array.from(host.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("机选一注")
+    ) as HTMLButtonElement;
+    randomBtn.click();
+    await nextTick();
+    // 点击「保存并继续」
+    const continueBtn = Array.from(host.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("保存并继续")
+    ) as HTMLButtonElement;
+    expect(continueBtn).toBeTruthy();
+    continueBtn!.click();
+    await new Promise((r) => setTimeout(r, 50));
+    await nextTick();
+    // modal 仍打开
+    expect(host.querySelector(".modal")).not.toBeNull();
+    // 号码盘已清空（机选按钮还在，但选中的号码 button.selected 应为 0）
+    const selectedNums = host.querySelectorAll(".num-btn.selected");
+    expect(selectedNums.length).toBe(0);
+  });
+
+  it("「确认选号」按钮已删除（不再存在）", async () => {
+    await mount([]);
+    const cta = Array.from(host.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("去选一注") || b.textContent?.includes("添加号码")
+    ) as HTMLButtonElement | undefined;
+    cta!.click();
+    await nextTick();
+    const confirmBtn = Array.from(host.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("确认选号")
+    );
+    expect(confirmBtn).toBeUndefined();
+  });
+
+  it("numbers_json 输入框已隐藏（type=hidden）", async () => {
+    await mount([]);
+    const cta = Array.from(host.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("去选一注") || b.textContent?.includes("添加号码")
+    ) as HTMLButtonElement | undefined;
+    cta!.click();
+    await nextTick();
+    // numbers_json 是 hidden input，不应有 type="text" 的 numbers_json 输入框
+    const hiddenJson = host.querySelector('input[type="hidden"]') as HTMLInputElement;
+    expect(hiddenJson).toBeTruthy();
+    // 不应有可见的 numbers_json 输入框（label 含「号码 JSON」）
+    const visibleJsonLabel = Array.from(host.querySelectorAll(".field-label")).find((el) =>
+      el.textContent?.includes("号码 JSON")
+    );
+    expect(visibleJsonLabel).toBeUndefined();
   });
 
   it("CSV import isolates per-row failure: one bad row does NOT abort the batch", async () => {

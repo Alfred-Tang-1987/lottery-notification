@@ -9,6 +9,7 @@ import {
   PLAY_TYPE_LABELS,
   randomPick,
   parseCsvLine,
+  calculateCost,
 } from '../lib/lotteries';
 import State from '../components/State.vue';
 import NumberPad from '../components/NumberPad.vue';
@@ -34,7 +35,6 @@ const form = ref({
   numbers_json: '',
   label: '',
   multiplier: 1,
-  cost: 200,
   dlt_append: false,
 });
 // Number pad state (arrays for v-model binding with NumberPad)
@@ -59,6 +59,33 @@ const currentRange = computed(() => {
   const r = getLotteryRange(code);
   return r ?? null;
 });
+
+/** 自动计算投入金额（分）。
+ * 公式：n_combos × price_per_bet × (append?1.5:1) × multiplier
+ * 号码不足时返回 0（用户选号过程中显示 0 元，避免抛错打断输入）。
+ */
+const computedCost = computed<number>(() => {
+  const code = form.value.lottery_code;
+  const playType = form.value.play_type;
+  const multiplier = form.value.multiplier;
+  if (!Number.isInteger(multiplier) || multiplier < 1) return 0;
+  try {
+    const cost = calculateCost({
+      code,
+      playType,
+      front: padFront.value,
+      back: padBack.value.length > 0 ? padBack.value : undefined,
+      multiplier,
+      append: code === 'dlt' && form.value.dlt_append,
+    });
+    return cost;
+  } catch {
+    return 0;
+  }
+});
+
+/** 投入金额展示（元），2 位小数 */
+const costYuan = computed(() => (computedCost.value / 100).toFixed(2));
 
 function onRandomPick() {
   const result = randomPick(form.value.lottery_code, {
@@ -107,6 +134,20 @@ async function csvImport() {
       const numbersJson = JSON.stringify(
         back ? { front, back } : { front },
       );
+      // CSV 导入固定 single 1 倍不追加：cost = 1 注 × 200 分 × 1 = 200 分。
+      // 复杂玩法/倍投需通过图形界面录入。calculateCost 抛错时回退 200（保守）。
+      let rowCost = 200;
+      try {
+        rowCost = calculateCost({
+          code,
+          playType: 'single',
+          front,
+          back: back,
+          multiplier: 1,
+        });
+      } catch {
+        // 未知彩种或异常回退默认单注价
+      }
       // Per-row isolation: a single API failure (e.g. duplicate, validation
       // error) must NOT abort the whole batch. Catch, record, and continue so
       // the user sees which rows succeeded vs failed. Without this, one bad
@@ -117,7 +158,7 @@ async function csvImport() {
           play_type: 'single',
           numbers_json: numbersJson,
           multiplier: 1,
-          cost: 200,
+          cost: rowCost,
           // plan Step 3 CSV 期号字段：Ticket 模型无 draw_no 列，作为 label 记录（DrawQuery 页才真正用期号查开奖）
           ...(draw_no ? { label: draw_no } : {}),
         });
@@ -170,18 +211,23 @@ function resetForm() {
     numbers_json: '',
     label: '',
     multiplier: 1,
-    cost: 200,
     dlt_append: false,
   };
   clearPad();
 }
 
-async function createTicket() {
+async function createTicket(continueAfter: boolean = false) {
   saving.value = true;
   try {
     // lottery-rules.md §倍投: 倍投 1–99 倍（1× = 单倍投注，不倍投；合法场景）
     if (!Number.isInteger(form.value.multiplier) || form.value.multiplier < 1 || form.value.multiplier > 99) {
       error.value = '倍投必须是 1–99 之间的整数';
+      saving.value = false;
+      return;
+    }
+    // 号码必填（padFront 不能为空——至少需要前区号码）
+    if (padFront.value.length === 0) {
+      error.value = '请先选择前区号码';
       saving.value = false;
       return;
     }
@@ -191,15 +237,20 @@ async function createTicket() {
       numbers_json: form.value.numbers_json,
       label: form.value.label || undefined,
       multiplier: form.value.multiplier,
-      cost: form.value.cost,
+      cost: computedCost.value,
     };
     // DLT append flag - backend calculates actual cost from numbers_json + dlt_append
     if (form.value.lottery_code === 'dlt' && form.value.dlt_append) {
       body.dlt_append = true;
     }
     await apiPost('/tickets', body);
-    resetForm();
-    showForm.value = false;
+    if (continueAfter) {
+      // 保存并继续：清空号码盘，保留彩种/玩法/倍投设置，不关 modal
+      clearPad();
+    } else {
+      resetForm();
+      showForm.value = false;
+    }
     await load();
   } catch (err) {
     error.value = err instanceof Error ? err.message : '保存失败';
@@ -266,7 +317,7 @@ onMounted(() => {
       />
       <div class="modal-card modal-card-wide">
         <h2>添加号码</h2>
-        <form @submit.prevent="createTicket">
+        <form @submit.prevent="() => createTicket(false)">
           <label class="field">
             <span class="field-label">彩种</span>
             <select v-model="form.lottery_code" @change="clearPad()">
@@ -312,19 +363,11 @@ onMounted(() => {
 
           <div class="field row">
             <button type="button" class="secondary small" @click="onRandomPick">机选一注</button>
-            <button type="button" class="secondary small" @click="syncPadToJson">确认选号</button>
             <button type="button" class="secondary small danger" @click="clearPad">清空</button>
           </div>
 
-          <label class="field">
-            <span class="field-label">号码 JSON（选号自动生成，或手动输入）</span>
-            <input
-              v-model="form.numbers_json"
-              type="text"
-              placeholder='{"front":[1,2,3,4,5,6],"back":[7]}'
-              :required="!csvText"
-            />
-          </label>
+          <!-- numbers_json 隐藏字段：选号自动同步，不再展示给用户（避免手动输入出错） -->
+          <input v-model="form.numbers_json" type="hidden" />
 
           <!-- CSV 批量导入 -->
           <details class="field csv-details">
@@ -353,13 +396,13 @@ onMounted(() => {
             <input v-model.number="form.multiplier" type="number" min="1" max="99" />
           </label>
 
-          <label class="field">
+          <div class="field">
             <span class="field-label">
-              投入（分）
+              投入
               <span v-if="form.dlt_append">（含追加）</span>
             </span>
-            <input v-model.number="form.cost" type="number" min="0" />
-          </label>
+            <div class="cost-display">{{ costYuan }} 元</div>
+          </div>
 
           <label class="field">
             <span class="field-label">备注</span>
@@ -368,6 +411,9 @@ onMounted(() => {
 
           <div class="modal-actions">
             <button type="button" class="secondary" @click="showForm = false">取消</button>
+            <button type="button" class="secondary" :disabled="saving" @click="createTicket(true)">
+              {{ saving ? '保存中…' : '保存并继续' }}
+            </button>
             <button type="submit" class="primary" :disabled="saving">
               {{ saving ? '保存中…' : '保存' }}
             </button>
@@ -589,5 +635,14 @@ select {
   justify-content: flex-end;
   gap: 10px;
   margin-top: 20px;
+}
+
+.cost-display {
+  padding: 8px 12px;
+  background: var(--surface-2);
+  border-radius: 8px;
+  font-size: var(--text-lg);
+  font-weight: 600;
+  color: var(--accent);
 }
 </style>

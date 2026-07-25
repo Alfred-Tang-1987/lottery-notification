@@ -367,3 +367,167 @@ describe("lotteries.ts — parseCsvLine", () => {
     if (!r.ok) expect(r.error).toContain("重复");
   });
 });
+
+// ──────────────────────────────────────────────
+// countCombos + calculateCost — 倍投/复式/胆拖/追加 投入自动计算
+// 业务规则（lottery-rules.md + app/domain/entry.py Entry.cost）：
+//   cost(分) = n_combos × price_per_bet × (append?1.5:1) × multiplier
+//   - single/zhixuan/danxuan: n_combos = 1
+//   - fushi (分区型 ssq/dlt/qlc): C(front.len, front.count) × C(back.len, back.count)
+//   - dantuo: C(tuo.len, front.count - dan.len) × (back? C(back.len, back.count) : 1)
+// ──────────────────────────────────────────────
+
+import { countCombos, calculateCost, PRICE_PER_BET } from "./lotteries";
+
+describe("lotteries.ts — countCombos", () => {
+  it("single/zhixuan/danxuan: n_combos = 1", () => {
+    expect(countCombos({ code: "ssq", playType: "single", front: [1, 2, 3, 4, 5, 6], back: [7] })).toBe(1);
+    expect(countCombos({ code: "pl5", playType: "zhixuan", front: [1, 2, 3, 4, 5] })).toBe(1);
+    expect(countCombos({ code: "fc3d", playType: "danxuan", front: [1, 2, 3] })).toBe(1);
+  });
+
+  it("ssq fushi 7+2: C(7,6)×C(2,1) = 7×2 = 14", () => {
+    expect(
+      countCombos({
+        code: "ssq",
+        playType: "fushi",
+        front: [1, 2, 3, 4, 5, 6, 7], // 7 个红球
+        back: [8, 9], // 2 个蓝球
+      }),
+    ).toBe(14);
+  });
+
+  it("dlt fushi 6+3: C(6,5)×C(3,2) = 6×3 = 18", () => {
+    expect(
+      countCombos({
+        code: "dlt",
+        playType: "fushi",
+        front: [1, 2, 3, 4, 5, 6],
+        back: [7, 8, 9],
+      }),
+    ).toBe(18);
+  });
+
+  it("ssq dantuo 1胆5拖 + 1蓝: C(5,5)×C(1,1) = 1", () => {
+    expect(
+      countCombos({
+        code: "ssq",
+        playType: "dantuo",
+        front: [1], // 胆 1 个
+        back: [7],
+        tuo: [2, 3, 4, 5, 6], // 拖 5 个，胆+拖=6=front.count
+      }),
+    ).toBe(1);
+  });
+
+  it("ssq dantuo 1胆6拖 + 1蓝: C(6,5)×C(1,1) = 6", () => {
+    expect(
+      countCombos({
+        code: "ssq",
+        playType: "dantuo",
+        front: [1], // 胆
+        back: [7],
+        tuo: [2, 3, 4, 5, 6, 7], // 拖 6 个，需选 5 个
+      }),
+    ).toBe(6);
+  });
+
+  it("dlt dantuo 2胆4拖 + 2蓝: C(4,3)×C(2,2) = 4×1 = 4", () => {
+    expect(
+      countCombos({
+        code: "dlt",
+        playType: "dantuo",
+        front: [1, 2], // 胆 2
+        back: [7, 8],
+        tuo: [3, 4, 5, 6], // 拖 4，需选 3
+      }),
+    ).toBe(4);
+  });
+
+  it("无后区彩种（fc3d/pl3/pl5）fushi 不存在该玩法，但单式 n_combos=1", () => {
+    expect(countCombos({ code: "pl5", playType: "zhixuan", front: [1, 2, 3, 4, 5] })).toBe(1);
+  });
+});
+
+describe("lotteries.ts — calculateCost", () => {
+  it("ssq single 1倍: 1注 × 200分 × 1 = 200 分 = 2 元", () => {
+    expect(
+      calculateCost({
+        code: "ssq",
+        playType: "single",
+        front: [1, 2, 3, 4, 5, 6],
+        back: [7],
+        multiplier: 1,
+      }),
+    ).toBe(200);
+  });
+
+  it("ssq single 5倍: 1注 × 200分 × 5 = 1000 分 = 10 元", () => {
+    expect(
+      calculateCost({
+        code: "ssq",
+        playType: "single",
+        front: [1, 2, 3, 4, 5, 6],
+        back: [7],
+        multiplier: 5,
+      }),
+    ).toBe(1000);
+  });
+
+  it("ssq fushi 7+2, 1倍: 14注 × 200分 × 1 = 2800 分 = 28 元", () => {
+    expect(
+      calculateCost({
+        code: "ssq",
+        playType: "fushi",
+        front: [1, 2, 3, 4, 5, 6, 7],
+        back: [8, 9],
+        multiplier: 1,
+      }),
+    ).toBe(2800);
+  });
+
+  it("dlt single 追加 1倍: 1注 × 200分 × 1.5 × 1 = 300 分 = 3 元", () => {
+    expect(
+      calculateCost({
+        code: "dlt",
+        playType: "single",
+        front: [1, 2, 3, 4, 5],
+        back: [6, 7],
+        multiplier: 1,
+        append: true,
+      }),
+    ).toBe(300);
+  });
+
+  it("dlt fushi 6+3 追加 2倍: 18注 × 200 × 1.5 × 2 = 10800 分 = 108 元", () => {
+    expect(
+      calculateCost({
+        code: "dlt",
+        playType: "fushi",
+        front: [1, 2, 3, 4, 5, 6],
+        back: [7, 8, 9],
+        multiplier: 2,
+        append: true,
+      }),
+    ).toBe(10800);
+  });
+
+  it("非 dlt 彩种 append=true 应抛错（仅大乐透支持追加）", () => {
+    expect(() =>
+      calculateCost({
+        code: "ssq",
+        playType: "single",
+        front: [1, 2, 3, 4, 5, 6],
+        back: [7],
+        multiplier: 1,
+        append: true,
+      }),
+    ).toThrow(/append|追加/);
+  });
+
+  it("PRICE_PER_BET 所有彩种 = 200 分（2 元）", () => {
+    for (const code of ["ssq", "dlt", "qlc", "qxc", "fc3d", "pl3", "pl5"]) {
+      expect(PRICE_PER_BET[code]).toBe(200);
+    }
+  });
+});
