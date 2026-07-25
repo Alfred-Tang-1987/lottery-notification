@@ -163,3 +163,63 @@ def test_create_ticket_requires_csrf(db_engine):
     client = _auth_client(db_engine, uid)  # 已登录但无 csrf
     r = client.post('/tickets', json=_VALID_TICKET)
     assert r.status_code == 403
+
+
+# ──────────────────────────────────────────────
+# TicketOut 字段扩展 + PATCH /tickets/{id} 编辑 API
+# 需求：前端列表需显示号码（代替「未命名注单」）+ 编辑/删除按钮
+# ──────────────────────────────────────────────
+
+
+def test_list_tickets_returns_numbers_json_and_cost(db_engine):
+    """TicketOut 须暴露 numbers_json/tuo_json/cost/append，否则前端无法展示号码与投入。"""
+    _seed_ssq(db_engine)
+    uid = _make_user(db_engine, 'alice')
+    client = _auth_csrf_client(db_engine, uid)
+    client.post('/tickets', json=_VALID_TICKET)
+    r = client.get('/tickets')
+    assert r.status_code == 200
+    item = r.json()[0]
+    assert item['numbers_json'] == '{"front":[1,2,3,4,5,6],"back":[7]}'
+    assert item['cost'] == 200
+    assert item['append'] is False
+    assert item['tuo_json'] is None
+
+
+def test_update_ticket_partial_fields(db_engine):
+    """PATCH /tickets/{id}：部分字段更新（如改 label/multiplier/cost），其余不变。"""
+    _seed_ssq(db_engine)
+    uid = _make_user(db_engine, 'alice')
+    client = _auth_csrf_client(db_engine, uid)
+    tid = client.post('/tickets', json=_VALID_TICKET).json()['id']
+    r = client.patch(f'/tickets/{tid}', json={'label': '生日号', 'multiplier': 5, 'cost': 1000})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data['label'] == '生日号'
+    assert data['multiplier'] == 5
+    assert data['cost'] == 1000
+    # 未传字段保持原值
+    assert data['numbers_json'] == '{"front":[1,2,3,4,5,6],"back":[7]}'
+
+
+def test_update_ticket_idor_safe(db_engine):
+    """PATCH /tickets/{id}：用户改不了他人的票（IDOR）。"""
+    _seed_ssq(db_engine)
+    u1 = _make_user(db_engine, 'alice')
+    u2 = _make_user(db_engine, 'bob')
+    c1 = _auth_csrf_client(db_engine, u1)
+    tid = c1.post('/tickets', json=_VALID_TICKET).json()['id']
+    # u2 试图改 u1 的票
+    c2 = _auth_csrf_client(db_engine, u2)
+    r = c2.patch(f'/tickets/{tid}', json={'label': 'hacked'})
+    assert r.status_code == 404  # IDOR-safe：非归属 → 404（与不存在不可区分）
+
+
+def test_update_ticket_requires_csrf(db_engine):
+    """PATCH /tickets/{id} 无 csrf → 403。"""
+    _seed_ssq(db_engine)
+    uid = _make_user(db_engine, 'alice')
+    client = _auth_client(db_engine, uid)  # 已登录但无 csrf
+    tid = _auth_csrf_client(db_engine, uid).post('/tickets', json=_VALID_TICKET).json()['id']
+    r = client.patch(f'/tickets/{tid}', json={'label': 'x'})
+    assert r.status_code == 403

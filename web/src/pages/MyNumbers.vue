@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue';
-import { apiGet, apiPost } from '../api/client';
+import { apiGet, apiPost, apiPatch, apiDelete } from '../api/client';
 import {
   LOTTERIES,
   lotteryName,
@@ -18,8 +18,11 @@ interface Ticket {
   id: number;
   lottery_code: string;
   play_type: string;
+  numbers_json: string;
+  tuo_json: string | null;
   label: string | null;
   multiplier: number;
+  append: boolean;
   cost: number;
   enabled: boolean;
 }
@@ -29,6 +32,8 @@ const loading = ref(false);
 const error = ref('');
 const saving = ref(false);
 const showForm = ref(false);
+const editingId = ref<number | null>(null); // 非 null = 编辑模式
+const deletingId = ref<number | null>(null); // 删除二次确认
 const form = ref({
   lottery_code: 'ssq',
   play_type: 'single',
@@ -238,18 +243,24 @@ async function createTicket(continueAfter: boolean = false) {
       label: form.value.label || undefined,
       multiplier: form.value.multiplier,
       cost: computedCost.value,
+      append: form.value.lottery_code === 'dlt' && form.value.dlt_append,
     };
-    // DLT append flag - backend calculates actual cost from numbers_json + dlt_append
-    if (form.value.lottery_code === 'dlt' && form.value.dlt_append) {
-      body.dlt_append = true;
-    }
-    await apiPost('/tickets', body);
-    if (continueAfter) {
-      // 保存并继续：清空号码盘，保留彩种/玩法/倍投设置，不关 modal
-      clearPad();
-    } else {
+    if (editingId.value !== null) {
+      // 编辑模式：PATCH /tickets/{id}
+      await apiPatch(`/tickets/${editingId.value}`, body);
+      editingId.value = null;
       resetForm();
       showForm.value = false;
+    } else {
+      // 新建模式
+      await apiPost('/tickets', body);
+      if (continueAfter) {
+        // 保存并继续：清空号码盘，保留彩种/玩法/倍投设置，不关 modal
+        clearPad();
+      } else {
+        resetForm();
+        showForm.value = false;
+      }
     }
     await load();
   } catch (err) {
@@ -257,6 +268,68 @@ async function createTicket(continueAfter: boolean = false) {
   } finally {
     saving.value = false;
   }
+}
+
+/** 删除号码（二次确认后调用 DELETE API）。删除后投入自动减少（dashboard SUM 聚合）。 */
+async function deleteTicket(id: number) {
+  try {
+    await apiDelete(`/tickets/${id}`);
+    deletingId.value = null;
+    await load();
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : '删除失败';
+  }
+}
+
+/** 进入编辑模式：预填表单数据 + 打开 modal。 */
+function startEdit(t: Ticket) {
+  editingId.value = t.id;
+  form.value = {
+    lottery_code: t.lottery_code,
+    play_type: t.play_type,
+    numbers_json: t.numbers_json,
+    label: t.label || '',
+    multiplier: t.multiplier,
+    dlt_append: t.append,
+  };
+  // 解析 numbers_json 填充号码盘
+  try {
+    const parsed = JSON.parse(t.numbers_json) as { front: number[]; back?: number[] };
+    padFront.value = parsed.front || [];
+    padBack.value = parsed.back || [];
+  } catch {
+    clearPad();
+  }
+  error.value = '';
+  showForm.value = true;
+}
+
+/** 取消编辑/新建：重置一切。 */
+function cancelForm() {
+  editingId.value = null;
+  resetForm();
+  showForm.value = false;
+}
+
+/** 格式化号码展示（如 "01 02 03 04 05 06 + 07"）。 */
+function formatNumbers(t: Ticket): string {
+  try {
+    const parsed = JSON.parse(t.numbers_json) as { front: number[]; back?: number[] };
+    // 所有彩种号码均 2 位补零（ssq 01-33+01-16, fc3d 0-9 也补零保持对齐）
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const frontStr = (parsed.front || []).map(pad).join(' ');
+    const backStr = parsed.back && parsed.back.length > 0
+      ? ' + ' + parsed.back.map(pad).join(' ')
+      : '';
+    return frontStr + backStr;
+  } catch {
+    return t.numbers_json;
+  }
+}
+
+/** 投入展示（元）。 */
+function formatCost(cost: number): string {
+  return (cost / 100).toFixed(2) + ' 元';
 }
 
 onMounted(() => {
@@ -295,11 +368,39 @@ onMounted(() => {
           <ul class="ticket-list" role="list">
             <li v-for="ticket in list" :key="ticket.id" class="ticket-item">
               <div class="ticket-meta">
-                <div class="ticket-label">{{ ticket.label || '未命名注单' }}</div>
+                <div class="ticket-numbers">{{ formatNumbers(ticket) }}</div>
                 <div class="ticket-detail">
-                  {{ ticket.play_type }} · {{ ticket.multiplier }}倍 ·
-                  {{ ticket.enabled ? '启用' : '停用' }}
+                  <span class="badge" :class="ticket.enabled ? 'badge-on' : 'badge-off'">
+                    {{ ticket.enabled ? '启用' : '停用' }}
+                  </span>
+                  {{ PLAY_TYPE_LABELS[ticket.play_type] || ticket.play_type }} ·
+                  {{ ticket.multiplier }}倍 ·
+                  {{ formatCost(ticket.cost) }}
+                  <span v-if="ticket.label" class="ticket-label-tag">· {{ ticket.label }}</span>
                 </div>
+              </div>
+              <div class="ticket-actions">
+                <button type="button" class="secondary small" @click="startEdit(ticket)">编辑</button>
+                <button
+                  v-if="deletingId !== ticket.id"
+                  type="button"
+                  class="secondary small danger"
+                  @click="deletingId = ticket.id"
+                >删除</button>
+                <template v-else>
+                  <span class="confirm-text">确认删除？</span>
+                  <button
+                    type="button"
+                    class="danger small"
+                    :disabled="saving"
+                    @click="deleteTicket(ticket.id)"
+                  >确认</button>
+                  <button
+                    type="button"
+                    class="secondary small"
+                    @click="deletingId = null"
+                  >取消</button>
+                </template>
               </div>
             </li>
           </ul>
@@ -307,16 +408,16 @@ onMounted(() => {
       </section>
     </template>
 
-    <!-- 添加号码弹窗 -->
-    <div v-if="showForm" class="modal" role="dialog" aria-label="添加号码">
+    <!-- 添加/编辑号码弹窗 -->
+    <div v-if="showForm" class="modal" role="dialog" :aria-label="editingId !== null ? '编辑号码' : '添加号码'">
       <button
         type="button"
         class="modal-backdrop"
         aria-label="关闭弹窗"
-        @click="showForm = false"
+        @click="cancelForm"
       />
       <div class="modal-card modal-card-wide">
-        <h2>添加号码</h2>
+        <h2>{{ editingId !== null ? '编辑号码' : '添加号码' }}</h2>
         <form @submit.prevent="() => createTicket(false)">
           <label class="field">
             <span class="field-label">彩种</span>
@@ -410,12 +511,18 @@ onMounted(() => {
           </label>
 
           <div class="modal-actions">
-            <button type="button" class="secondary" @click="showForm = false">取消</button>
-            <button type="button" class="secondary" :disabled="saving" @click="createTicket(true)">
+            <button type="button" class="secondary" @click="cancelForm">取消</button>
+            <button
+              v-if="editingId === null"
+              type="button"
+              class="secondary"
+              :disabled="saving"
+              @click="createTicket(true)"
+            >
               {{ saving ? '保存中…' : '保存并继续' }}
             </button>
             <button type="submit" class="primary" :disabled="saving">
-              {{ saving ? '保存中…' : '保存' }}
+              {{ saving ? '保存中…' : (editingId !== null ? '保存修改' : '保存') }}
             </button>
           </div>
         </form>
@@ -644,5 +751,57 @@ select {
   font-size: var(--text-lg);
   font-weight: 600;
   color: var(--accent);
+}
+
+.ticket-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.ticket-numbers {
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-lg);
+  font-weight: 600;
+  letter-spacing: 1px;
+  color: var(--text);
+}
+
+.ticket-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.confirm-text {
+  color: var(--danger);
+  font-size: var(--text-sm);
+}
+
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: var(--text-sm);
+  font-weight: 500;
+}
+.badge-on {
+  background: var(--success-bg, #e8f5e9);
+  color: var(--success, #2e7d32);
+}
+.badge-off {
+  background: var(--surface-2);
+  color: var(--text-muted);
+}
+
+.ticket-label-tag {
+  color: var(--text-muted);
+}
+
+button.small {
+  padding: 4px 10px;
+  font-size: var(--text-sm);
 }
 </style>
