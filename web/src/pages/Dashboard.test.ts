@@ -339,6 +339,8 @@ describe("Dashboard.vue (T6g)", () => {
       value: geoStub,
       configurable: true,
     });
+    // jsdom 默认 isSecureContext=false，需 mock 为 true 才能触发 geolocation 调用
+    Object.defineProperty(window, "isSecureContext", { value: true, configurable: true });
 
     await mount();
     // Wait for geolocation + agencies request to complete
@@ -369,6 +371,8 @@ describe("Dashboard.vue (T6g)", () => {
       value: geoStub,
       configurable: true,
     });
+    // jsdom 默认 isSecureContext=false，需 mock 为 true 才能触发 geolocation 调用
+    Object.defineProperty(window, "isSecureContext", { value: true, configurable: true });
 
     await mount();
     await nextTick();
@@ -384,5 +388,16 @@ describe("Dashboard.vue (T6g)", () => {
     expect(url).not.toContain("lat=");
     // Subtitle should show "定位未授权"
     expect(host.textContent).toContain("定位未授权");
+  });
+
+  it("shows HTTPS hint when accessed via HTTP (non-secure context)", async () => {
+    // 模拟 HTTP 局域网访问：isSecureContext=false → geolocation 被浏览器禁用
+    Object.defineProperty(window, "isSecureContext", { value: false, configurable: true });
+
+    await mount();
+    await nextTick();
+
+    // 不应调用 geolocation（直接走 unavailable 分支）
+    expect(host.textContent).toContain("需 HTTPS 才能定位");
   });
 });

@@ -58,4 +58,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
       | python -
 # 启动：先 alembic 迁移（spec §4.3：Schema 用 Alembic 管理）再起 uvicorn。
 # && 串行：迁移失败时 uvicorn 不启动（避免 schema drift 静默运行）。
-CMD ["sh", "-c", "uv run alembic upgrade head && uv run uvicorn app.main:app --host 0.0.0.0 --port 8280"]
+# HTTPS：配置 SSL_CERT_FILE + SSL_KEY_FILE 环境变量时自动启用 SSL（局域网自签证书）。
+# 不配则走 HTTP（保持开发/CI 兼容）。geolocation API 要求安全上下文（HTTPS/localhost），
+# HTTP 局域网部署浏览器会拒绝定位。
+CMD ["sh", "-c", "uv run alembic upgrade head && if [ -n \"$SSL_CERT_FILE\" ] && [ -n \"$SSL_KEY_FILE\" ]; then uv run uvicorn app.main:app --host 0.0.0.0 --port 8280 --ssl-certfile \"$SSL_CERT_FILE\" --ssl-keyfile \"$SSL_KEY_FILE\"; else uv run uvicorn app.main:app --host 0.0.0.0 --port 8280; fi"]

@@ -85,6 +85,8 @@ const error = ref('');
 const geoStatus = ref<GeoStatus>('idle');
 const userLat = ref<number | null>(null);
 const userLng = ref<number | null>(null);
+// 是否非安全上下文（HTTP 非 localhost）→ geolocation 被浏览器禁用
+const notSecureContext = ref(typeof window !== 'undefined' && !window.isSecureContext);
 // Non-blocking warning for secondary failures (calendar/agency). Kept separate
 // from `error` so a secondary failure does NOT gate the dashboard main body
 // (v-else-if="error" would hide D5 first-screen 待兑奖 etc). Rendered as an
@@ -115,6 +117,14 @@ function buildDashboardQuery(): string {
 async function requestGeolocation(): Promise<void> {
   // 仅在首次加载时请求定位（后续刷新复用结果，避免重复弹窗）
   if (geoStatus.value !== 'idle') return;
+  // 安全上下文检查：geolocation API 仅在 HTTPS 或 localhost 下可用。
+  // HTTP 局域网访问（如 http://<NAS_IP>:8280）时浏览器直接禁用 geolocation，
+  // getCurrentPosition 会立即触发 error 回调（code=1），误报为「用户拒绝」。
+  // 检测 isSecureContext 给出准确提示「需 HTTPS」而非误导性的「未授权」。
+  if (!window.isSecureContext) {
+    geoStatus.value = 'unavailable';
+    return;
+  }
   if (!('geolocation' in navigator)) {
     geoStatus.value = 'unavailable';
     return;
@@ -539,7 +549,8 @@ onMounted(() => {
             <template v-if="geoStatus === 'granted'">基于当前位置 · 点击打开地图导航</template>
             <template v-else-if="geoStatus === 'loading'">正在获取位置…</template>
             <template v-else-if="geoStatus === 'denied'">定位未授权 · 显示示例代销点</template>
-            <template v-else-if="geoStatus === 'unavailable'">不支持定位 · 显示示例代销点</template>
+            <template v-else-if="geoStatus === 'unavailable' && notSecureContext">当前为 HTTP 连接 · 需 HTTPS 才能定位 · 显示示例代销点</template>
+            <template v-else-if="geoStatus === 'unavailable'">浏览器不支持定位 · 显示示例代销点</template>
             <template v-else>便民查询 · 点击打开地图导航</template>
           </p>
         </div>
