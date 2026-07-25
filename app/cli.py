@@ -120,6 +120,8 @@ def cmd_backfill_history(argparse_ns) -> None:
     用于补充已有数据库的历史数据（自动 backfill 仅在 DB 为空时触发）。
     幂等：已存在的 (lottery_code, draw_no) 跳过，不重复入库。
     """
+    import time
+
     from app.scheduler.backfill import _enabled_lotteries, _store_history_draws
 
     settings = get_settings()
@@ -127,7 +129,10 @@ def cmd_backfill_history(argparse_ns) -> None:
         print('ERROR: mxnzp_api_key / mxnzp_app_secret 未配置', file=sys.stderr)
         sys.exit(1)
     adapter = MxnzpAdapter(settings.mxnzp_api_key, settings.mxnzp_app_secret)
-    for code, _ in _enabled_lotteries(engine):
+    codes = [c for c, _ in _enabled_lotteries(engine)]
+    for i, code in enumerate(codes):
+        if i > 0:
+            time.sleep(1.2)  # MXNZP 免费账号 QPS=1，请求间隔需 >1s
         try:
             draws = adapter.fetch_history(code, size=50)
             if not draws:
