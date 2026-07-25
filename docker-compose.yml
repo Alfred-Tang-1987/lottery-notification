@@ -10,6 +10,7 @@ services:
     volumes:
       - ./data:/app/data          # SQLite 持久化（spec §4.3）
       - ./backups:/app/backups    # 备份目录（spec §4.3：每日备份保留 30 天）
+      - ./certs:/app/certs:ro     # 自签证书（SSL，HTTPS 部署用；目录为空则走 HTTP）
     env_file: .env                # CLAUDE.md：密钥从 .env 注入，不进库不进日志
     # spec §4.3：FnOS 关机会 docker stop 所有容器，unless-stopped 不会自启——必须 always。
     # silent-failure 陷阱：误改 unless-stopped 不会立即崩，但 NAS 重启后服务静默消失，
