@@ -114,6 +114,31 @@ def cmd_smoke(argparse_ns) -> None:
     print(f'compared {n} pending')
 
 
+def cmd_backfill_history(argparse_ns) -> None:
+    """手动触发历史开奖回填：对所有启用彩种抓取最近 50 期历史开奖并入库。
+
+    用于补充已有数据库的历史数据（自动 backfill 仅在 DB 为空时触发）。
+    幂等：已存在的 (lottery_code, draw_no) 跳过，不重复入库。
+    """
+    from app.scheduler.backfill import _enabled_lotteries, _store_history_draws
+
+    settings = get_settings()
+    if not settings.mxnzp_api_key or not settings.mxnzp_app_secret:
+        print('ERROR: mxnzp_api_key / mxnzp_app_secret 未配置', file=sys.stderr)
+        sys.exit(1)
+    adapter = MxnzpAdapter(settings.mxnzp_api_key, settings.mxnzp_app_secret)
+    for code, _ in _enabled_lotteries(engine):
+        try:
+            draws = adapter.fetch_history(code, size=50)
+            if not draws:
+                print(f'{code}: 无历史数据')
+                continue
+            _store_history_draws(engine, draws, source_name='mxnzp')
+            print(f'{code}: 回填 {len(draws)} 期')
+        except Exception as exc:
+            print(f'{code}: 失败 {exc}', file=sys.stderr)
+
+
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(prog='app.cli', description='运维 CLI（spec §13）')
     sub = p.add_subparsers(dest='cmd', required=True)
@@ -130,6 +155,9 @@ def main(argv=None) -> None:
 
     smoke = sub.add_parser('ssq', help='手动触发一期 ssq 端到端冒烟')
     smoke.set_defaults(func=cmd_smoke)
+
+    bh = sub.add_parser('backfill-history', help='手动回填各彩种最近 50 期历史开奖')
+    bh.set_defaults(func=cmd_backfill_history)
 
     args = p.parse_args(argv)
     args.func(args)

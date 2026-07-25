@@ -199,6 +199,66 @@ def test_ssq_smoke_exits_nonzero_on_fetch_error(db_engine, monkeypatch, capsys):
     assert 'all_sources_failed' in err or 'all_sources_failed' in capsys.readouterr().out
 
 
+# -------------------------------------------------------- backfill-history
+def test_backfill_history_cli_stores_draws(db_engine, monkeypatch, capsys):
+    """backfill-history CLI：对所有启用彩种抓取历史开奖并入库。
+
+    回归点：CLI 必须真的调用 MxnzpAdapter.fetch_history 并存储结果——否则
+    silent-success（CLI 报 ok 但 DB 空）。
+    """
+    from datetime import date as _date
+
+    from app.adapters.base import DrawNumbers
+    from app.models import DrawResult, LotteryType
+    import app.cli as cli_mod
+
+    # 种 1 个启用彩种
+    with Session(db_engine) as s:
+        s.add(LotteryType(code='ssq', name='双色球', category='welfare',
+                          spec_json='{}', draw_schedule_json='{"draw_days":[0,2,4]}', enabled=True))
+        s.commit()
+
+    fake_draws = [
+        DrawNumbers(lottery_code='ssq', draw_no='062', draw_date=_date(2026, 6, 12),
+                    front=(1, 2, 3, 4, 5, 6), back=(7,)),
+        DrawNumbers(lottery_code='ssq', draw_no='061', draw_date=_date(2026, 6, 10),
+                    front=(8, 11, 15, 22, 29, 33), back=(12,)),
+    ]
+    fake_adapter = MagicMock()
+    fake_adapter.fetch_history = MagicMock(return_value=fake_draws)
+    monkeypatch.setattr(cli_mod, 'MxnzpAdapter', lambda *a, **kw: fake_adapter)
+    monkeypatch.setattr(cli_mod, 'engine', db_engine)
+    monkeypatch.setattr(
+        cli_mod, 'get_settings',
+        lambda: MagicMock(mxnzp_api_key='k', mxnzp_app_secret='s'),
+    )
+
+    cli_mod.cmd_backfill_history(argparse_ns=MagicMock())
+
+    fake_adapter.fetch_history.assert_called_once_with('ssq', size=50)
+    with Session(db_engine) as s:
+        rows = list(s.exec(select(DrawResult).where(DrawResult.lottery_code == 'ssq')).all())
+        assert len(rows) == 2
+        assert all(r.single_source for r in rows)
+    out = capsys.readouterr().out
+    assert 'ssq' in out
+    assert '回填' in out
+
+
+def test_backfill_history_cli_exits_when_mxnzp_key_missing(db_engine, monkeypatch):
+    """mxnzp key 未配置时 sys.exit(1)，不静默继续。"""
+    import app.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, 'engine', db_engine)
+    monkeypatch.setattr(
+        cli_mod, 'get_settings',
+        lambda: MagicMock(mxnzp_api_key='', mxnzp_app_secret=''),
+    )
+    with pytest.raises(SystemExit) as exc_info:
+        cli_mod.cmd_backfill_history(argparse_ns=MagicMock())
+    assert exc_info.value.code == 1
+
+
 # ---------------------------------------------------------------- backup.sh
 def _read_backup_sh():
     if not BACKUP_SH.exists():
