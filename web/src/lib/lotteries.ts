@@ -343,3 +343,111 @@ export function parseCsvLine(raw: string, lineNum?: number): CsvParseResult {
 
   return { ok: true, data: { code, front, back, ...(draw_no !== undefined ? { draw_no } : {}) } };
 }
+
+// ──────────────────────────────────────────────
+// 7. 投入计算（lottery-rules.md + app/domain/entry.py Entry.cost 对齐）
+//    cost(分) = n_combos × price_per_bet × (append?1.5:1) × multiplier
+// ──────────────────────────────────────────────
+
+/** 各彩种单注价格（分）。与后端 app/seeds/lottery_types.py price_per_bet 对齐。 */
+export const PRICE_PER_BET: Record<string, number> = {
+  ssq: 200,
+  dlt: 200,
+  qlc: 200,
+  qxc: 200,
+  fc3d: 200,
+  pl3: 200,
+  pl5: 200,
+};
+
+/** 组合数 C(n, k) */
+function comb(n: number, k: number): number {
+  if (k < 0 || k > n || n < 0) return 0;
+  if (k === 0 || k === n) return 1;
+  k = Math.min(k, n - k);
+  let result = 1;
+  for (let i = 0; i < k; i++) {
+    result = (result * (n - i)) / (i + 1);
+  }
+  return Math.round(result);
+}
+
+export interface CountCombosArgs {
+  code: string;
+  playType: string;
+  front: number[];
+  back?: number[];
+  tuo?: number[];
+}
+
+/** 计算展开后的单式注数 n_combos。
+ * 与后端 app/domain/entry.py _count_combos 对齐（后端 NotImplementedError 对 fushi/dantuo，
+ * 前端补齐实现——后端比对阶段不依赖 cost，前端计算 cost 用于展示与提交）。
+ *
+ * - single/zhixuan/danxuan: 1
+ * - fushi (分区型 ssq/dlt/qlc): C(front.len, front.count) × C(back.len, back.count)
+ * - dantuo: 胆码 front 固定，从拖码 tuo 中选 (front.count - dan.len) 个 → C(tuo.len, need)
+ *           × (back ? C(back.len, back.count) : 1)
+ * - qxc hybrid: 后区是单值，C(back.len, back.count) = C(n,1) = n（按位型前区不组合）
+ */
+export function countCombos(args: CountCombosArgs): number {
+  const { code, playType, front, back, tuo } = args;
+  const r = getLotteryRange(code);
+  if (!r) return 0;
+
+  // 单式 / 直选 / 单选：1 注
+  if (playType === "single" || playType === "zhixuan" || playType === "danxuan") {
+    return 1;
+  }
+
+  // 复式（partition 型 ssq/dlt/qlc，前区 ≥ count + 后区 ≥ count）
+  if (playType === "fushi") {
+    const frontCombos = comb(front.length, r.front.count);
+    const backCombos = r.back ? comb(back?.length ?? 0, r.back.count) : 1;
+    return frontCombos * backCombos;
+  }
+
+  // 胆拖（partition 型）：胆码 front.length 个，拖码 tuo 中需选 (count - dan.len) 个
+  if (playType === "dantuo") {
+    const danCount = front.length;
+    const needFromTuo = r.front.count - danCount;
+    if (needFromTuo < 0) return 0;
+    const tuoCount = tuo?.length ?? 0;
+    const frontCombos = comb(tuoCount, needFromTuo);
+    const backCombos = r.back ? comb(back?.length ?? 0, r.back.count) : 1;
+    return frontCombos * backCombos;
+  }
+
+  return 0;
+}
+
+export interface CalculateCostArgs {
+  code: string;
+  playType: string;
+  front: number[];
+  back?: number[];
+  tuo?: number[];
+  multiplier: number;
+  append?: boolean;
+}
+
+/** 计算投入金额（分）。
+ * 公式：n_combos × price_per_bet × (append?1.5:1) × multiplier
+ * 与后端 app/domain/entry.py Entry.cost 对齐——前端计算展示+提交，后端存储原值。
+ *
+ * append 仅大乐透支持（其他彩种传 append=true 抛错，与后端 Entry.cost 一致）。
+ */
+export function calculateCost(args: CalculateCostArgs): number {
+  const { code, playType, front, back, tuo, multiplier, append = false } = args;
+  if (append && code !== "dlt") {
+    throw new Error(`append 仅大乐透(dlt)支持，当前彩种 ${code}`);
+  }
+  const pricePerBet = PRICE_PER_BET[code] ?? 0;
+  if (pricePerBet <= 0) {
+    throw new Error(`未知彩种或价格未配置: ${code}`);
+  }
+  const nCombos = countCombos({ code, playType, front, back, tuo });
+  // append: 基本 2 元 + 追加 1 元 = 3 元（1.5 倍），用整数算避免浮点：price × 3 / 2
+  const per = append ? (pricePerBet * 3) / 2 : pricePerBet;
+  return nCombos * per * multiplier;
+}
