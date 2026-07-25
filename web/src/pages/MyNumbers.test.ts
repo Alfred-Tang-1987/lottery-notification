@@ -23,7 +23,18 @@ function stubApi(tickets: unknown[] = [], opts: { postFailOnRow?: number } = {})
       if (opts.postFailOnRow && postCount === opts.postFailOnRow) {
         return jsonResponse(400, { detail: "号码已存在" });
       }
-      return jsonResponse(200, { id: postCount });
+      return jsonResponse(201, { id: postCount });
+    }
+    // PATCH /tickets/{id}：编辑号码，返回更新后的 ticket
+    const patchMatch = u.match(/^\/tickets\/(\d+)$/);
+    if (patchMatch && method === "PATCH") {
+      const body = JSON.parse(init?.body as string);
+      return jsonResponse(200, { id: Number(patchMatch[1]), ...body });
+    }
+    // DELETE /tickets/{id}：删除号码
+    const deleteMatch = u.match(/^\/tickets\/(\d+)$/);
+    if (deleteMatch && method === "DELETE") {
+      return jsonResponse(200, { deleted: true });
     }
     return jsonResponse(200, {});
   });
@@ -265,5 +276,122 @@ describe("MyNumbers.vue (T7 A11y)", () => {
     // Error surfaced for the failed row (not swallowed).
     const errEl = host.querySelector(".csv-error") as HTMLElement | null;
     expect(errEl?.textContent || "").toContain("行 2");
+  });
+
+  // ──────────────────────────────────────────────
+  // 删除 + 编辑 功能测试
+  // ──────────────────────────────────────────────
+
+  const _ticket = {
+    id: 1,
+    lottery_code: "ssq",
+    play_type: "single",
+    numbers_json: '{"front":[1,2,3,4,5,6],"back":[7]}',
+    tuo_json: null,
+    label: null,
+    multiplier: 1,
+    append: false,
+    cost: 200,
+    enabled: true,
+  };
+
+  it("列表显示号码（非「未命名注单」）+ 投入金额", async () => {
+    await mount([_ticket]);
+    // 等待 onMounted 里的 load() 异步完成
+    await new Promise((r) => setTimeout(r, 50));
+    await nextTick();
+    // 应显示格式化号码 "01 02 03 04 05 06 + 07"
+    expect(host.textContent || "").toContain("01 02 03 04 05 06 + 07");
+    // 应显示投入 2.00 元
+    expect(host.textContent || "").toContain("2.00 元");
+    // 不应显示「未命名注单」
+    expect(host.textContent || "").not.toContain("未命名注单");
+  });
+
+  it("「删除」按钮：二次确认后调用 DELETE API", async () => {
+    const api = stubApi([_ticket]);
+    globalThis.fetch = api as unknown as typeof fetch;
+    app = createApp(MyNumbers);
+    app.mount(host);
+    await nextTick();
+    await new Promise((r) => setTimeout(r, 50));
+    await nextTick();
+    // 点击「删除」按钮
+    const delBtn = Array.from(host.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("删除")
+    ) as HTMLButtonElement;
+    expect(delBtn).toBeTruthy();
+    delBtn.click();
+    await nextTick();
+    // 出现确认 UI
+    expect(host.textContent || "").toContain("确认删除？");
+    // 点击「确认」
+    const confirmBtn = Array.from(host.querySelectorAll("button")).find((b) =>
+      b.textContent?.trim() === "确认"
+    ) as HTMLButtonElement;
+    expect(confirmBtn).toBeTruthy();
+    confirmBtn.click();
+    await new Promise((r) => setTimeout(r, 50));
+    await nextTick();
+    // 验证 DELETE API 被调用
+    const deleteCall = api.mock.calls.find(
+      ([u, init]) => String(u) === "/tickets/1" && init?.method === "DELETE"
+    );
+    expect(deleteCall).toBeTruthy();
+  });
+
+  it("「编辑」按钮：预填数据 + 打开编辑 modal", async () => {
+    await mount([_ticket]);
+    await new Promise((r) => setTimeout(r, 50));
+    await nextTick();
+    // 点击「编辑」按钮
+    const editBtn = Array.from(host.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("编辑")
+    ) as HTMLButtonElement;
+    expect(editBtn).toBeTruthy();
+    editBtn.click();
+    await nextTick();
+    // modal 打开，标题是「编辑号码」
+    expect(host.textContent || "").toContain("编辑号码");
+    // 号码盘已预填（6 个前区 + 1 个后区选中）
+    const selectedNums = host.querySelectorAll(".num-btn.selected");
+    expect(selectedNums.length).toBe(7); // 6 front + 1 back
+    // 保存按钮文字是「保存修改」
+    const submitBtn = host.querySelector('button[type="submit"]') as HTMLButtonElement;
+    expect(submitBtn.textContent || "").toContain("保存修改");
+    // 编辑模式不显示「保存并继续」按钮
+    const continueBtn = Array.from(host.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("保存并继续")
+    );
+    expect(continueBtn).toBeUndefined();
+  });
+
+  it("「编辑」保存后调用 PATCH API", async () => {
+    const api = stubApi([_ticket]);
+    globalThis.fetch = api as unknown as typeof fetch;
+    app = createApp(MyNumbers);
+    app.mount(host);
+    await nextTick();
+    await new Promise((r) => setTimeout(r, 50));
+    await nextTick();
+    // 点击编辑
+    const editBtn = Array.from(host.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("编辑")
+    ) as HTMLButtonElement;
+    expect(editBtn).toBeTruthy();
+    editBtn.click();
+    await nextTick();
+    // 直接提交（不改号码，验证 PATCH 调用）
+    const formEl = host.querySelector("form") as HTMLFormElement;
+    formEl.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 50));
+    await nextTick();
+    // 验证 PATCH /tickets/1 被调用
+    const patchCall = api.mock.calls.find(
+      ([u, init]) => String(u) === "/tickets/1" && init?.method === "PATCH"
+    );
+    expect(patchCall).toBeTruthy();
+    // modal 已关闭
+    expect(host.querySelector(".modal")).toBeNull();
   });
 });
