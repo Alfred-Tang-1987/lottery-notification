@@ -29,7 +29,10 @@ describe("auth store fetchMe", () => {
     });
   });
 
-  it("sets user to null on 401 and marks initialized", async () => {
+  it("sets user to null on 401 and marks initialized (no redirect)", async () => {
+    // fetchMe 是探测性请求，401 不应在 client 层跳转，否则 /login 路由死循环：
+    // /login → mount UserMenu → fetchMe → 401 → 跳 /login → 重新 mount → ...
+    // 跳转应由路由守卫/调用方根据 user===null && route.meta.public 决定。
     (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
       jsonResponse(401, { detail: "未登录" }),
     );
@@ -41,7 +44,7 @@ describe("auth store fetchMe", () => {
     expect(auth.initialized).toBe(true);
     expect(auth.loading).toBe(false);
     expect(auth.isLoggedIn).toBe(false);
-    expect(window.location.href).toBe("/login");
+    expect(window.location.href).toBe(""); // 未被改写
   });
 
   it("sets user to null on 403 and marks initialized", async () => {
