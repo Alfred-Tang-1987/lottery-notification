@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目状态
 
-**Plan 01–05 已完成（基础设施 / 领域层 / 仓储核心闭环 / 调度推送 / 认证用户管理），318 tests green。** Plan 06（Web UI/部署）进行中：T1–T5 骨架（Vite/Vue3/路由/布局）与 T6 页面初版已 commit，T6 拆为 6b–6g 子 task（选号/走势/统计/设置/后台/Dashboard+中奖收尾）待实现。plan 在 `docs/superpowers/plans/`。改代码前先读 spec + 对应 plan；实现通过 **workflow orchestrator**（见下）自动跑 plan。
+**Plan 01–07 全部完成（基础设施 / 领域层 / 仓储核心闭环 / 调度推送 / 认证用户管理 / Web UI 部署 / 浮动奖金查询），554 tests green（+1 skipped）。** Plan 06 9 页 UI + Docker 部署 + CLI 全部落地；Plan 07 浮动奖金查询（CwlPrizeSource + SportteryPrizeSource JSON+PDF 降级 + FloatRefillWorker 金额公式 + 22:00 回填 cron）已合入。plan 在 `docs/superpowers/plans/`。改代码前先读 spec + 对应 plan；实现通过 **workflow orchestrator**（见下）自动跑 plan。
 
 ## 项目是什么
 
@@ -144,7 +144,7 @@ Workflow({ scriptPath: '.claude/workflows/run-plans.js', args: { plan: '03' } })
 - `.claude/workflow-engine/workflow-design.md` — **workflow orchestrator 设计文档（含历史修复记录摘要）**
 - `docs/superpowers/workflows/USAGE.md` — 旧版 workflow 使用指南（已迁移，以子模块为准）
 - `docs/superpowers/workflow-design.md` — 旧版 workflow 设计文档（已迁移，以子模块为准）
-- `docs/superpowers/plans/` — implementation plan（6 份业务 plan：01 已完成，02–06 待实现）
+- `docs/superpowers/plans/` — implementation plan（7 份业务 plan：01-07 全部完成）
 
 ## 更新 run-plans-engine 子模块
 
