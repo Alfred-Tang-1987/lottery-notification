@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -96,10 +97,16 @@ def _backfill_history(engine: Engine, fetch_service: FetchService, settings) -> 
     if not settings.mxnzp_api_key:
         return
 
-    for code, _draw_days in _enabled_lotteries(engine):
+    lotteries = _enabled_lotteries(engine)
+    for idx, (code, _draw_days) in enumerate(lotteries):
         try:
             if _has_any_draw_for_lottery(engine, code):
                 continue
+            # MXNZP 免费账号 QPS=1，请求间隔需 >1s，否则返回 code=101（QPS 超限），
+            # data 为空 → 回填静默失败（silent-failure：只 ssq 有数据，其余彩种空）。
+            # 第一个彩种不 sleep（冷启动要快），后续每个彩种前等 1.2s。
+            if idx > 0:
+                time.sleep(1.2)
             draws = primary.fetch_history(code, size=50)
             if not draws:
                 continue
