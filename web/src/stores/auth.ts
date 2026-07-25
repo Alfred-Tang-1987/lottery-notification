@@ -19,7 +19,10 @@ export const useAuthStore = defineStore('auth', () => {
   async function fetchMe() {
     loading.value = true;
     try {
-      user.value = await apiGet('/auth/me');
+      // skipAuthRedirect: fetchMe 是探测性请求（/login 路由也无条件调用），
+      // 401 是合法响应（未登录态），不应在 client 层触发跳转，否则死循环。
+      // 由本 catch 处理：401/403 → 置 user=null（UI 进入未登录态）。
+      user.value = await apiGet('/auth/me', { skipAuthRedirect: true });
     } catch (err) {
       // 401/403 表示会话已失效/无权限，UI 应进入未登录态；
       // 其余错误（网络/5xx/超时）属于瞬态故障，不能静默把已登录用户刷成“未登录”。

@@ -83,6 +83,21 @@ describe("api client", () => {
     expect(window.location.href).toBe("/login");
   });
 
+  it("does NOT redirect on 401 when skipAuthRedirect=true (probing requests like fetchMe)", async () => {
+    // silent-failure 陷阱：fetchMe() 在 App.vue/UserMenu.vue 无条件 onMounted 调用，
+    // 包括 /login 路由。若 /auth/me 的 401 触发 window.location.href='/login'，
+    // 会形成死循环：/login → mount → fetchMe → 401 → 跳 /login → 重新 mount → ...
+    // 探测性请求（fetchMe）的 401 是合法响应（未登录态），应交给调用方处理，
+    // 不在 client 层强制跳转。
+    fetchMock.mockResolvedValueOnce(jsonResponse(401, { detail: "no" }));
+    const api = await loadClient();
+
+    await expect(
+      api("/auth/me", { skipAuthRedirect: true }),
+    ).rejects.toThrow("未登录");
+    expect(window.location.href).toBe(""); // 未被改写
+  });
+
   it("throws Error with backend detail message on non-ok response", async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse(409, { detail: "用户名已存在" }),

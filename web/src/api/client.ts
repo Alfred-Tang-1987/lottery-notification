@@ -82,10 +82,13 @@ async function errorMessageFromResponse(r: Response): Promise<string> {
 
 export async function api<T = unknown>(
   path: string,
-  opts: RequestInit = {},
+  opts: RequestInit & { skipAuthRedirect?: boolean } = {},
 ): Promise<T> {
   const method = (opts.method || "GET").toUpperCase();
   const headers = new Headers(opts.headers);
+  // 探测性请求（如 fetchMe）的 401 是合法响应（未登录态），不应触发跳转。
+  // 提取后从 opts 中删除，避免传给 fetch（fetch 不认识自定义字段）。
+  const skipAuthRedirect = opts.skipAuthRedirect === true;
 
   if (method !== "GET") {
     const csrf = await ensureCsrf();
@@ -107,8 +110,12 @@ export async function api<T = unknown>(
   });
 
   if (r.status === 401) {
-    // 未登录 → 回登录页（spec §12.x：受保护资源 401 统一重定向）。
-    window.location.href = "/login";
+    // 受保护资源 401 → 回登录页（spec §12.x：受保护资源 401 统一重定向）。
+    // 但探测性请求（fetchMe 在 /login 也无条件调用）的 401 不跳转，否则死循环：
+    // /login → mount UserMenu → fetchMe → 401 → 跳 /login → 重新 mount → ...
+    if (!skipAuthRedirect) {
+      window.location.href = "/login";
+    }
     throw new ApiError(401, "未登录");
   }
 
@@ -119,7 +126,10 @@ export async function api<T = unknown>(
   return (await r.json()) as T;
 }
 
-export const apiGet = <T = unknown>(p: string) => api<T>(p);
+export const apiGet = <T = unknown>(
+  p: string,
+  opts?: RequestInit & { skipAuthRedirect?: boolean },
+) => api<T>(p, opts);
 
 export const apiPost = <T = unknown>(p: string, body?: unknown) =>
   api<T>(p, {
