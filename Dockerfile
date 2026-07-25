@@ -23,6 +23,10 @@ RUN npm run build
 FROM python:3.12-slim
 # 时区（spec §4.3：全局时区 Asia/Shanghai，避免 tz-naive 静默偏移 8 小时）
 ENV TZ=Asia/Shanghai
+# 阻止 uv run 运行时重新同步依赖（构建时已 uv sync --frozen --no-dev）。
+# silent-failure 陷阱：uv run 默认检查 lockfile 完整性，发现 dev 依赖未装会尝试
+# 下载（含 ruff/pytest 等 dev 包），NAS 网络受限时 SSL 失败 → 容器无限重启。
+ENV UV_NO_SYNC=1
 RUN pip install --no-cache-dir uv
 WORKDIR /app
 # 先 copy 依赖锁文件，利用 layer cache（仅 lockfile 变化才重装 python 依赖）
