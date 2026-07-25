@@ -64,6 +64,56 @@ class MxnzpAdapter:
         data = body.get('data')
         if not data:
             return None  # 未开奖
+        return self._parse_history_item(data, lottery_code)
+
+    def fetch_history(self, lottery_code: str, size: int = 50) -> list[DrawNumbers]:
+        """抓取最近 N 期历史开奖号码（MXNZP /common/history 接口）。
+
+        用于启动时回填历史数据，让走势页冷启动即有数据。
+        - size: 期望期数，MXNZP 单次上限 50（接口限制），size > 50 自动截断为 50。
+        - 返回 list[DrawNumbers]，按接口返回顺序（最新在前）。
+        - key 空抛 PermanentLookupError（与 fetch() 一致，不发 HTTP 请求）。
+        - 历史数据标记 single_source=True 入库（无聚合双源校验，单源降级语义）。
+        """
+        if not self._app_id:
+            raise PermanentLookupError(
+                f'mxnzp api_key not configured (lottery={lottery_code})'
+            )
+        if not self._app_secret:
+            raise PermanentLookupError(
+                f'mxnzp app_secret not configured (lottery={lottery_code})'
+            )
+        # MXNZP /common/history 单次最多 50 条（接口文档 + 用户评论中站长确认）。
+        # size > 50 截断为 50，防止接口返回错误或被限流。
+        capped_size = min(size, 50)
+        mxnzp_code = _MXNZP_CODE.get(lottery_code, lottery_code)
+        r = self._client.get(
+            'https://www.mxnzp.com/api/lottery/common/history',
+            params={'code': mxnzp_code, 'size': capped_size},
+            headers={'app_id': self._app_id, 'app_secret': self._app_secret},
+        )
+        r.raise_for_status()
+        body = r.json()
+        if body.get('code') != 1:
+            return []
+        data = body.get('data') or []
+        # 复用 _parse_history_item 解析每条记录（与 fetch() 单点解析一致，
+        # 避免两处解析逻辑分叉——silent-failure 风险：一处改了另一处没跟）。
+        result: list[DrawNumbers] = []
+        for item in data:
+            try:
+                result.append(self._parse_history_item(item, lottery_code))
+            except (KeyError, ValueError, TypeError):
+                # 单条解析失败不阻断整批（silent-failure 纪律：部分失败不能炸全批）。
+                # 留日志供排障。
+                continue
+        return result
+
+    def _parse_history_item(self, data: dict, lottery_code: str) -> DrawNumbers:
+        """解析单条 MXNZP 开奖记录（fetch/fetch_history 共用）。
+
+        data 字段：expect（期号）、openCode（号码）、time（开奖时间）。
+        """
         expect = data['expect']  # '2026082'
         open_code = data['openCode']  # '05,07,10,14,21,28+04'（分区型）或 '9,0,6'（按位型）
         front, back = self._parse_open_code(open_code)
