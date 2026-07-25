@@ -240,3 +240,104 @@ def test_mxnzp_adapter_empty_key_raises_permanent_lookup_error():
     # app_secret 空
     with pytest.raises(PermanentLookupError, match='app_secret'):
         MxnzpAdapter(api_key='key', app_secret='').fetch('ssq')
+
+
+# ──────────────────────────────────────────────
+# fetch_history — MXNZP 历史多期抓取（/common/history）
+# 用于启动时回填 50 期历史数据，让走势页冷启动即有数据
+# ──────────────────────────────────────────────
+
+
+def test_mxnzp_fetch_history_returns_list_of_draws():
+    """fetch_history 返回最近 N 期开奖号码列表（而非单期）。
+
+    MXNZP /common/history 接口返回 data: [{openCode, expect, time}, ...]。
+    adapter 须解析为 DrawNumbers 列表，复用 fetch() 的 _parse_open_code/_parse_time。
+    """
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={'code': 1, 'data': [
+            {'openCode': '01,02,03,04,05,06+07', 'code': 'ssq', 'expect': '2026062', 'time': '2026-06-12 21:15:00'},
+            {'openCode': '08,11,15,22,29,33+12', 'code': 'ssq', 'expect': '2026061', 'time': '2026-06-10 21:15:00'},
+        ]})
+
+    adapter = MxnzpAdapter(api_key='k', app_secret='s', transport=_mock_transport(handler))
+    draws = adapter.fetch_history('ssq', size=10)
+    assert isinstance(draws, list)
+    assert len(draws) == 2
+    # 每条都是 DrawNumbers，期号归一化（去年份前缀）
+    assert draws[0].lottery_code == 'ssq'
+    assert draws[0].draw_no == '062'  # 2026062 → 062
+    assert draws[0].front == (1, 2, 3, 4, 5, 6)
+    assert draws[0].back == (7,)
+    assert draws[1].draw_no == '061'
+
+
+def test_mxnzp_fetch_history_hits_correct_url_with_size_param():
+    """URL 契约：/common/history?code={code}&size={size}，鉴权在 header。"""
+    seen = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen['url'] = str(req.url)
+        seen['params'] = dict(req.url.params)
+        seen['headers'] = dict(req.headers)
+        return httpx.Response(200, json={'code': 1, 'data': []})
+
+    adapter = MxnzpAdapter(api_key='my-id', app_secret='my-secret', transport=_mock_transport(handler))
+    adapter.fetch_history('ssq', size=50)
+    assert '/api/lottery/common/history' in seen['url']
+    assert seen['params']['code'] == 'ssq'
+    assert seen['params']['size'] == '50'
+    assert seen['headers']['app_id'] == 'my-id'
+    assert seen['headers']['app_secret'] == 'my-secret'
+
+
+def test_mxnzp_fetch_history_maps_dlt_to_cjdlt():
+    """dlt → cjdlt 映射在 fetch_history 中同样生效。"""
+    seen = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen['code'] = req.url.params.get('code')
+        return httpx.Response(200, json={'code': 1, 'data': [
+            {'openCode': '08,16,18,24,34+09+12', 'code': 'cjdlt', 'expect': '2026081', 'time': 't'},
+        ]})
+
+    adapter = MxnzpAdapter(api_key='k', app_secret='s', transport=_mock_transport(handler))
+    draws = adapter.fetch_history('dlt', size=10)
+    assert seen['code'] == 'cjdlt'
+    assert draws[0].lottery_code == 'dlt'  # 出口用项目 code
+    assert draws[0].back == (9, 12)
+
+
+def test_mxnzp_fetch_history_empty_when_no_data():
+    """HTTP 200 但 data 为空列表 → 返回空列表（非 None、非异常）。"""
+    def handler(req):
+        return httpx.Response(200, json={'code': 1, 'data': []})
+
+    adapter = MxnzpAdapter(api_key='k', app_secret='s', transport=_mock_transport(handler))
+    assert adapter.fetch_history('ssq', size=10) == []
+
+
+def test_mxnzp_fetch_history_empty_key_raises_permanent_lookup_error():
+    """key 空时 fetch_history 同样抛 PermanentLookupError（不发 HTTP 请求）。"""
+    import pytest
+
+    from app.adapters.base import PermanentLookupError
+
+    with pytest.raises(PermanentLookupError, match='api_key'):
+        MxnzpAdapter(api_key='', app_secret='s').fetch_history('ssq', size=10)
+
+
+def test_mxnzp_fetch_history_size_capped_at_50():
+    """MXNZP /common/history 单次最多 50 条（接口限制）。size > 50 应被截断为 50。
+
+    防止用户误传 size=200 导致接口返回错误或被限流。
+    """
+    seen = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen['size'] = req.url.params.get('size')
+        return httpx.Response(200, json={'code': 1, 'data': []})
+
+    adapter = MxnzpAdapter(api_key='k', app_secret='s', transport=_mock_transport(handler))
+    adapter.fetch_history('ssq', size=200)  # 用户传 200
+    assert seen['size'] == '50'  # 实际请求 50

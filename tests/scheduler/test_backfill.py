@@ -248,3 +248,149 @@ def test_backfill_fetches_when_keys_configured(db_engine, monkeypatch):
 
     called_codes = {c.args[0] for c in fetch.fetch_and_store.call_args_list}
     assert 'ssq' in called_codes
+
+
+# ──────────────────────────────────────────────
+# 启动历史回填（backfill_history）：新库 draw_results 为空时抓 50 期历史
+# ──────────────────────────────────────────────
+
+
+def test_backfill_history_fills_when_db_empty(db_engine, monkeypatch):
+    """启动时某彩种 draw_results 表为空 → 调用 fetch_history 抓 50 期并入库。
+
+    回填数据标记 single_source=True（无聚合双源校验，单源降级语义）。
+    """
+    from app.adapters.base import DrawNumbers
+    from datetime import date as _date
+    from app.models import LotteryType
+
+    # 种 1 个启用彩种
+    with Session(db_engine) as s:
+        s.add(LotteryType(code='ssq', name='双色球', category='welfare',
+                          spec_json='{}', draw_schedule_json='{"draw_days":[0,2,4]}', enabled=True))
+        s.commit()
+
+    # mock MxnzpAdapter.fetch_history 返回 2 期数据
+    fake_draws = [
+        DrawNumbers(lottery_code='ssq', draw_no='062', draw_date=_date(2026, 6, 12),
+                    front=(1, 2, 3, 4, 5, 6), back=(7,)),
+        DrawNumbers(lottery_code='ssq', draw_no='061', draw_date=_date(2026, 6, 10),
+                    front=(8, 11, 15, 22, 29, 33), back=(12,)),
+    ]
+    deps = _make_deps(db_engine)
+    deps['fetch_service']._primary = MagicMock()
+    deps['fetch_service']._primary.name = 'mxnzp'
+    deps['fetch_service']._primary.fetch_history = MagicMock(return_value=fake_draws)
+
+    run_startup_backfill(deps)
+
+    deps['fetch_service']._primary.fetch_history.assert_called_once_with('ssq', size=50)
+    with Session(db_engine) as s:
+        from sqlmodel import select
+        rows = list(s.exec(select(DrawResult).where(DrawResult.lottery_code == 'ssq')).all())
+        assert len(rows) == 2
+        assert all(r.single_source for r in rows)
+        assert all(r.verified for r in rows)
+
+
+def test_backfill_history_skips_when_db_has_data(db_engine):
+    """DB 已有该彩种数据（非空） → 不触发历史回填（避免重复抓取）。"""
+    from app.models import DrawResult, LotteryType
+
+    with Session(db_engine) as s:
+        s.add(LotteryType(code='ssq', name='双色球', category='welfare',
+                          spec_json='{}', draw_schedule_json='{"draw_days":[0,2,4]}', enabled=True))
+        s.add(DrawResult(lottery_code='ssq', draw_no='062',
+                         draw_date=datetime(2026, 6, 12, tzinfo=_CST),
+                         numbers_json='{"front":[1,2,3,4,5,6],"back":[7]}',
+                         source='mxnzp', fetched_at=datetime.utcnow(),
+                         verified=True, single_source=True, version=1))
+        s.commit()
+
+    deps = _make_deps(db_engine)
+    deps['fetch_service']._primary = MagicMock()
+    deps['fetch_service']._primary.name = 'mxnzp'
+    deps['fetch_service']._primary.fetch_history = MagicMock()
+
+    run_startup_backfill(deps)
+
+    deps['fetch_service']._primary.fetch_history.assert_not_called()
+
+
+def test_backfill_history_skips_when_no_mxnzp_key(db_engine, monkeypatch):
+    """MXNZP key 未配置 → 跳过历史回填（fetch_history 会抛 PermanentLookupError）。"""
+    from app.models import LotteryType
+
+    with Session(db_engine) as s:
+        s.add(LotteryType(code='ssq', name='双色球', category='welfare',
+                          spec_json='{}', draw_schedule_json='{"draw_days":[0,2,4]}', enabled=True))
+        s.commit()
+
+    monkeypatch.setattr(
+        'app.scheduler.backfill.get_settings',
+        lambda: MagicMock(mxnzp_api_key='', juhe_api_key='test-key')
+    )
+
+    deps = _make_deps(db_engine)
+    deps['fetch_service']._primary = MagicMock()
+    deps['fetch_service']._primary.name = 'mxnzp'
+    deps['fetch_service']._primary.fetch_history = MagicMock()
+
+    run_startup_backfill(deps)
+
+    deps['fetch_service']._primary.fetch_history.assert_not_called()
+
+
+def test_backfill_history_isolates_per_lottery_failure(db_engine):
+    """某彩种 fetch_history 失败不阻断其他彩种（silent-failure 纪律）。"""
+    from app.adapters.base import PermanentLookupError
+    from app.models import LotteryType
+
+    with Session(db_engine) as s:
+        s.add(LotteryType(code='ssq', name='双色球', category='welfare',
+                          spec_json='{}', draw_schedule_json='{"draw_days":[0,2,4]}', enabled=True))
+        s.add(LotteryType(code='dlt', name='大乐透', category='sports',
+                          spec_json='{}', draw_schedule_json='{"draw_days":[0,2,4]}', enabled=True))
+        s.commit()
+
+    deps = _make_deps(db_engine)
+    deps['fetch_service']._primary = MagicMock()
+    deps['fetch_service']._primary.name = 'mxnzp'
+    deps['fetch_service']._primary.fetch_history = MagicMock(
+        side_effect=[PermanentLookupError('test'), []]
+    )
+
+    run_startup_backfill(deps)
+
+    assert deps['fetch_service']._primary.fetch_history.call_count == 2
+
+
+def test_backfill_history_idempotent_on_restart(db_engine):
+    """重复调用 backfill 不会重复入库（幂等：唯一约束 + 已有数据跳过）。"""
+    from app.adapters.base import DrawNumbers
+    from datetime import date as _date
+    from app.models import LotteryType
+
+    with Session(db_engine) as s:
+        s.add(LotteryType(code='ssq', name='双色球', category='welfare',
+                          spec_json='{}', draw_schedule_json='{"draw_days":[0,2,4]}', enabled=True))
+        s.commit()
+
+    fake_draws = [
+        DrawNumbers(lottery_code='ssq', draw_no='062', draw_date=_date(2026, 6, 12),
+                    front=(1, 2, 3, 4, 5, 6), back=(7,)),
+    ]
+    deps = _make_deps(db_engine)
+    deps['fetch_service']._primary = MagicMock()
+    deps['fetch_service']._primary.name = 'mxnzp'
+    deps['fetch_service']._primary.fetch_history = MagicMock(return_value=fake_draws)
+
+    run_startup_backfill(deps)
+    deps['fetch_service']._primary.fetch_history.reset_mock()
+    run_startup_backfill(deps)
+    deps['fetch_service']._primary.fetch_history.assert_not_called()
+
+    with Session(db_engine) as s:
+        from sqlmodel import select
+        rows = list(s.exec(select(DrawResult).where(DrawResult.lottery_code == 'ssq')).all())
+        assert len(rows) == 1
