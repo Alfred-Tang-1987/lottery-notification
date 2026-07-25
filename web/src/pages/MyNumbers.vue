@@ -33,7 +33,7 @@ const form = ref({
   play_type: 'single',
   numbers_json: '',
   label: '',
-  multiplier: 2,
+  multiplier: 1,
   cost: 200,
   dlt_append: false,
 });
@@ -116,7 +116,7 @@ async function csvImport() {
           lottery_code: code,
           play_type: 'single',
           numbers_json: numbersJson,
-          multiplier: 2,
+          multiplier: 1,
           cost: 200,
           // plan Step 3 CSV 期号字段：Ticket 模型无 draw_no 列，作为 label 记录（DrawQuery 页才真正用期号查开奖）
           ...(draw_no ? { label: draw_no } : {}),
@@ -169,7 +169,7 @@ function resetForm() {
     play_type: 'single',
     numbers_json: '',
     label: '',
-    multiplier: 2,
+    multiplier: 1,
     cost: 200,
     dlt_append: false,
   };
@@ -179,9 +179,9 @@ function resetForm() {
 async function createTicket() {
   saving.value = true;
   try {
-    // lottery-rules.md §倍投: 倍投 2–99 倍（1× = 无倍投，违反语义）
-    if (!Number.isInteger(form.value.multiplier) || form.value.multiplier < 2 || form.value.multiplier > 99) {
-      error.value = '倍投必须是 2–99 之间的整数';
+    // lottery-rules.md §倍投: 倍投 1–99 倍（1× = 单倍投注，不倍投；合法场景）
+    if (!Number.isInteger(form.value.multiplier) || form.value.multiplier < 1 || form.value.multiplier > 99) {
+      error.value = '倍投必须是 1–99 之间的整数';
       saving.value = false;
       return;
     }
@@ -350,7 +350,7 @@ onMounted(() => {
 
           <label class="field">
             <span class="field-label">倍投</span>
-            <input v-model.number="form.multiplier" type="number" min="2" max="99" />
+            <input v-model.number="form.multiplier" type="number" min="1" max="99" />
           </label>
 
           <label class="field">

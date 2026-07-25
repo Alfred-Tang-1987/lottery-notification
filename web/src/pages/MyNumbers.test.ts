@@ -83,6 +83,54 @@ describe("MyNumbers.vue (T7 A11y)", () => {
     expect(host.querySelector(".modal")).toBeNull();
   });
 
+  it("multiplier=1 (单倍投注) should be accepted — 倍投 1–99 倍", async () => {
+    // Bug：前端强制 multiplier ≥ 2，单倍投注无法保存。
+    // 业务规则已调整为 1–99 倍（单倍 = 不倍投，合法场景）。
+    // 后端 TicketIn/Entry/Repository 均允许 1-99，仅前端 UI 校验过严。
+    await mount([]);
+    // Open the add-ticket modal (empty state CTA "去选一注")
+    const cta = Array.from(host.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("去选一注") || b.textContent?.includes("添加号码")
+    ) as HTMLButtonElement | undefined;
+    expect(cta).toBeTruthy();
+    cta!.click();
+    await nextTick();
+    // numbers_json input 是 required（CSV 为空时），不填会触发 HTML5 校验阻止 submit。
+    // 填入有效 JSON 让表单可提交，聚焦验证 multiplier=1 是否被接受。
+    const jsonInput = host.querySelector('input[type="text"]') as HTMLInputElement;
+    expect(jsonInput).toBeTruthy();
+    const jsonSetter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value"
+    )!.set!;
+    jsonSetter.call(jsonInput, '{"front":[1,2,3,4,5,6],"back":[7]}');
+    jsonInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await nextTick();
+    // Find multiplier input (type="number"). 表单里 multiplier 在 cost 之前，取第一个。
+    const numberInputs = host.querySelectorAll('input[type="number"]');
+    const multInput = numberInputs[0] as HTMLInputElement;
+    expect(multInput).toBeTruthy();
+    // Set to 1 (single bet). jsdom 对 input[type=number] 的 valueAsNumber 支持不完整，
+    // 直接赋 value 不触发 v-model.number 更新——用 native setter 走真实 input 行为。
+    const nativeSetter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value"
+    )!.set!;
+    nativeSetter.call(multInput, "1");
+    multInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await nextTick();
+    // 直接 dispatch submit 事件绕过 jsdom HTML5 form validation（点击 submit 按钮
+    // 时 jsdom 会检查 required 字段，可能因同步问题阻止 submit）。
+    const formEl = host.querySelector("form") as HTMLFormElement;
+    expect(formEl).toBeTruthy();
+    formEl.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 50));
+    await nextTick();
+    // Assert: no "倍投必须是 2–99" validation error (single bet accepted)
+    const errorText = host.textContent || "";
+    expect(errorText).not.toMatch(/倍投必须是\s*2[\u2013-]99/);
+  });
+
   it("CSV import isolates per-row failure: one bad row does NOT abort the batch", async () => {
     // Hunter round 4: CSV 批量导入未隔离单条失败 → 整条循环被中断。
     // Fix: per-row try/catch around apiPost; failures recorded, batch continues.
