@@ -235,6 +235,41 @@ def test_fetch_logs_source_failure(db_engine, caplog):
     assert 'source_fetch_failed' in caplog.text, '源故障必须记录，不得静默吞没'
 
 
+def test_permanent_lookup_error_not_retried(db_engine):
+    """[critical] PermanentLookupError（如 key 未配置）不得重试——重试注定失败且阻塞启动。
+
+    silent-failure 陷阱：单源模式部署时 JUHE_API_KEY 空，JuheAdapter 抛
+    PermanentLookupError。若 _fetch_with_backoff 对其重试 max_attempts 次（默认 6 次，
+    指数退避累计约 35s/彩种 × 7 彩种 ≈ 4-5 分钟），uvicorn lifespan 卡住，
+    healthcheck 超时显示 unhealthy，用户误判为故障。
+
+    PermanentLookupError 语义是「重试无意义」（base.py 已注明），应立即上抛由
+    _try_fetch 归类为 ok=False，走单源兜底，不阻塞启动。
+    """
+    from app.adapters.base import PermanentLookupError
+
+    primary = _src(_dn('ssq', '062', [1, 2, 3, 4, 5, 6], [7]), name='mxnzp')
+    backup = MagicMock()
+    backup.name = 'juhe'
+    backup.fetch.side_effect = PermanentLookupError('api key not configured')
+    # max_attempts=6 是默认值；若重试，sleep 会被调多次。用计数器断言「不重试」。
+    sleep_calls: list[float] = []
+    svc = FetchService(
+        primary, backup, db_engine,
+        grace_seconds=0, max_attempts=6,
+        sleep=lambda s: sleep_calls.append(s),
+    )
+    r = svc.fetch_and_store('ssq')
+    assert r.stored and r.single_source, '主源正常 + 备源 PermanentLookupError → 单源兜底入库'
+    assert len(sleep_calls) == 0, (
+        f'PermanentLookupError 不得重试，sleep 应 0 次，实际 {len(sleep_calls)} 次'
+    )
+    assert backup.fetch.call_count == 1, (
+        f'PermanentLookupError 不得重试，backup.fetch 应只调 1 次，'
+        f'实际 {backup.fetch.call_count} 次'
+    )
+
+
 def test_grace_refetch_mismatch_rejected_not_single_source(db_engine):
     """spec §7.2 回归：grace 内重抓到缺失源数据但号码不一致 → 必须判 mismatch 拒绝，
     不得降级单源入库。否则双源安全网在 grace 路径被绕过（准确性优先，§10）。

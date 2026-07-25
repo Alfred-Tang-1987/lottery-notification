@@ -3,7 +3,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from app.adapters.base import DrawNumbers, normalize_draw_no
+from app.adapters.base import DrawNumbers, PermanentLookupError, normalize_draw_no
 
 _CST = ZoneInfo('Asia/Shanghai')
 
@@ -36,6 +36,16 @@ class MxnzpAdapter:
         self._client = httpx.Client(transport=transport, timeout=10.0)
 
     def fetch(self, lottery_code: str) -> DrawNumbers | None:
+        # api_key/app_secret 空 → 永久性错误，不发 HTTP 请求（重试注定失败且阻塞启动）。
+        # FetchService._fetch_with_backoff 识别 PermanentLookupError 不重试，走单源兜底。
+        if not self._app_id:
+            raise PermanentLookupError(
+                f'mxnzp api_key not configured (lottery={lottery_code})'
+            )
+        if not self._app_secret:
+            raise PermanentLookupError(
+                f'mxnzp app_secret not configured (lottery={lottery_code})'
+            )
         # MXNZP 通用彩票「最新一期」接口（文档 id=3「最新通用中奖号码信息」权威）。
         # 鉴权：app_id + app_secret 双参数（README 鉴权章节）。**放 header 不放 URL
         # query**——secret 进 URL 会泄露到 server logs / proxy access logs / httpx

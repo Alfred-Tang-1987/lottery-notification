@@ -24,7 +24,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
-from app.adapters.base import DrawNumbers, DrawSource
+from app.adapters.base import DrawNumbers, DrawSource, PermanentLookupError
 from app.models import DrawResult, PendingComparison
 from app.seeds import SPECS
 
@@ -80,6 +80,11 @@ class FetchService:
 
         None = 未开奖（源正常返回无数据）；异常 = 源故障（重试耗尽后上抛）。
         退避/抖动防限流封禁（spec §7.2：避免固定节奏一夜锤 ~100 次触发封禁）。
+
+        PermanentLookupError 例外：永久性错误（如 api key 未配置/schema 契约变更），
+        重试注定失败。单源模式部署时 JUHE_API_KEY 空会让 JuheAdapter 抛此异常，
+        若重试 6 次 × 7 彩种 ≈ 4-5 分钟阻塞 uvicorn lifespan，healthcheck 超时
+        显示 unhealthy（2026-07-25 部署实测）。永久错误立即上抛，走单源兜底。
         """
         for attempt in range(self._max_attempts):
             try:
@@ -95,6 +100,9 @@ class FetchService:
                     self._max_attempts,
                     exc,
                 )
+                # 永久性错误不重试（重试无意义且阻塞启动）。
+                if isinstance(exc, PermanentLookupError):
+                    raise
                 if attempt == self._max_attempts - 1:
                     raise
                 self._sleep(self._backoff**attempt + random.random())

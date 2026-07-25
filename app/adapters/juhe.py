@@ -3,7 +3,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from app.adapters.base import DrawNumbers, normalize_draw_no
+from app.adapters.base import DrawNumbers, PermanentLookupError, normalize_draw_no
 
 _CST = ZoneInfo('Asia/Shanghai')
 
@@ -16,6 +16,12 @@ class JuheAdapter:
         self._client = httpx.Client(transport=transport, timeout=10.0)
 
     def fetch(self, lottery_code: str) -> DrawNumbers | None:
+        # api_key 空 → 永久性错误，不发 HTTP 请求（重试注定失败且阻塞启动）。
+        # FetchService._fetch_with_backoff 识别 PermanentLookupError 不重试，走单源兜底。
+        if not self._key:
+            raise PermanentLookupError(
+                f'juhe api_key not configured (lottery={lottery_code})'
+            )
         r = self._client.get(
             'https://v.juhe.cn/lottery/query',
             params={'lottery_id': lottery_code, 'key': self._key},
