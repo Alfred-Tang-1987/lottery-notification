@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     mxnzp_api_key: str = ''
     mxnzp_app_secret: str = ''
     juhe_api_key: str = ''
+    amap_api_key: str = Field(default='', alias='AMAP_API_KEY')
 
     smtp_host: str | None = None
     smtp_port: int = 465

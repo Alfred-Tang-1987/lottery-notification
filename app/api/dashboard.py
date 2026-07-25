@@ -5,19 +5,27 @@ Spec §12.2：仪表盘首屏需要「待兑奖 / 我的命中 / 盈亏速览 / 
 """
 
 import json
+import logging
 from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
+import httpx
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import and_, func
 from sqlmodel import Session, select
 
 from app.api.deps import current_user, get_session_dep
+from app.config import get_settings
 from app.models import Comparison, DrawResult, LotteryType, PrizeClaim, Ticket, User
 
 _CST = ZoneInfo('Asia/Shanghai')
+logger = logging.getLogger(__name__)
+
+# 高德 POI HTTP 客户端（模块级单例，与 adapter 模式一致：D1 决策，独立 httpx.Client）。
+# 测试通过替换此属性注入 MockTransport。
+_amap_client = httpx.Client(timeout=5.0)
 
 
 def _build_time_filter(period: str, date_from: str | None = None, date_to: str | None = None):
@@ -380,17 +388,17 @@ class CalendarItemOut(BaseModel):
 
 
 class AgencyOut(BaseModel):
-    """附近代销点（spec §12.2 row 2 / §5.4）：MVP mock，POI 数据源待接入。"""
+    """附近代销点（spec §12.2 row 2 / §5.4）：高德 POI 真实数据或 mock 回退。"""
 
     name: str
     address: str
     category: str = Field(description='welfare=福彩 / sport=体彩')
     lat: float
     lng: float
-    distance_m: int | None = Field(default=None, description='距用户距离（米）；MVP mock 可为空')
+    distance_m: int | None = Field(default=None, description='距用户距离（米）；高德 POI 不返回距离时为空')
 
 
-# MVP mock 代销点（spec §5.4：高德/百度 POI 待接入，MVP mock 可）。
+# Mock 代销点回退数据（用户未授权定位 / 无 AMAP_API_KEY / API 故障时使用）。
 # 坐标用北京参考点；前端拿到后可直接调起地图导航。
 _MOCK_AGENCIES: list[AgencyOut] = [
     AgencyOut(
@@ -426,6 +434,78 @@ _MOCK_AGENCIES: list[AgencyOut] = [
         distance_m=1100,
     ),
 ]
+
+
+def _classify_agency_category(name: str) -> str:
+    """根据代销点名称判断福彩/体彩。
+
+    高德 POI typecode 无彩票细分类型，靠 name 关键词判断：
+    - 含「福利彩票」或「福彩」→ welfare
+    - 含「体育彩票」或「体彩」→ sport
+    - 无法判断 → welfare（默认，福彩代销点数量更多）
+    """
+    if '体育彩票' in name or '体彩' in name:
+        return 'sport'
+    return 'welfare'
+
+
+def _query_amap_pois(lat: float, lng: float) -> list[AgencyOut]:
+    """调用高德 /place/around 搜索附近彩票代销点。
+
+    高德 Web 服务 API location 参数格式：lng,lat（经度在前，与 WGS84 lat,lng 相反）。
+    搜索关键词「彩票」覆盖福彩+体彩代销点。
+    失败时抛异常，由调用方 catch 回退 mock。
+    """
+    settings = get_settings()
+    if not settings.amap_api_key:
+        raise ValueError('AMAP_API_KEY not configured')
+
+    r = _amap_client.get(
+        'https://restapi.amap.com/v3/place/around',
+        params={
+            'key': settings.amap_api_key,
+            'location': f'{lng},{lat}',  # 高德格式：经度,纬度
+            'keywords': '彩票',
+            'radius': 3000,  # 3km 搜索半径
+            'offset': 20,
+            'page': 1,
+            'extensions': 'base',
+        },
+    )
+    r.raise_for_status()
+    body = r.json()
+    if body.get('status') != '1':
+        raise ValueError(f"amap error: {body.get('info', 'unknown')}")
+
+    pois = body.get('pois') or []
+    result: list[AgencyOut] = []
+    for poi in pois:
+        name = poi.get('name', '')
+        if not name:
+            continue
+        address = poi.get('address') or ''
+        # address 空时用 pname+cityname+adname 拼接
+        if not address:
+            parts = [poi.get('pname', ''), poi.get('cityname', ''), poi.get('adname', '')]
+            address = ''.join(p for p in parts if p)
+        location = poi.get('location', '')
+        if ',' not in location:
+            continue
+        lng_str, lat_str = location.split(',', 1)
+        try:
+            poi_lng = float(lng_str)
+            poi_lat = float(lat_str)
+        except ValueError:
+            continue
+        result.append(AgencyOut(
+            name=name,
+            address=address or '地址未知',
+            category=_classify_agency_category(name),
+            lat=poi_lat,
+            lng=poi_lng,
+            distance_m=None,  # 高德 /place/around base 扩展不返回距离
+        ))
+    return result
 
 
 def _compute_next_draw_date(draw_days: list[int], today: datetime) -> str | None:
@@ -475,7 +555,7 @@ def dashboard_calendar(
 
     today = datetime.now(_CST).replace(tzinfo=None)
     items: list[CalendarItemOut] = []
-    for lt in sorted(rows, key=lambda x: x.code):
+    for lt in rows:
         days = _parse_draw_days(lt.draw_schedule_json)
         items.append(
             CalendarItemOut(
@@ -486,25 +566,42 @@ def dashboard_calendar(
                 next_draw_date=_compute_next_draw_date(days, today),
             )
         )
+    # 按 next_draw_date 升序排列（最近的在前），无日程（None）的排末尾。
+    # 用户关心「下一期最近开奖是哪个彩种」，按日期排序比按 code 字母序更有意义。
+    items.sort(key=lambda x: x.next_draw_date or '9999-12-31')
     return items
 
 
 @router.get('/agencies', response_model=list[AgencyOut])
 def dashboard_agencies(
     category: str | None = Query(None, pattern='^(welfare|sport)$'),
+    lat: float | None = Query(None, ge=-90, le=90),
+    lng: float | None = Query(None, ge=-180, le=180),
     user: User = Depends(current_user),
 ) -> list[AgencyOut]:
-    """附近代销点（spec §12.2 row 2 / §5.4）：MVP mock 数据。
+    """附近代销点（spec §12.2 row 2 / §5.4）：高德 POI 真实数据 + mock 回退。
 
-    - 无 category → 返回全部
+    - 有 lat/lng + AMAP_API_KEY → 调用高德 /place/around 搜索附近彩票代销点
+    - 无 lat/lng（用户未授权定位）/ 无 API key / API 故障 → 回退 mock 数据
     - category=welfare → 仅福彩；category=sport → 仅体彩
     - 非法 category → 422（Query pattern）
 
-    POI 数据源（高德/百度地图）待后续接入；当前用固定 mock 供前端联调。
+    高德 Web 服务 location 参数格式：lng,lat（经度在前）。
     """
-    if category is None:
-        return list(_MOCK_AGENCIES)
-    return [a for a in _MOCK_AGENCIES if a.category == category]
+    agencies: list[AgencyOut]
+    if lat is not None and lng is not None:
+        try:
+            agencies = _query_amap_pois(lat, lng)
+        except Exception:
+            # 高德 API 故障不得阻断 dashboard（silent-failure 纪律：外部依赖降级）。
+            logger.warning('amap_poi_failed lat=%s lng=%s', lat, lng, exc_info=True)
+            agencies = list(_MOCK_AGENCIES)
+    else:
+        agencies = list(_MOCK_AGENCIES)
+
+    if category is not None:
+        agencies = [a for a in agencies if a.category == category]
+    return agencies
 
 
 class MonthlyPointOut(BaseModel):

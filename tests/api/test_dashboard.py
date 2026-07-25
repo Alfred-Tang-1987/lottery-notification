@@ -11,6 +11,7 @@ import pytest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 from sqlmodel import Session
+from unittest.mock import MagicMock
 
 from app.api.deps import get_session_dep
 from app.api.security import COOKIE_NAME, create_session_token
@@ -630,6 +631,49 @@ def test_calendar_handles_missing_draw_schedule(db_engine):
     assert items[0]['next_draw_date'] is None  # no schedule → no preview
 
 
+def test_calendar_sorted_by_next_draw_date(db_engine):
+    """开奖日历按 next_draw_date 升序排列（最近的在前），无日程的排末尾。
+
+    回归点：旧实现按 lottery_code 字母序排列，用户看到 dlt → pl3 → pl5 → qlc → ...
+    完全无日期含义，无法快速识别「下一期最近开奖是哪个彩种」。
+    """
+    # 用固定 draw_days 让 next_draw_date 可预测：
+    # - ssq: draw_days=[2]（仅周二）→ next 是最近一个周二
+    # - dlt: draw_days=[4]（仅周四）→ next 是最近一个周四
+    # - qlc: draw_days=[]（无日程）→ next_draw_date=None，应排末尾
+    with Session(db_engine) as s:
+        s.add(LotteryType(code='ssq', name='双色球', category='welfare',
+                          spec_json='{}', draw_schedule_json='{"draw_days": [2]}', enabled=True))
+        s.add(LotteryType(code='dlt', name='大乐透', category='sport',
+                          spec_json='{}', draw_schedule_json='{"draw_days": [4]}', enabled=True))
+        s.add(LotteryType(code='qlc', name='七乐彩', category='welfare',
+                          spec_json='{}', draw_schedule_json='{"draw_days": []}', enabled=True))
+        s.commit()
+
+    uid = _make_user(db_engine, 'cal_sort')
+    client = _auth_client(db_engine, uid)
+    r = client.get('/api/dashboard/calendar')
+    assert r.status_code == 200, r.text
+    items = r.json()
+    assert len(items) == 3
+
+    # 提取 next_draw_date 列表（None 视为最大，排末尾）
+    dates = []
+    for it in items:
+        d = it['next_draw_date']
+        dates.append(d if d is not None else '9999-12-31')
+
+    # 验证升序：dates 必须是非递减的
+    assert dates == sorted(dates), (
+        f'calendar not sorted by next_draw_date asc: {dates}'
+    )
+    # 无日程的 qlc 必须排最后
+    assert items[-1]['lottery_code'] == 'qlc'
+
+
+
+
+
 def test_agencies_requires_auth(db_engine):
     """未登录 GET /api/dashboard/agencies → 401。"""
     client = _client(db_engine)
@@ -686,6 +730,171 @@ def test_agencies_rejects_invalid_category(db_engine):
     client = _auth_client(db_engine, uid)
     r = client.get('/api/dashboard/agencies?category=invalid')
     assert r.status_code == 422
+
+
+# ──────────────────────────────────────────────
+# 附近代销点 — 高德 POI 集成
+# 前端传 lat/lng → 后端查高德 /place/around → 返回真实代销点
+# 无 lat/lng / 无 API key / API 失败 → 回退 mock 数据
+# ──────────────────────────────────────────────
+
+
+def test_agencies_queries_amap_when_lat_lng_provided(db_engine, monkeypatch):
+    """提供 lat/lng + AMAP_API_KEY 已配置 → 调用高德 POI API 返回真实代销点。
+
+    高德 /place/around 返回 pois 列表，后端须解析为 AgencyOut 格式：
+    - name → name
+    - address → address（空则用 pname+cityname+address 拼接）
+    - location "lng,lat" → lat/lng（注意高德 location 是 "经度,纬度" 顺序）
+    - typecode/typecode 含 "彩票" → category（福彩/体彩），无法判断时默认 welfare
+    - distance 可为 None（高德 /place/around 不返回距离，需另算或留空）
+    """
+    import httpx
+
+    from app.api import dashboard as dash_mod
+
+    # 配置 AMAP_API_KEY
+    monkeypatch.setattr(dash_mod, 'get_settings', lambda: MagicMock(amap_api_key='test-amap-key'))
+
+    # mock 高德 API 响应
+    def amap_handler(req: httpx.Request) -> httpx.Response:
+        # 验证请求参数
+        assert 'restapi.amap.com/v3/place/around' in str(req.url)
+        assert req.url.params['key'] == 'test-amap-key'
+        # 高德 location 参数格式：lng,lat（经度在前）
+        assert req.url.params['location'] == '116.4987,39.9242'
+        assert '彩票' in req.url.params.get('keywords', '')
+        return httpx.Response(200, json={
+            'status': '1',
+            'pois': [
+                {
+                    'name': '中国福利彩票（朝阳店）',
+                    'address': '朝阳路100号',
+                    'location': '116.4990,39.9250',
+                    'typecode': '160500',
+                },
+                {
+                    'name': '中国体育彩票（建国路）',
+                    'address': '建国路50号',
+                    'location': '116.4870,39.9082',
+                    'typecode': '160500',
+                },
+            ],
+        })
+
+    # 替换 dashboard 模块内的 httpx.Client
+    original_client = dash_mod._amap_client
+    dash_mod._amap_client = httpx.Client(transport=httpx.MockTransport(amap_handler), timeout=5.0)
+    try:
+        uid = _make_user(db_engine, 'amap_user')
+        client = _auth_client(db_engine, uid)
+        r = client.get('/api/dashboard/agencies?lat=39.9242&lng=116.4987')
+        assert r.status_code == 200, r.text
+        items = r.json()
+        assert len(items) == 2
+        assert items[0]['name'] == '中国福利彩票（朝阳店）'
+        assert items[0]['address'] == '朝阳路100号'
+        # 高德 location "lng,lat" → lat/lng 正确拆分（lng 在前）
+        assert items[0]['lng'] == 116.4990
+        assert items[0]['lat'] == 39.9250
+    finally:
+        dash_mod._amap_client = original_client
+
+
+def test_agencies_falls_back_to_mock_without_lat_lng(db_engine, monkeypatch):
+    """无 lat/lng 参数 → 回退 mock 数据（用户未授权定位）。"""
+    from app.api import dashboard as dash_mod
+
+    monkeypatch.setattr(dash_mod, 'get_settings', lambda: MagicMock(amap_api_key='test-amap-key'))
+
+    uid = _make_user(db_engine, 'amap_noloc')
+    client = _auth_client(db_engine, uid)
+    r = client.get('/api/dashboard/agencies')
+    assert r.status_code == 200, r.text
+    items = r.json()
+    # 回退 mock（至少 2 条）
+    assert len(items) >= 2
+    # mock 数据有 distance_m（真实 POI 无）
+    assert items[0]['distance_m'] is not None
+
+
+def test_agencies_falls_back_to_mock_without_amap_key(db_engine, monkeypatch):
+    """无 AMAP_API_KEY → 即使有 lat/lng 也回退 mock（不发无意义 HTTP 请求）。"""
+    from app.api import dashboard as dash_mod
+
+    monkeypatch.setattr(dash_mod, 'get_settings', lambda: MagicMock(amap_api_key=''))
+
+    uid = _make_user(db_engine, 'amap_nokey')
+    client = _auth_client(db_engine, uid)
+    r = client.get('/api/dashboard/agencies?lat=39.9242&lng=116.4987')
+    assert r.status_code == 200, r.text
+    items = r.json()
+    # 回退 mock
+    assert len(items) >= 2
+
+
+def test_agencies_falls_back_to_mock_on_amap_failure(db_engine, monkeypatch):
+    """高德 API 返回错误/异常 → 回退 mock（不让外部 API 故障阻断 dashboard）。"""
+    import httpx
+
+    from app.api import dashboard as dash_mod
+
+    monkeypatch.setattr(dash_mod, 'get_settings', lambda: MagicMock(amap_api_key='test-amap-key'))
+
+    def amap_handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={'status': '0', 'info': 'INVALID_USER_KEY'})
+
+    original_client = dash_mod._amap_client
+    dash_mod._amap_client = httpx.Client(transport=httpx.MockTransport(amap_handler), timeout=5.0)
+    try:
+        uid = _make_user(db_engine, 'amap_fail')
+        client = _auth_client(db_engine, uid)
+        r = client.get('/api/dashboard/agencies?lat=39.9242&lng=116.4987')
+        assert r.status_code == 200, r.text
+        items = r.json()
+        # 回退 mock
+        assert len(items) >= 2
+    finally:
+        dash_mod._amap_client = original_client
+
+
+def test_agencies_amap_supports_category_filter(db_engine, monkeypatch):
+    """高德 POI 结果支持 category 过滤（welfare/sport）。
+
+    通过 name 含「福利彩票」→ welfare、「体育彩票」→ sport 判断。
+    """
+    import httpx
+
+    from app.api import dashboard as dash_mod
+
+    monkeypatch.setattr(dash_mod, 'get_settings', lambda: MagicMock(amap_api_key='test-amap-key'))
+
+    def amap_handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            'status': '1',
+            'pois': [
+                {'name': '中国福利彩票（朝阳店）', 'address': 'addr1', 'location': '116.4990,39.9250', 'typecode': '160500'},
+                {'name': '中国体育彩票（建国路）', 'address': 'addr2', 'location': '116.4870,39.9082', 'typecode': '160500'},
+            ],
+        })
+
+    original_client = dash_mod._amap_client
+    dash_mod._amap_client = httpx.Client(transport=httpx.MockTransport(amap_handler), timeout=5.0)
+    try:
+        uid = _make_user(db_engine, 'amap_cat')
+        client = _auth_client(db_engine, uid)
+        # 过滤 welfare
+        r = client.get('/api/dashboard/agencies?lat=39.9242&lng=116.4987&category=welfare')
+        assert r.status_code == 200, r.text
+        items = r.json()
+        assert len(items) == 1
+        assert items[0]['name'] == '中国福利彩票（朝阳店）'
+        assert items[0]['category'] == 'welfare'
+    finally:
+        dash_mod._amap_client = original_client
+
+
+
 
 
 def test_dashboard_monthly_returns_last_12_months(db_engine):

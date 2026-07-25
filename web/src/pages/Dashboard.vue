@@ -57,6 +57,8 @@ interface AgencyItem {
   distance_m: number | null;
 }
 
+type GeoStatus = 'idle' | 'loading' | 'granted' | 'denied' | 'unavailable';
+
 interface Hit {
   id: number;
   lottery_name: string;
@@ -79,6 +81,10 @@ const calendar = ref<CalendarItem[] | null>(null);
 const agencies = ref<AgencyItem[] | null>(null);
 const loading = ref(false);
 const error = ref('');
+// 用户地理位置状态：idle 未请求 / loading 请求中 / granted 已授权 / denied 拒绝 / unavailable 不支持
+const geoStatus = ref<GeoStatus>('idle');
+const userLat = ref<number | null>(null);
+const userLng = ref<number | null>(null);
 // Non-blocking warning for secondary failures (calendar/agency). Kept separate
 // from `error` so a secondary failure does NOT gate the dashboard main body
 // (v-else-if="error" would hide D5 first-screen 待兑奖 etc). Rendered as an
@@ -106,6 +112,42 @@ function buildDashboardQuery(): string {
   return `/api/dashboard?${params.toString()}`;
 }
 
+async function requestGeolocation(): Promise<void> {
+  // 仅在首次加载时请求定位（后续刷新复用结果，避免重复弹窗）
+  if (geoStatus.value !== 'idle') return;
+  if (!('geolocation' in navigator)) {
+    geoStatus.value = 'unavailable';
+    return;
+  }
+  geoStatus.value = 'loading';
+  return new Promise((resolve) => {
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        userLat.value = pos.coords.latitude;
+        userLng.value = pos.coords.longitude;
+        geoStatus.value = 'granted';
+        resolve();
+      },
+      () => {
+        // 用户拒绝或定位失败 → 静默回退 mock（不阻断 dashboard）
+        geoStatus.value = 'denied';
+        resolve();
+      },
+      { timeout: 5000, enableHighAccuracy: false },
+    );
+  });
+}
+
+function buildAgenciesQuery(): string {
+  const params = new URLSearchParams();
+  if (userLat.value != null && userLng.value != null) {
+    params.set('lat', String(userLat.value));
+    params.set('lng', String(userLng.value));
+  }
+  const qs = params.toString();
+  return qs ? `/api/dashboard/agencies?${qs}` : '/api/dashboard/agencies';
+}
+
 async function load() {
   loading.value = true;
   error.value = '';
@@ -114,11 +156,19 @@ async function load() {
   // the primary dashboard error.
   const secondaryErrors: string[] = [];
   try {
-    const [dashResult, calResult, agResult] = await Promise.allSettled([
+    // 首次加载时并行请求定位（不阻塞 dashboard 主体加载）
+    const geoPromise = requestGeolocation();
+
+    const [dashResult, calResult] = await Promise.allSettled([
       apiGet<DashboardData>(buildDashboardQuery()),
       apiGet<CalendarItem[]>('/api/dashboard/calendar'),
-      apiGet<AgencyItem[]>('/api/dashboard/agencies'),
     ]);
+
+    // 等定位完成后再请求代销点（需 lat/lng 参数）
+    await geoPromise;
+    const agResult = await Promise.allSettled([
+      apiGet<AgencyItem[]>(buildAgenciesQuery()),
+    ]).then((r) => r[0]);
 
     // Always assign independent calendar/agency results before deciding dashboard fate
     // so a dashboard-only failure does not silently drop calendar and agencies.
@@ -479,13 +529,19 @@ onMounted(() => {
       </div>
     </section>
 
-    <!-- 附近代销点（D5 次屏，MVP mock）— rendered outside the dashboard v-else
+    <!-- 附近代销点（D5 次屏）— rendered outside the dashboard v-else
          chain for the same partial-degradation reason as the calendar above. -->
     <section v-if="hasAgencies" class="card" aria-labelledby="agencies-title">
       <div class="card-header">
         <div>
           <h2 id="agencies-title" class="card-title">附近代销点</h2>
-          <p class="card-subtitle">便民查询 · 点击打开地图导航</p>
+          <p class="card-subtitle">
+            <template v-if="geoStatus === 'granted'">基于当前位置 · 点击打开地图导航</template>
+            <template v-else-if="geoStatus === 'loading'">正在获取位置…</template>
+            <template v-else-if="geoStatus === 'denied'">定位未授权 · 显示示例代销点</template>
+            <template v-else-if="geoStatus === 'unavailable'">不支持定位 · 显示示例代销点</template>
+            <template v-else>便民查询 · 点击打开地图导航</template>
+          </p>
         </div>
       </div>
       <div class="card-body">

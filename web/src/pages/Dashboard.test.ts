@@ -324,4 +324,65 @@ describe("Dashboard.vue (T6g)", () => {
     // class="state"; querying it returns null only when no State rendered).
     expect(host.querySelector('.state')).toBeNull();
   });
+
+  it("passes lat/lng to agencies API when geolocation is granted", async () => {
+    // Mock navigator.geolocation to simulate user granting location permission.
+    const fakePosition = {
+      coords: { latitude: 31.2304, longitude: 121.4737 },
+    };
+    const geoStub = {
+      getCurrentPosition: vi.fn((success: (p: typeof fakePosition) => void) => {
+        success(fakePosition);
+      }),
+    };
+    Object.defineProperty(globalThis.navigator, "geolocation", {
+      value: geoStub,
+      configurable: true,
+    });
+
+    await mount();
+    // Wait for geolocation + agencies request to complete
+    await nextTick();
+    await new Promise((r) => setTimeout(r, 0));
+    await nextTick();
+
+    // Agencies request must include lat/lng query params
+    const agencyCall = fetchMock.mock.calls.find((c) =>
+      String(c[0]).startsWith("/api/dashboard/agencies?lat=")
+    );
+    expect(agencyCall).toBeDefined();
+    const url = String(agencyCall![0]);
+    expect(url).toContain("lat=31.2304");
+    expect(url).toContain("lng=121.4737");
+    // Subtitle should show "基于当前位置"
+    expect(host.textContent).toContain("基于当前位置");
+  });
+
+  it("falls back to agencies without lat/lng when geolocation is denied", async () => {
+    // Mock navigator.geolocation to simulate user denying location permission.
+    const geoStub = {
+      getCurrentPosition: vi.fn((_: unknown, error: () => void) => {
+        error();
+      }),
+    };
+    Object.defineProperty(globalThis.navigator, "geolocation", {
+      value: geoStub,
+      configurable: true,
+    });
+
+    await mount();
+    await nextTick();
+    await new Promise((r) => setTimeout(r, 0));
+    await nextTick();
+
+    // Agencies request must NOT include lat/lng (falls back to mock)
+    const agencyCall = fetchMock.mock.calls.find((c) =>
+      String(c[0]).startsWith("/api/dashboard/agencies")
+    );
+    expect(agencyCall).toBeDefined();
+    const url = String(agencyCall![0]);
+    expect(url).not.toContain("lat=");
+    // Subtitle should show "定位未授权"
+    expect(host.textContent).toContain("定位未授权");
+  });
 });
