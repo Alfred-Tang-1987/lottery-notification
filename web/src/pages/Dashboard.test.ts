@@ -189,6 +189,19 @@ describe("Dashboard.vue (T6g)", () => {
     expect(host.textContent).toContain("北京市朝阳区朝阳路 XX 号");
   });
 
+  it("renders agency distance formatted as meters or kilometers", async () => {
+    // Distance < 1000m → "X 米"; ≥ 1000m → "X.X 公里".
+    // Verifies both formatting branches and that distance is actually rendered.
+    await mount({
+      agencies: [
+        { name: "近店", address: "addr-near", category: "welfare", lat: 0, lng: 0, distance_m: 320 },
+        { name: "远店", address: "addr-far", category: "sport", lat: 0, lng: 0, distance_m: 1200 },
+      ],
+    });
+    expect(host.textContent).toContain("320 米");
+    expect(host.textContent).toContain("1.2 公里");
+  });
+
   it("falls back to ¥0 when welfare contribution is missing", async () => {
     await mount({
       dashboard: {

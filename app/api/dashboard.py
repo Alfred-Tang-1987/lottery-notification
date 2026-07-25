@@ -6,6 +6,7 @@ Spec §12.2：仪表盘首屏需要「待兑奖 / 我的命中 / 盈亏速览 / 
 
 import json
 import logging
+import math
 from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -436,6 +437,28 @@ _MOCK_AGENCIES: list[AgencyOut] = [
 ]
 
 
+# 代销点返回数量上限（按距离升序取前 N）。
+# 用户不需要 20+ 个代销点，最近 10 个足够决策。高德 /place/around offset=20 返回 20 条，
+# 后端裁剪到 10 条避免前端列表过长。
+_AGENCIES_LIMIT = 10
+
+
+def _haversine_distance(lat1: float, lng1: float, lat2: float, lng2: float) -> int:
+    """计算两个经纬度坐标间的球面距离（米），使用 haversine 公式。
+
+    地球半径取 6371000m（平均半径）。返回整数米（前端展示用，精度到米足够）。
+    用于计算用户位置到代销点的直线距离（高德 /place/around base 扩展不返回距离）。
+    """
+    R = 6371000  # 地球平均半径（米）
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lng2 - lng1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return int(R * c)
+
+
 def _classify_agency_category(name: str) -> str:
     """根据代销点名称判断福彩/体彩。
 
@@ -503,7 +526,8 @@ def _query_amap_pois(lat: float, lng: float) -> list[AgencyOut]:
             category=_classify_agency_category(name),
             lat=poi_lat,
             lng=poi_lng,
-            distance_m=None,  # 高德 /place/around base 扩展不返回距离
+            # 高德 /place/around base 扩展不返回距离，用 haversine 自行计算。
+            distance_m=_haversine_distance(lat, lng, poi_lat, poi_lng),
         ))
     return result
 
@@ -601,7 +625,11 @@ def dashboard_agencies(
 
     if category is not None:
         agencies = [a for a in agencies if a.category == category]
-    return agencies
+    # 按距离升序排列（最近的在前）：真实 POI 有 haversine 距离，mock 有预设距离。
+    # distance_m 为 None 时排末尾（理论上不会出现，但防御性处理）。
+    agencies.sort(key=lambda a: a.distance_m if a.distance_m is not None else float('inf'))
+    # 限制返回数量（用户不需要 20+ 个代销点，最近 N 个足够决策）。
+    return agencies[:_AGENCIES_LIMIT]
 
 
 class MonthlyPointOut(BaseModel):

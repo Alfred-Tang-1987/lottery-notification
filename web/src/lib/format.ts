@@ -15,3 +15,9 @@ export function fmtShortDate(iso: string): string {
   if (isNaN(d.getTime())) return '异常';
   return `${d.getMonth() + 1}月${d.getDate()}日`;
 }
+
+export function fmtDistance(meters: number | null | undefined): string {
+  if (meters == null) return '';
+  if (meters < 1000) return `${meters} 米`;
+  return `${(meters / 1000).toFixed(1)} 公里`;
+}

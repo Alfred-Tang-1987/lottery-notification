@@ -2,7 +2,7 @@
 import { ref, computed, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { apiGet } from '../api/client';
-import { fmtMoney, fmtShortDate } from '../lib/format';
+import { fmtMoney, fmtShortDate, fmtDistance } from '../lib/format';
 import State from '../components/State.vue';
 import BallNumber from '../components/BallNumber.vue';
 
@@ -570,7 +570,7 @@ onMounted(() => {
                 </span>
               </span>
               <span class="agency-address">{{ agency.address }}</span>
-              <span v-if="agency.distance_m != null" class="agency-distance">{{ agency.distance_m }} 米</span>
+              <span v-if="agency.distance_m != null" class="agency-distance">{{ fmtDistance(agency.distance_m) }}</span>
             </button>
           </li>
         </ul>
