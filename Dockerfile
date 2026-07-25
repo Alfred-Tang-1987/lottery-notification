@@ -31,7 +31,8 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 # 应用代码
 COPY app/ ./app/
-COPY alembic/ alembic.ini ./
+COPY alembic ./alembic
+COPY alembic.ini ./
 # 前端构建产物（spec §12.3 / T8：main.py 在 STATIC_DIR 存在时挂载 SPA）
 COPY --from=web /static ./static
 # data 目录占位（runtime 由 compose 卷挂载覆盖；占位保证直接 docker run 也能写）
