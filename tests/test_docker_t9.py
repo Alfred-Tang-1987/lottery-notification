@@ -135,6 +135,42 @@ def test_dockerfile_copies_static_from_web_stage():
     assert 'static' in content, '前端产物目标必须是 static/（T8 STATIC_DIR 约定）'
 
 
+def test_dockerfile_copies_alembic_as_directory_not_contents():
+    """[critical] COPY alembic 目录时目标必须显式为 ./alembic——否则内容散落到 /app/。
+
+    silent-failure 陷阱：``COPY alembic ./`` 或 ``COPY alembic alembic.ini ./`` 都会把
+    alembic 目录的**内容**（env.py/versions/script.py.mako/README）散落到 /app/，而非创建
+    /app/alembic/ 子目录。Docker COPY 语义：源是目录时，复制的是目录内容，不是目录本身；
+    只有目标路径显式包含目录名（如 ``./alembic``）才会创建子目录。
+
+    后果：``alembic.ini`` 的 ``script_location = %(here)s/alembic`` 找不到目录，容器启动时
+    ``alembic upgrade head`` 报 ``Path doesn't exist: /app/alembic`` 陷入 restart 循环。
+
+    正确形式：``COPY alembic ./alembic``（目标显式为 ./alembic 子目录）。
+    """
+    import re
+
+    content = _read(DOCKERFILE)
+    # 找 COPY 指令中源是 alembic 目录的行（COPY alembic 或 COPY alembic/，非 alembic.ini）
+    alembic_dir_copy_lines = [
+        ln.strip() for ln in content.splitlines()
+        if ln.strip().startswith('COPY')
+        and re.search(r'\balembic/?\s', ln.strip() + ' ')  # alembic 或 alembic/ 后接空格
+        and 'alembic.ini' not in ln.strip().split()[1]  # 排除源是 alembic.ini 的行
+    ]
+    assert alembic_dir_copy_lines, 'Dockerfile 必须有 COPY alembic 目录（迁移脚本）'
+    for line in alembic_dir_copy_lines:
+        parts = line.split()
+        # COPY <src...> <dest>：最后一个参数是 dest
+        dest = parts[-1]
+        # 目标必须显式包含 alembic 子目录（./alembic 或 ./alembic/ 或 /app/alembic 等）
+        assert 'alembic' in dest and dest != './', (
+            f'{line}：目标 {dest!r} 会让 alembic 目录内容散落到 /app/ 而非 /app/alembic/。'
+            f'必须用 ``COPY alembic ./alembic`` 显式指定子目录目标，'
+            f'否则 alembic.ini 的 script_location 找不到目录，容器启动失败'
+        )
+
+
 # ---------- docker-compose.yml 契约 ----------
 
 
