@@ -53,9 +53,12 @@ EXPOSE 8280
 # 非法，故用 printf 把多行脚本 piped 到 `python -`，保持可读 + 正确缩进。
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD printf '%s\n' \
-        'import sys, urllib.request' \
+        'import os, ssl, sys, urllib.request' \
+        'proto = "https" if os.environ.get("TLS_CERT_FILE") else "http"' \
+        'url = f"{proto}://localhost:8280/health"' \
+        'ctx = ssl._create_unverified_context() if proto == "https" else None' \
         'try:' \
-        '    r = urllib.request.urlopen("http://localhost:8280/health", timeout=4)' \
+        '    r = urllib.request.urlopen(url, timeout=4, context=ctx)' \
         '    sys.exit(0 if r.status == 200 else 1)' \
         'except Exception:' \
         '    sys.exit(1)' \
