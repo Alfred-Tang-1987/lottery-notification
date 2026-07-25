@@ -62,7 +62,9 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
       | python -
 # 启动：先 alembic 迁移（spec §4.3：Schema 用 Alembic 管理）再起 uvicorn。
 # && 串行：迁移失败时 uvicorn 不启动（避免 schema drift 静默运行）。
-# HTTPS：配置 SSL_CERT_FILE + SSL_KEY_FILE 环境变量时自动启用 SSL（局域网自签证书）。
+# HTTPS：配置 TLS_CERT_FILE + TLS_KEY_FILE 环境变量时自动启用 SSL（局域网自签证书）。
 # 不配则走 HTTP（保持开发/CI 兼容）。geolocation API 要求安全上下文（HTTPS/localhost），
 # HTTP 局域网部署浏览器会拒绝定位。
-CMD ["sh", "-c", "uv run alembic upgrade head && if [ -n \"$SSL_CERT_FILE\" ] && [ -n \"$SSL_KEY_FILE\" ]; then uv run uvicorn app.main:app --host 0.0.0.0 --port 8280 --ssl-certfile \"$SSL_CERT_FILE\" --ssl-keyfile \"$SSL_KEY_FILE\"; else uv run uvicorn app.main:app --host 0.0.0.0 --port 8280; fi"]
+# 注意：不能用 SSL_CERT_FILE 这个名字——它是 OpenSSL 标准 CA 信任库环境变量，
+# 设成自签证书会导致 Python 全局只信任该证书，外部 API（mxnzp 等）的系统 CA 签名被拒绝。
+CMD ["sh", "-c", "uv run alembic upgrade head && if [ -n \"$TLS_CERT_FILE\" ] && [ -n \"$TLS_KEY_FILE\" ]; then uv run uvicorn app.main:app --host 0.0.0.0 --port 8280 --ssl-certfile \"$TLS_CERT_FILE\" --ssl-keyfile \"$TLS_KEY_FILE\"; else uv run uvicorn app.main:app --host 0.0.0.0 --port 8280; fi"]
