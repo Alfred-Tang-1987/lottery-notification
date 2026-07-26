@@ -373,6 +373,44 @@ def test_path_a_fetch_failure_isolates_per_lottery(db_engine):
     assert fetch.fetch_and_store.call_count == len(SPECS)
 
 
+def test_path_a_tick_paces_mxnzp_qps_with_inter_lottery_interval(db_engine, monkeypatch):
+    """path_a_tick 须在彩种间 sleep 1.2s 避免 MXNZP 1 QPS 限流（L-20260726T013000Z）。
+
+    根因：串行调 7 彩种触发 code=101，旧实现静默返回 None → 开奖静默漏抓。
+    修复分两层：(1) adapter 把 code=101 抛 TransientLookupError；(2) path_a_tick 加间隔预防。
+    本测试验证第 2 层：彩种间确实调用了 sleep。
+    """
+    from app.scheduler import jobs as jobs_mod
+    from app.scheduler.jobs import register_all_jobs
+    from app.seeds import SPECS
+
+    # 测试环境强制 0 间隔避免拖慢，但本测试要验证真实间隔存在，恢复默认值
+    monkeypatch.setattr(jobs_mod, '_INTER_LOTTERY_INTERVAL', 1.2)
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(jobs_mod.time, 'sleep', lambda s: sleep_calls.append(s))
+
+    sched = build_scheduler(db_engine)
+    fetch = MagicMock()
+    register_all_jobs(
+        sched,
+        {
+            'engine': db_engine,
+            'fetch_service': fetch,
+            'compare_service': MagicMock(),
+            'refill_worker': MagicMock(),
+            'notifier': MagicMock(),
+        },
+    )
+    _invoke_job(sched, 'path_a_poll_evening')
+
+    # 7 彩种 → 6 个间隔（第一个不等待）
+    assert fetch.fetch_and_store.call_count == len(SPECS)
+    assert len(sleep_calls) == len(SPECS) - 1
+    # 每个间隔是 1.2s
+    for s in sleep_calls:
+        assert s == 1.2
+
+
 def test_path_b_summary_defers_when_dnd(db_engine):
     """路径B在 DND 时段应登记顺延任务，而不是直接推送。"""
     from sqlmodel import Session
