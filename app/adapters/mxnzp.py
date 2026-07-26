@@ -3,7 +3,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from app.adapters.base import DrawNumbers, PermanentLookupError, normalize_draw_no
+from app.adapters.base import DrawNumbers, PermanentLookupError, TransientLookupError, normalize_draw_no
 
 _CST = ZoneInfo('Asia/Shanghai')
 
@@ -58,8 +58,15 @@ class MxnzpAdapter:
         )
         r.raise_for_status()
         body = r.json()
-        # code=1 成功，code=0 业务失败（此时 data 无意义）；其他 code 如 101=QPS 超限。
-        if body.get('code') != 1:
+        code = body.get('code')
+        # code=1 成功；code=0 业务失败（data 无意义，按未开奖处理）；code=101 QPS 超限。
+        # QPS 限流是 transient（重试可成功），须抛 TransientLookupError 让 fetch_service
+        # 退避重试，而非静默返回 None 被当「未开奖」→ 开奖静默漏抓（L-20260726T013000Z）。
+        if code == 101:
+            raise TransientLookupError(
+                f'mxnzp qps rate limited (lottery={lottery_code}): {body.get("msg", "")}'
+            )
+        if code != 1:
             return None
         data = body.get('data')
         if not data:

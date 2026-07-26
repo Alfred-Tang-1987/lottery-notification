@@ -74,6 +74,19 @@ class PermanentLookupError(Exception):
     """
 
 
+class TransientLookupError(Exception):
+    """瞬时性查询错误——重试可成功，区别于 PermanentLookupError（重试无意义）。
+
+    典型场景：MXNZP code=101（QPS 超限）。FetchService._fetch_with_backoff 识别本异常
+    后走指数退避重试（与普通 Exception 一致），但语义上更明确：调用方可知这是 transient
+    而非永久契约错误。
+
+    引入背景（L-20260726T013000Z）：MXNZP 1 QPS 限制下，path_a_tick 串行调 7 彩种触发
+    code=101，旧实现 `if code != 1: return None` 把限流伪装成「未开奖」→ 开奖静默漏抓。
+    限流须抛本异常让 fetch_service 退避重试，而非吞 None（spec §10 核心价值）。
+    """
+
+
 def _defensive_truncate(draw_no: str) -> str:
     """draw_no 防御截断：长度 >3 时 log warning + 取后 3 位（1B 决策）。
 

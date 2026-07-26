@@ -1,6 +1,7 @@
 from datetime import UTC, date
 
 import httpx
+import pytest
 
 from app.adapters.base import normalize_draw_no
 from app.adapters.juhe import JuheAdapter
@@ -122,6 +123,29 @@ def test_mxnzp_adapter_empty_means_not_drawn():
 
     adapter = MxnzpAdapter(api_key='k', app_secret='s', transport=_mock_transport(handler))
     assert adapter.fetch('ssq') is None
+
+
+def test_mxnzp_adapter_qps_rate_limit_raises_not_silent_none():
+    """code=101（QPS 超限）须抛 TransientLookupError，不得静默返回 None。
+
+    根因（L-20260726T013000Z）：path_a_tick 串行调 7 彩种触发 MXNZP 1 QPS 限制，
+    adapter 旧实现 `if code != 1: return None` 把限流伪装成「未开奖」→ fetch_and_store
+    返回 not_drawn=True 不存库 → 开奖静默漏抓（违反 spec §10 核心价值）。
+    限流是 transient（重试可成功），须抛异常让 fetch_service 退避重试，而非吞 None。
+    """
+
+    def handler(req):
+        return httpx.Response(200, json={
+            'code': 101,
+            'msg': '请求频率过快，超过当前账号QPS的限制',
+            'data': None,
+        })
+
+    from app.adapters.base import TransientLookupError
+
+    adapter = MxnzpAdapter(api_key='k', app_secret='s', transport=_mock_transport(handler))
+    with pytest.raises(TransientLookupError):
+        adapter.fetch('ssq')
 
 
 def test_mxnzp_adapter_shanghai_date():

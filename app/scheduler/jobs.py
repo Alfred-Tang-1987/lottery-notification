@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -18,6 +19,11 @@ from app.services.refill_service import FloatRefillWorker
 _CST = ZoneInfo('Asia/Shanghai')
 
 logger = logging.getLogger(__name__)
+
+# path_a_tick 串行抓取彩种间的间隔（秒）。MXNZP 免费 1 QPS，串行调 7 彩种会触发
+# code=101 限流 → adapter 旧实现静默返回 None → 开奖静默漏抓（L-20260726T013000Z）。
+# 1.2s 留 20% 安全余量；测试环境经 conftest autouse fixture 降为 0 避免拖慢。
+_INTER_LOTTERY_INTERVAL = 1.2
 
 
 # ---------------------------------------------------------------------------
@@ -167,7 +173,11 @@ def _path_a_tick(db_url: str) -> None:
 
     from app.seeds import SPECS
 
-    for spec in SPECS:
+    for i, spec in enumerate(SPECS):
+        # 第二个彩种起抓取前 sleep _INTER_LOTTERY_INTERVAL，避免 MXNZP 1 QPS 限流
+        # 触发 code=101 → 静默漏抓（L-20260726T013000Z）。第一彩种无需等待。
+        if i > 0:
+            time.sleep(_INTER_LOTTERY_INTERVAL)
         try:
             fetch_service.fetch_and_store(spec['code'])
         except Exception:
