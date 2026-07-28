@@ -271,16 +271,20 @@ def _path_b_summary(db_url: str) -> None:
         _defer_summary(sched, db_url, _path_b_summary, 'path_b_summary')
         return
     yesterday = (datetime.now(_CST).date() - timedelta(days=1)).isoformat()
-    with Session(engine) as s:
-        for user in s.exec(select(User).where(User.enabled == True)).all():  # noqa: E712
-            # L-20260725T064200Z: per-user 隔离——单个用户的 notify_path_b 抛任何异常
-            # （transient DB 错 / 渠道配置解密失败 / httpx 传输异常 / admin bark 误抛）
-            # 不得冒泡中断 for 循环，否则后续用户当日汇总静默漏通知（CLAUDE.md：批量循环里
-            # 单行故障不得中断整批）。与 _path_a_tick 已隔离的 per-lottery fetch 循环同构。
-            try:
-                notifier.notify_path_b(user_id=user.id, date_str=yesterday)
-            except Exception:
-                logger.error('path_b_user_failed user_id=%s', user.id, exc_info=True)
+    # 短读 session：取用户列表后立即关闭，不在循环期间持有连接。
+    # 否则外层 session 持有 pool_size=1 的唯一连接，内层 notify_path_b 再开 Session
+    # 借不到 -> 30s TimeoutError -> 被 per-user try/except 吞成 path_b_user_failed
+    # -> notification_logs 不写 -> 中奖静默漏通知（2026-07-28 NAS 实测复现，fix）。
+    user_ids = _enabled_user_ids(engine)
+    for uid in user_ids:
+        # L-20260725T064200Z: per-user 隔离--单个用户的 notify_path_b 抛任何异常
+        # （transient DB 错 / 渠道配置解密失败 / httpx 传输异常 / admin bark 误抛）
+        # 不得冒泡中断 for 循环，否则后续用户当日汇总静默漏通知（CLAUDE.md：批量循环里
+        # 单行故障不得中断整批）。与 _path_a_tick 已隔离的 per-lottery fetch 循环同构。
+        try:
+            notifier.notify_path_b(user_id=uid, date_str=yesterday)
+        except Exception:
+            logger.error('path_b_user_failed user_id=%s', uid, exc_info=True)
 
 
 def _weekly_report(db_url: str) -> None:
@@ -330,24 +334,38 @@ def _run_float_refill(db_url: str) -> None:
 def _push_period_summary(engine: Engine, notifier: Notifier, start: date, end: date) -> None:
     """为每个启用用户推送 [start, end] 区间的汇总。"""
     label = f'{start.isoformat()} ~ {end.isoformat()}'
+    # 短读 session：取用户列表后立即关闭（与 _path_b_summary 同构，见其注释--
+    # 嵌套 Session 在 pool_size=1 engine 上死锁，2026-07-28 NAS 实测复现）。
+    user_ids = _enabled_user_ids(engine)
+    for uid in user_ids:
+        # L-20260725T064200Z: per-user 隔离--与 _path_b_summary 同构。单用户抛异常不得
+        # 中断后续用户的周报/月报推送（per-user 静默漏通知）。
+        try:
+            notifier.notify_period_summary(
+                user_id=uid,
+                start_date_str=start.isoformat(),
+                end_date_str=end.isoformat(),
+                period_label=label,
+            )
+        except Exception:
+            logger.error(
+                'period_summary_user_failed user_id=%s period=%s',
+                uid,
+                label,
+                exc_info=True,
+            )
+
+
+def _enabled_user_ids(engine: Engine) -> list[int]:
+    """短读 session 取所有启用用户 id，立即关闭连接后返回。
+
+    path_b / period_summary 循环调用 notifier（内部各自开 Session）；若本函数外层
+    持有 session 不放，与内层 Session 在 pool_size=1 的 engine 上死锁（2026-07-28
+    NAS 实测：30s TimeoutError -> notification_logs 不写 -> 中奖静默漏通知）。
+    抽公共 helper 消除重复，且强制短读边界。
+    """
     with Session(engine) as s:
-        for user in s.exec(select(User).where(User.enabled == True)).all():  # noqa: E712
-            # L-20260725T064200Z: per-user 隔离——与 _path_b_summary 同构。单用户抛异常不得
-            # 中断后续用户的周报/月报推送（per-user 静默漏通知）。
-            try:
-                notifier.notify_period_summary(
-                    user_id=user.id,
-                    start_date_str=start.isoformat(),
-                    end_date_str=end.isoformat(),
-                    period_label=label,
-                )
-            except Exception:
-                logger.error(
-                    'period_summary_user_failed user_id=%s period=%s',
-                    user.id,
-                    label,
-                    exc_info=True,
-                )
+        return list(s.exec(select(User.id).where(User.enabled == True)).all())  # noqa: E712
 
 
 def _defer_summary(
