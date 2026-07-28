@@ -984,8 +984,8 @@ def _real_notifier_with_mock_channel(db_engine):
 def _seed_yesterday_ssq_with_ticket(db_engine):
     """为「昨天」播一期 ssq 开奖 + 启用用户 + ssq ticket + 启用 bark 渠道。
 
-    让 path_b 的 _collect_user_results 有活干（wins/loses 至少其一 > 0），从而真的
-    走到 notify_path_b 内部开 Session 的路径（而非 wins=loses=0 提前 return 0）。
+    让 path_b 的 _collect_user_results 有活干（tracked_count > 0，有追投彩种当期比对），
+    从而真的走到 notify_path_b 内部开 Session 的路径（而非 tracked_count=0 提前 return 0）。
     返回 (user_id, yesterday_iso)。
     """
     import json
