@@ -947,3 +947,186 @@ def test_path_a_tick_day_window_matches_aware_cst_draw_date(db_engine):
         'day_start/day_end 必须以 tzinfo=_CST 构造，与 DrawResult.draw_date（aware CST）'
         '同 tz 表示——依赖方言 strip 是脆弱的，见 CLAUDE.md datetime 时区对齐纪律'
     )
+
+
+# ---------------------------------------------------------------------------
+# 回归：path_b / period_summary 嵌套 Session 死锁（2026-07-28 NAS 实测复现）
+#
+# _path_b_summary / _push_period_summary 在 `with Session(engine) as s` 循环里调
+# notifier.notify_path_b / notify_period_summary，而这两个 notifier 方法内部又开
+# `with Session(self._engine) as s`。两个 Session 共用 pool_size=1 的唯一 engine ->
+# 内层借不到连接 -> 30s TimeoutError -> 被 per-user try/except 吞成 path_b_user_failed
+# -> notification_logs 不写 -> 中奖静默漏通知。
+#
+# 用真实 Notifier（真实 engine + mock 渠道/crypto）让内层真的开 Session 复现死锁。
+# 阈值 5s 远小于 30s 死锁超时，死锁时必超时失败。
+# ---------------------------------------------------------------------------
+
+
+def _real_notifier_with_mock_channel(db_engine):
+    """真实 Notifier + mock bark（返回 SENT）+ mock crypto（解密返回明文配置）。
+
+    复用 test_scheduler_push._make_notifier 模式，让 notify_path_b / notify_period_summary
+    内部真的 `with Session(self._engine)` 开连接，复现嵌套 Session 死锁。
+    """
+
+    from app.notifications.base import ChannelStatus, SendResult
+    from app.notifications.notifier import Notifier
+
+    bark = MagicMock()
+    bark.send.return_value = SendResult(status=ChannelStatus.SENT, error=None)
+    bark.type = 'bark'
+    crypto = MagicMock()
+    crypto.decrypt.return_value = '{"key":"k","url":"https://api.day.app"}'
+    return Notifier(db_engine, channels={'bark': bark}, crypto=crypto), bark
+
+
+def _seed_yesterday_ssq_with_ticket(db_engine):
+    """为「昨天」播一期 ssq 开奖 + 启用用户 + ssq ticket + 启用 bark 渠道。
+
+    让 path_b 的 _collect_user_results 有活干（wins/loses 至少其一 > 0），从而真的
+    走到 notify_path_b 内部开 Session 的路径（而非 wins=loses=0 提前 return 0）。
+    返回 (user_id, yesterday_iso)。
+    """
+    import json
+    from datetime import date, timedelta
+
+    from sqlmodel import Session
+
+    from app.models import NotificationChannel, Ticket, User
+
+    yesterday = date.today() - timedelta(days=1)
+    with Session(db_engine) as s:
+        u = User(username='deadlock_test', password_hash='x', role='user', invite_code='D1')
+        s.add(u)
+        s.commit()
+        s.refresh(u)
+        uid = u.id
+        s.add(
+            NotificationChannel(
+                user_id=uid,
+                type='bark',
+                config_json=json.dumps({'ct': 'enc'}),
+                enabled=True,
+                key_version=1,
+            )
+        )
+        s.add(
+            Ticket(
+                user_id=uid,
+                lottery_code='ssq',
+                play_type='single',
+                numbers_json=json.dumps({'front': [1, 2, 3, 4, 5, 6], 'back': [7]}),
+                multiplier=1,
+                cost=200,
+                enabled=True,
+            )
+        )
+        s.commit()
+    return uid, yesterday.isoformat()
+
+
+def _fetch_and_compare_yesterday_ssq(db_engine, yesterday_iso):
+    """经真实 FetchService(双源 mock) + CompareService 跑一期 ssq，比手 INSERT 更稳。"""
+    from datetime import date
+    from unittest.mock import MagicMock
+
+    from app.adapters.base import DrawNumbers
+    from app.services.compare_service import CompareService
+    from app.services.fetch_service import FetchService
+
+    dn = DrawNumbers(
+        lottery_code='ssq',
+        draw_no='062',
+        draw_date=date.fromisoformat(yesterday_iso),
+        front=(1, 2, 3, 4, 5, 6),
+        back=(7,),
+    )
+    primary = MagicMock()
+    primary.name = 'mxnzp'
+    primary.fetch.return_value = dn
+    backup = MagicMock()
+    backup.name = 'juhe'
+    backup.fetch.return_value = dn
+    FetchService(primary, backup, db_engine, grace_seconds=0).fetch_and_store('ssq')
+    CompareService(db_engine).process_pending()
+
+
+def test_path_b_summary_does_not_deadlock_with_real_notifier(db_engine):
+    """path_b 用真实 Notifier 时不得死锁（2026-07-28 NAS 回归）。
+
+    修复前：_path_b_summary 外层 `with Session` 持有 pool_size=1 唯一连接，内层
+    notify_path_b 再开 Session 借不到 -> 30s TimeoutError。本测试用真实 Notifier
+    复现，断言 ≤ 5s 完成（死锁时 30s 必失败）。
+    """
+    import time
+
+    from sqlmodel import Session, select
+
+    from app.models import NotificationLog
+    from app.scheduler.jobs import _path_b_summary, register_all_jobs
+    from app.scheduler.setup import build_scheduler
+
+    uid, yesterday_iso = _seed_yesterday_ssq_with_ticket(db_engine)
+    _fetch_and_compare_yesterday_ssq(db_engine, yesterday_iso)
+
+    notifier, bark = _real_notifier_with_mock_channel(db_engine)
+    notifier.is_dnd_active = lambda: False  # 白天跑，走真实推送路径
+
+    sched = build_scheduler(db_engine)
+    register_all_jobs(
+        sched,
+        {
+            'engine': db_engine,
+            'fetch_service': MagicMock(),
+            'compare_service': MagicMock(),
+            'refill_worker': MagicMock(),
+            'notifier': notifier,
+        },
+    )
+
+    t0 = time.monotonic()
+    _path_b_summary(str(db_engine.url))
+    elapsed = time.monotonic() - t0
+
+    # 死锁时 30s 才返回且无 log；修复后 < 1s 且有 log。5s 阈值留余量。
+    assert elapsed < 5.0, f'path_b 死锁超时：{elapsed:.1f}s（应 < 5s，死锁 30s）'
+    bark.send.assert_called_once()
+    with Session(db_engine) as s:
+        logs = s.exec(select(NotificationLog).where(NotificationLog.user_id == uid)).all()
+        assert len(logs) >= 1, '修复后必须写出 NotificationLog（死锁时 0 条）'
+        assert all(lg.status == 'sent' for lg in logs), [lg.status for lg in logs]
+
+
+def test_period_summary_does_not_deadlock_with_real_notifier(db_engine):
+    """周报/月报共用入口 _push_period_summary 用真实 Notifier 时不得死锁。
+
+    同构覆盖 _push_period_summary（外层 `with Session` + 内层 notify_period_summary
+    再开 Session）。死锁路径与 path_b 完全一致。
+    """
+    import time
+
+    from sqlmodel import Session, select
+
+    from app.models import NotificationLog
+    from app.scheduler.jobs import _push_period_summary
+
+    uid, yesterday_iso = _seed_yesterday_ssq_with_ticket(db_engine)
+    _fetch_and_compare_yesterday_ssq(db_engine, yesterday_iso)
+
+    notifier, bark = _real_notifier_with_mock_channel(db_engine)
+    notifier.is_dnd_active = lambda: False
+
+    from datetime import date
+
+    d = date.fromisoformat(yesterday_iso)
+
+    t0 = time.monotonic()
+    _push_period_summary(db_engine, notifier, d, d)
+    elapsed = time.monotonic() - t0
+
+    assert elapsed < 5.0, f'period_summary 死锁超时：{elapsed:.1f}s（应 < 5s）'
+    bark.send.assert_called_once()
+    with Session(db_engine) as s:
+        logs = s.exec(select(NotificationLog).where(NotificationLog.user_id == uid)).all()
+        assert len(logs) >= 1, '修复后必须写出 NotificationLog（死锁时 0 条）'
