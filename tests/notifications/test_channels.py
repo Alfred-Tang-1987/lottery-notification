@@ -388,3 +388,46 @@ def test_httpx_channels_close_cleanly():
     with fch:
         pass
     fch.close()  # 幂等
+
+
+# ---------------------------------------------------------------------------
+# 回归：BarkChannel 缺 url 时走官方默认（2026-07-28 NAS 部署后发现）
+#
+# API 契约（app/api/channels.py _REQUIRED_CONFIG_KEYS['bark']={'key'}）明确 url 可选，
+# 注释「url 有服务端默认」。但旧 BarkChannel.send 用 config['url'] 直接取，缺 url 即
+# KeyError -> 被 send 的 except 吞成 FAILED -> 全渠道失败 -> admin 告警 -> 推送丢失。
+# 与 main.py admin_bark_config 默认 https://api.day.app 对齐，缺 url 时走该默认。
+# ---------------------------------------------------------------------------
+
+
+def test_bark_channel_missing_url_falls_back_to_default_and_succeeds():
+    """config 缺 url -> 走官方默认 https://api.day.app -> SENT，不 FAILED。
+
+    API 层 url 标为可选（channels.py），Channel 实现必须兜底；否则用户只填 key 时
+    推送静默失败（NAS 实测：notification_logs error="'url'"）。
+    """
+    captured = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured['url'] = str(req.url)
+        return httpx.Response(200, json={'code': 200})
+
+    ch = BarkChannel(transport=httpx.MockTransport(handler))
+    r = ch.send(_payload(), config={'key': 'abc'})  # 缺 url
+    assert r.status == ChannelStatus.SENT, f'缺 url 应走默认成功，非 FAILED: {r.error}'
+    # 走默认 https://api.day.app
+    assert captured['url'] == 'https://api.day.app/abc', captured['url']
+
+
+def test_bark_channel_explicit_url_overrides_default():
+    """config 显式 url -> 用用户 url，不被默认覆盖（防回归：默认值不能误伤自定义 url）。"""
+    captured = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured['url'] = str(req.url)
+        return httpx.Response(200, json={'code': 200})
+
+    ch = BarkChannel(transport=httpx.MockTransport(handler))
+    r = ch.send(_payload(), config={'key': 'abc', 'url': 'https://my.bark.server'})
+    assert r.status == ChannelStatus.SENT
+    assert captured['url'] == 'https://my.bark.server/abc'
