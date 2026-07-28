@@ -840,3 +840,89 @@ def test_notifier_close_releases_admin_and_user_channels(db_engine):
     # 幂等：重复 close 不报错（admin 已 None 不再关；用户渠道 close 须自身幂等）
     notifier.close()
     assert admin_bark.close.call_count == 1  # admin 只关一次（已置 None）
+
+
+
+def test_path_b_counts_lotteries_not_tickets_when_multi_tickets_same_lottery(db_engine, monkeypatch):
+    """聚合器按彩种计数，不按注数（2026-07-28 NAS 回归）。
+
+    NAS 实测场景：用户追 1 个彩种（ssq）5 注全未中奖，旧实现文案误报「共核对 5 个
+    追投彩种」（注数当彩种数）。聚合器 _collect_user_results_range 改为按 lottery_code
+    聚合后，应报「1 个追投彩种」「未中奖彩种（1）：双色球」。
+
+    本测试锁聚合器（template 测试只手喂输入，无法防此回归）--5 ticket 同彩种，
+    断言文案是 1 不是 5。
+    """
+    with Session(db_engine) as s:
+        seed_lottery_types(s)
+        u = User(username='u', password_hash='x', role='user', invite_code='C')
+        s.add(u)
+        s.commit()
+        s.refresh(u)
+        s.add(
+            NotificationChannel(
+                user_id=u.id,
+                type='bark',
+                config_json=json.dumps({'ct': 'enc'}),
+                enabled=True,
+                key_version=1,
+            )
+        )
+        s.add(NotificationRule(user_id=u.id, lottery_code='ssq', strategy='every'))
+        dr = DrawResult(
+            lottery_code='ssq',
+            draw_no='062',
+            draw_date=datetime(2026, 6, 21, 12, 0, 0),
+            numbers_json='{"front":[1,2,3,4,5,6],"back":[7]}',
+            source='mxnzp',
+            verified=True,
+            version=1,
+        )
+        s.add(dr)
+        s.commit()
+        s.refresh(dr)
+        # 5 注 ssq 全未中奖（命中 0 注，is_win=False）
+        for _ in range(5):
+            t = Ticket(
+                user_id=u.id,
+                lottery_code='ssq',
+                play_type='single',
+                numbers_json='{"front":[10,20,30,31,32,33],"back":[16]}',
+                multiplier=1,
+                cost=200,
+                enabled=True,
+            )
+            s.add(t)
+            s.commit()
+            s.refresh(t)
+            s.add(
+                Comparison(
+                    user_id=u.id,
+                    draw_result_id=dr.id,
+                    ticket_id=t.id,
+                    hits_json='{}',
+                    prize_tier=None,
+                    prize_amount=None,
+                    is_win=False,
+                )
+            )
+        s.commit()
+        uid = u.id
+
+    bark = MagicMock()
+    bark.send.return_value = SendResult(status=ChannelStatus.SENT, error=None)
+    crypto = MagicMock()
+    crypto.decrypt.return_value = '{"key":"k","url":"https://api.day.app"}'
+    notifier = Notifier(db_engine, channels={'bark': bark}, crypto=crypto)
+    import app.notifications.notifier as mod
+
+    monkeypatch.setattr(mod, '_now_hour', lambda: 12)
+    notifier.notify_path_b(user_id=uid, date_str='2026-06-21')
+
+    args, _ = bark.send.call_args
+    payload = args[0]
+    # 按彩种计数：1 个彩种，不是 5 注
+    assert '共核对 1 个追投彩种' in payload.body, payload.body
+    assert '5 个追投彩种' not in payload.body, payload.body
+    assert '中奖 0 笔' in payload.body, payload.body
+    assert '未中奖彩种（1）：双色球' in payload.body, payload.body

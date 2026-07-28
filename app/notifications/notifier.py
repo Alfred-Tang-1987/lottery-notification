@@ -155,12 +155,16 @@ class Notifier:
             return 0  # 顺延：调度器在 DND 结束时刻重排（Task 7）
         # Step 1: Session 内读数据 + 渠道配置 + 写 pending log，然后关闭 Session
         with Session(self._engine) as s:
-            wins, loses, details = self._collect_user_results(s, user_id, date_str)
-            if wins == 0 and loses == 0:
+            tracked_count, win_details, unwon_names = self._collect_user_results(s, user_id, date_str)
+            if tracked_count == 0:
                 return 0  # 无活动，不推空消息
-            # 按策略：win_only 且无中奖 → 不推；every 则推（含未中奖汇总）
-            # 实际策略已在 _collect_user_results 中过滤，此处只需确保有内容
-            payload = build_path_b(date_str=date_str, total=wins + loses, wins=wins, win_details=details, loses=loses)
+            # 策略已在 _collect_user_results 中过滤（win_only 无中奖彩种不计入 unwon_names）
+            payload = build_path_b(
+                date_str=date_str,
+                tracked_lottery_count=tracked_count,
+                win_details=win_details,
+                unwon_lottery_names=unwon_names,
+            )
             channels_data = self._load_channels(s, user_id)
             log = NotificationLog(
                 user_id=user_id,
@@ -324,15 +328,16 @@ class Notifier:
         区间无活动则静默跳过（不推空消息）。DND 检查由调用方负责。
         """
         with Session(self._engine) as s:
-            wins, loses, details = self._collect_user_results_range(s, user_id, start_date_str, end_date_str)
-            if wins == 0 and loses == 0:
+            tracked_count, win_details, unwon_names = self._collect_user_results_range(
+                s, user_id, start_date_str, end_date_str
+            )
+            if tracked_count == 0:
                 return 0
             payload = build_path_b(
                 date_str=period_label,
-                total=wins + loses,
-                wins=wins,
-                win_details=details,
-                loses=loses,
+                tracked_lottery_count=tracked_count,
+                win_details=win_details,
+                unwon_lottery_names=unwon_names,
             )
             channels_data = self._load_channels(s, user_id)
             log = NotificationLog(
@@ -359,7 +364,23 @@ class Notifier:
         return self._collect_user_results_range(session, user_id, date_str, date_str)
 
     def _collect_user_results_range(self, session, user_id, start_date_str, end_date_str):
-        """汇总该用户指定日期区间 [start, end] 的比对结果（仅含追投彩种）。"""
+        """按彩种级聚合区间 [start, end] 比对结果（仅含追投彩种，spec §8.3 line347）。
+
+        返回 (tracked_lottery_count, win_details, unwon_lottery_names)：
+          - tracked_lottery_count: 有比对结果的追投彩种数（{N}，spec 为彩种数非注数）
+          - win_details: 中奖逐笔 [(彩种名, 奖级名, 金额分)]（每注中奖一条，{M}=len）
+          - unwon_lottery_names: 未中奖彩种名名单（{X}=len，仅 every 策略）
+
+        聚合规则（spec §7.4/§8.2）：
+          - 彩种有任一注中奖 -> 该彩种计为「中奖彩种」，每注中奖逐笔入 win_details
+            （同彩种多注中奖 -> 多条 detail，{M} 是中奖笔数）
+          - 彩种全部未中奖且策略=every -> 计为「未中奖彩种」，name 入 unwon_names
+          - 彩种全部未中奖且策略=win_only -> 不计入（win_only 无中奖不推）
+          - tracked_lottery_count = 中奖彩种数 + 未中奖(every)彩种数
+
+        旧实现按**注**累加 wins/loses 把注数当彩种数 -> 用户追 1 彩种 5 注时文案误报
+        「5 个追投彩种」（2026-07-28 NAS 实测）。改为彩种级聚合对齐 spec。
+        """
         from datetime import date as _date
 
         start = _date.fromisoformat(start_date_str)
@@ -387,9 +408,11 @@ class Notifier:
                 )
             ).all()
         )
-        wins, loses, details = 0, 0, []
         # 预读 lottery_type 名称映射
         lottery_names = {lt.code: lt.name for lt in session.exec(select(LotteryType)).all()}
+
+        # 按 lottery_code 聚合区间内、追投的 comparisons
+        by_lottery: dict[str, list[tuple[Comparison, DrawResult]]] = {}
         for c in cmps:
             dr = session.get(DrawResult, c.draw_result_id)
             if dr is None:
@@ -399,18 +422,27 @@ class Notifier:
                 continue
             if dr.lottery_code not in tracked_codes:
                 continue  # 未追投，不推
-            strategy = rules.get(dr.lottery_code, 'every')
-            if c.is_win:
-                wins += 1
-                name = lottery_names.get(dr.lottery_code, dr.lottery_code)
-                details.append((name, _tier_name(dr.lottery_code, c.prize_tier), c.prize_amount))
+            by_lottery.setdefault(dr.lottery_code, []).append((c, dr))
+
+        win_details: list[tuple[str, str, int | None]] = []
+        unwon_names: list[str] = []
+        seen_lotteries: set[str] = set()
+        for code, pairs in by_lottery.items():
+            strategy = rules.get(code, 'every')
+            winning = [(c, dr) for c, dr in pairs if c.is_win]
+            if winning:
+                for c, dr in winning:
+                    name = lottery_names.get(dr.lottery_code, dr.lottery_code)
+                    win_details.append((name, _tier_name(dr.lottery_code, c.prize_tier), c.prize_amount))
+                seen_lotteries.add(code)
             else:
-                # win_only 策略且未中奖 → 不计入汇总
+                # 无中奖：win_only 策略不推（不计入未中奖），every 计入未中奖彩种
                 if strategy == 'win_only':
                     continue
-                loses += 1
-        return wins, loses, details
+                unwon_names.append(lottery_names.get(code, code))
+                seen_lotteries.add(code)
 
+        return len(seen_lotteries), win_details, unwon_names
 
 def _tier_name(lottery_code: str, tier: int | None) -> str:
     """按彩种返回奖级名称（lottery-rules.md 权威）。"""

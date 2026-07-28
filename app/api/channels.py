@@ -58,9 +58,9 @@ _PREVIEW_DRAW_NO = '2026150'
 _PREVIEW_TIER_NAME = '二等奖'
 _PREVIEW_TIER = 2
 _PREVIEW_DATE_STR = '2026-01-01'
-_PREVIEW_TOTAL = 3
-_PREVIEW_WINS = 1
-_PREVIEW_LOSES = 2
+# path_b 预览：2 个追投彩种，1 中奖（双色球二等奖 浮动）+ 1 未中奖（大乐透）。
+_PREVIEW_TRACKED = 2
+_PREVIEW_UNWON = ['大乐透']
 
 
 class ChannelOut(BaseModel):
@@ -522,10 +522,9 @@ def template_preview(
     )
     path_b = build_path_b(
         date_str=_PREVIEW_DATE_STR,
-        total=_PREVIEW_TOTAL,
-        wins=_PREVIEW_WINS,
+        tracked_lottery_count=_PREVIEW_TRACKED,
         win_details=[(_PREVIEW_LOTTERY_NAME, _PREVIEW_TIER_NAME, None)],
-        loses=_PREVIEW_LOSES,
+        unwon_lottery_names=_PREVIEW_UNWON,
     )
     return TemplatePreview(
         path_a=TemplateBody(title=path_a.title, body=path_a.body),
