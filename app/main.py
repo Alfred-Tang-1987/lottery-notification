@@ -23,11 +23,17 @@ async def lifespan(app: FastAPI):
     from sqlmodel import Session
 
     from app.db.session import get_engine
+    from app.infrastructure.crypto import CryptoService
     from app.seeds import seed_lottery_types
 
     engine = get_engine()
     with Session(engine) as s:
         seed_lottery_types(s)
+
+    # app.state 兜底：scheduler 关闭时（测试/开发）channels 为 {}，crypto 仍可用。
+    # 端点在 scheduler 开启分支内会用 deps 里的真实 channels 覆盖。
+    app.state.crypto = CryptoService(settings.crypto_keys, settings.current_key_version)
+    app.state.channels = {}
 
     if settings.scheduler_enabled:
         from app.scheduler.backfill import run_startup_backfill
@@ -42,6 +48,7 @@ async def lifespan(app: FastAPI):
         sched.start()
         app.state.scheduler = sched
         app.state.notifier = deps['notifier']
+        app.state.channels = deps['channels']  # 覆盖兜底：真实渠道注入（crypto 已在 if 外构造）
         app.state._deps = deps  # 供 lifespan teardown close 奖金查询适配器 client
     yield
     # 关闭：先停调度器（不再派发新 job），再释放渠道资源（httpx 连接池）。
@@ -163,6 +170,8 @@ def _build_scheduler_and_deps(engine: Engine, settings: Settings):
         'notifier': notifier,
         'cwl_prize': cwl,
         'sporttery_prize': sporttery,
+        'channels': channels,
+        'crypto': crypto,
     }
     sched: BackgroundScheduler = build_scheduler(engine)
     register_all_jobs(sched, deps)

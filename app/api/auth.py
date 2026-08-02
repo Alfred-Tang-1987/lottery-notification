@@ -14,7 +14,7 @@ Spec §4.3 / §6.1 / §6.2：
 UPDATE...RETURNING 原子占用，失败即回滚（不建半截用户、不漏占码）。
 """
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
@@ -29,8 +29,15 @@ from app.api.security import (
     verify_password,
 )
 from app.config import get_cors_origins, get_settings
+from app.infrastructure.crypto import CryptoService
 from app.models import User
 from app.services.invite_service import InviteService
+from app.services.password_reset_service import (
+    PasswordResetService,
+    RateLimited,
+    RateLimiter,
+    ResetRejected,
+)
 
 router = APIRouter(prefix='/auth', tags=['auth'])
 
@@ -178,3 +185,107 @@ def logout(
 def me(user: User = Depends(current_user)) -> dict[str, object]:
     """返回当前登录用户信息（未登录 → current_user 抛 401）。"""
     return {'id': user.id, 'username': user.username, 'role': user.role}
+
+
+# ---- Plan 08：忘记密码 ----
+
+_FORGOT_UNIFORM_MSG = '若账号存在，验证码已发送至你的邮箱'
+_RESET_UNIFORM_ERR = '验证码错误或已过期'
+
+
+class ForgotPasswordIn(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+
+
+class ResetPasswordIn(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    code: str = Field(min_length=6, max_length=6, pattern=r'^\d{6}$')
+    new_password: str = Field(min_length=8, max_length=128)
+
+
+def _reset_service(request: Request, engine: Engine) -> PasswordResetService:
+    """从 app.state 取已构造 channels/crypto 组装 service（autoplan A3：不 new 渠道）。
+
+    限流器挂 app.state（进程级单例，跨请求累计）；首次访问惰性创建。
+    """
+    channels = getattr(request.app.state, 'channels', None) or {}
+    crypto = getattr(request.app.state, 'crypto', None)
+    if crypto is None:  # 防御：测试/非常规启动路径下 app.state 未接线
+        settings = get_settings()
+        crypto = CryptoService(settings.crypto_keys, settings.current_key_version)
+    limiter = getattr(request.app.state, 'password_reset_limiter', None)
+    if limiter is None:
+        limiter = RateLimiter(max_per_minute=3)
+        request.app.state.password_reset_limiter = limiter
+    admin_alert = _build_admin_alert()
+    return PasswordResetService(
+        engine,
+        email_channel=channels.get('email'),
+        crypto=crypto,
+        rate_limiter=limiter,
+        admin_alert=admin_alert,
+    )
+
+
+def _build_admin_alert():
+    """admin Bark 告警（autoplan C1）：复用 ADMIN_BARK_KEY，未配则 None。"""
+    key = get_settings().admin_bark_key
+    if not key:
+        return None
+    from app.notifications.bark import BarkChannel
+    from app.notifications.base import NotificationPayload
+    bark = BarkChannel()
+    config = {'key': key, 'url': 'https://api.day.app'}
+
+    def _alert(title: str, body: str) -> None:
+        bark.send(NotificationPayload(title=title, body=body), config)
+
+    return _alert
+
+
+@router.post('/forgot-password')
+def forgot_password(
+    body: ForgotPasswordIn,
+    request: Request,
+    session: Session = Depends(get_session_dep),
+) -> dict[str, object]:
+    """忘记密码第一步：发验证码到用户 email 渠道。
+
+    统一话术防枚举（autoplan A1）：用户不存在/无 email 渠道/SMTP 未配/60s 内
+    重发/send 失败——全部返回逐字相同的 200。仅 IP 超限 429。
+    匿名进入端点，豁免 CSRF（同 register/login）。
+    """
+    client_ip = request.client.host if request.client else 'unknown'
+    svc = _reset_service(request, session.get_bind())
+    try:
+        svc.request_reset(body.username, client_ip=client_ip, session=session)
+    except RateLimited:
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS, '请求过于频繁，请 1 分钟后再试'
+        ) from None
+    return {'ok': True, 'message': _FORGOT_UNIFORM_MSG}
+
+
+@router.post('/reset-password')
+def reset_password(
+    body: ResetPasswordIn,
+    request: Request,
+    session: Session = Depends(get_session_dep),
+    origin: str | None = Header(default=None, alias='Origin'),
+) -> dict[str, object]:
+    """忘记密码第二步：验证码 + 新密码。
+
+    Origin 校验（autoplan A5，对齐 login）：reset 是匿名 state-changing 端点，
+    跨站 Origin 拒 403——阻断「CSRF + 验证码泄露 → 接管账号」链路。
+    失败统一 400 文案（码错/过期/超 attempts/用户不存在——防枚举）。
+    """
+    if origin and origin not in get_cors_origins():
+        raise HTTPException(status.HTTP_403_FORBIDDEN, '跨站请求被拒')
+    svc = _reset_service(request, session.get_bind())
+    try:
+        svc.verify_and_reset(
+            body.username, body.code, body.new_password, session=session
+        )
+    except ResetRejected:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, _RESET_UNIFORM_ERR) from None
+    return {'ok': True}
