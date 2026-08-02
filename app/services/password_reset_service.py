@@ -243,6 +243,7 @@ class PasswordResetService:
         user = session.exec(select(User).where(User.username == username)).first()
         if user is None:
             raise ResetRejected(username)
+        uid = user.id
 
         row = session.exec(
             select(PasswordResetCode)
@@ -267,4 +268,4 @@ class PasswordResetService:
         session.add(user)
         session.add(row)
         session.commit()  # 改密 + 作废单事务单 commit
-        logger.info('password_reset_success user_id=%s', user.id)
+        logger.info('password_reset_success user_id=%s', uid)
