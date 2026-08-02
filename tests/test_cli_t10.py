@@ -208,9 +208,9 @@ def test_backfill_history_cli_stores_draws(db_engine, monkeypatch, capsys):
     """
     from datetime import date as _date
 
+    import app.cli as cli_mod
     from app.adapters.base import DrawNumbers
     from app.models import DrawResult, LotteryType
-    import app.cli as cli_mod
 
     # 种 1 个启用彩种
     with Session(db_engine) as s:

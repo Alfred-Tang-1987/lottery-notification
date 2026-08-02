@@ -260,8 +260,9 @@ def test_backfill_history_fills_when_db_empty(db_engine, monkeypatch):
 
     回填数据标记 single_source=True（无聚合双源校验，单源降级语义）。
     """
-    from app.adapters.base import DrawNumbers
     from datetime import date as _date
+
+    from app.adapters.base import DrawNumbers
     from app.models import LotteryType
 
     # 种 1 个启用彩种
@@ -367,8 +368,9 @@ def test_backfill_history_isolates_per_lottery_failure(db_engine):
 
 def test_backfill_history_idempotent_on_restart(db_engine):
     """重复调用 backfill 不会重复入库（幂等：唯一约束 + 已有数据跳过）。"""
-    from app.adapters.base import DrawNumbers
     from datetime import date as _date
+
+    from app.adapters.base import DrawNumbers
     from app.models import LotteryType
 
     with Session(db_engine) as s:

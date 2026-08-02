@@ -5,13 +5,13 @@ Spec §12.2：仪表盘首屏聚合「待兑奖 / 我的命中 / 盈亏速览 / 
 """
 
 from datetime import datetime, timedelta
+from unittest.mock import MagicMock
 from zoneinfo import ZoneInfo
 
 import pytest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 from sqlmodel import Session
-from unittest.mock import MagicMock
 
 from app.api.deps import get_session_dep
 from app.api.security import COOKIE_NAME, create_session_token
