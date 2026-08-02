@@ -225,3 +225,46 @@ class PasswordResetService:
                 )
             except Exception:
                 logger.error('password_reset_admin_alert_failed', exc_info=True)
+
+    # ---- verify_and_reset（T3） ----
+
+    def verify_and_reset(
+        self, username: str, code: str, new_password: str, *, session: Session
+    ) -> None:
+        """校验码并改密。
+
+        成功：password_hash 更新 + 码 used_at，单事务单 commit（注入 session）。
+        失败：attempts+1 与码判定同事务单 commit（autoplan A4，对齐
+        InviteService.consume 主 session 计数模式），抛 ResetRejected——
+        API 层转 400 统一文案「验证码错误或已过期」。
+        """
+        from app.api.security import hash_password  # 延迟 import 避免循环
+
+        user = session.exec(select(User).where(User.username == username)).first()
+        if user is None:
+            raise ResetRejected(username)
+
+        row = session.exec(
+            select(PasswordResetCode)
+            .where(
+                PasswordResetCode.user_id == user.id,
+                PasswordResetCode.used_at.is_(None),
+            )
+            .order_by(PasswordResetCode.id.desc())
+        ).first()
+        now = _now_naive_utc()
+        if row is None or row.expires_at <= now or row.attempts >= self._max_attempts:
+            raise ResetRejected(username)
+
+        if row.code_hash != _hash_code(code):
+            row.attempts += 1
+            session.add(row)
+            session.commit()  # 计数必须落库（防爆破），与判定同事务
+            raise ResetRejected(username)
+
+        user.password_hash = hash_password(new_password)
+        row.used_at = now
+        session.add(user)
+        session.add(row)
+        session.commit()  # 改密 + 作废单事务单 commit
+        logger.info('password_reset_success user_id=%s', user.id)
