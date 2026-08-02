@@ -203,6 +203,7 @@ def test_lifespan_starts_and_stops_scheduler(monkeypatch, db_engine):
         'compare_service': MagicMock(),
         'refill_worker': MagicMock(),
         'notifier': MagicMock(),
+        'channels': {},
     }
     monkeypatch.setattr(
         main_mod, '_build_scheduler_and_deps', lambda engine, settings: (real_sched, mock_deps)
