@@ -10,6 +10,7 @@ from app.models.notification import (
     NotificationSettings,
     NotificationLog,
 )
+from app.models.password_reset import PasswordResetCode
 from app.models.health import ApiSourceHealth
 from app.models.audit import AdminAuditLog
 from app.models.scheduler import ApschedulerJob
@@ -28,6 +29,7 @@ __all__ = [
     'NotificationLog',
     'NotificationRule',
     'NotificationSettings',
+    'PasswordResetCode',
     'PendingComparison',
     'PrizeClaim',
     'Ticket',
