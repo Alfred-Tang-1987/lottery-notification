@@ -1,32 +1,34 @@
 <!-- /autoplan restore point: /Users/alfred/.gstack/projects/gitea-lottery-notification/main-autoplan-restore-20260802-203436.md -->
 # 忘记密码（验证码自助重置）设计 spec
 
-> 日期： 2026-08-02 | 状态： 已确认（brainstorming 三节设计逐节通过）
-> 范围： 登录页「忘记密码」tab + 后端验证码重置闭环
-> 前情： 上次同功能尝试因测试在 pool_size=1 SQLite 上同测试内多次 HTTP 调用产生连接死锁而整体回滚（git 历史无残留）。本 spec §4 测试策略以此教训为核心约束。
+> 日期： 2026-08-02 | 状态： 已确认（brainstorming 三节设计逐节通过；autoplan 评审 2026-08-02 已合入决议，见文末 GSTACK REVIEW REPORT）
+> 范围： 登录页「忘记密码」tab + 后端验证码重置闭环（仅 email）+ 管理员后台重置（兜底）
+> 前情： 上次同功能尝试因测试在 pool_size=1 SQLite 上同测试内 HTTP 存活期内嵌套 Session 产生死锁而整体回滚（git 历史无残留）。本 spec §4 测试策略以此教训为核心约束。
 
 ## 1. 背景与目标
 
-系统为邀请制多用户部署（家庭 NAS）。用户忘密码目前只能线下找管理员。目标：登录页提供自助重置——用户输入用户名，系统把 6 位验证码经**该用户自己已配置的通知渠道**（email 优先）发给本人，凭验证码设新密码。
+系统为邀请制多用户部署（家庭 NAS）。用户忘密码目前只能线下找管理员。目标：登录页提供自助重置——用户输入用户名，系统把 6 位验证码经**该用户已配置的 email 通知渠道**发给本人，凭验证码设新密码。未配 email 渠道的用户，由管理员后台重置兜底。
 
 约束前提：
 - 认证用用户名（`User` 无 email 字段）；email 地址存在于用户通知渠道 `NotificationChannel(type='email')` 的加密 config 中
-- 系统 SMTP 已是部署必需项（`smtp_host/user/pass/from`），`EmailChannel` 插件就绪
+- 系统 SMTP 配置为可选（`smtp_host/user/pass/from` 在 `config.py` 全 Optional）；`EmailChannel` 插件仅在 `settings.email_enabled` 时由 main.py lifespan 构造。未配 SMTP 时，`channels` dict 无 `'email'` 键——此时 forgot 端点直接走「无可用 email 渠道」分支（提示联系管理员），**不回退到 bark/feishu**
 - 渠道插件契约：`send(payload: NotificationPayload, config: dict) -> SendResult`，永不抛异常；config 由 Fernet 解密后明文传入
-- 用户未配任何渠道 → 无法自助，统一话术不暴露，页面提示「未配置通知渠道，请联系管理员重置」
+- **渠道白名单 = 仅 email**（autoplan 决议）：验证码是认证凭证，bark/feishu 是为通知设计的明文信道（锁屏通知预览即可泄露码），且其 key 泄露概率远高于 email 地址。验证码只发 email，不退回其他渠道
+- 用户未配 email 渠道 → 无法自助，统一话术不暴露，页面提示「请联系管理员重置」
 
 ## 2. 已确认的关键决策
 
 | 决策点 | 结论 |
 |---|---|
-| 重置机制 | 验证码经用户通知渠道（非邮件链接、非管理员手动） |
-| 渠道选择 | email 优先，单渠道发送（无 email 则 bark/feishu 任一启用渠道） |
-| 未配渠道 | 响应统一话术 + `no_channel: true` 信号（§3.5），前端据以提示联系管理员 |
-| 验证码存储 | 新表 `password_reset_codes`（SHA-256 hash，不存明文），Alembic 迁移 0002 |
+| 重置机制 | **两条路径**：①验证码经用户 email 渠道自助重置 ②管理员后台重置端点兜底（未配 email 用户用） |
+| 渠道选择 | **仅 email**（autoplan 决议）。无 enabled email 渠道 → 提示联系管理员重置，不退回 bark/feishu |
+| 未配渠道 | 响应统一话术，**不**差异化暴露用户名存在性（autoplan A1：删除原 `no_channel` 信号） |
+| 验证码存储 | 新表 `password_reset_codes`（SHA-256 hash，不存明文），Alembic 迁移接 `t6f_user_note`（当前 head，非 0001） |
 | 安全策略 | 统一话术防枚举 + IP 限流 + 同用户 60s 重发间隔 + attempts≥5 作废 |
-| 前端形态 | Login.vue 扩为三 tab（登录/注册/忘记密码），forgot tab 内两步状态机 |
+| 前端形态 | Login.vue 扩为三 tab（登录/注册/忘记密码），forgot tab 独立 `<ForgotFlow>` 多步组件 |
 | 验证码参数 | 6 位数字、15 分钟有效、5 次尝试上限 |
-| 发送语义 | 验证码 ≠ 中奖通知：无 DND 顺延、无指数退避重试、无 admin Bark 告警（不复用 Notifier 编排器，独立轻量直发） |
+| 发送语义 | 验证码 ≠ 中奖通知：无 DND 顺延、无指数退避重试、无 admin Bark 告警（不复用 Notifier 编排器，独立轻量直发；send 失败的码作废走"重试+告警"策略见 §4.1） |
+| reset 端点 CSRF | **加 Origin 校验**（autoplan A5，对齐 auth.py login 现成模式），不裸豁免 |
 
 ## 3. 架构与组件
 
@@ -49,66 +51,80 @@
 
 ### 3.2 `app/services/password_reset_service.py`（新）
 
-分层纪律：service 编排，复用 `app/notifications/` 插件层（EmailChannel/BarkChannel/FeishuChannel 直接实例化），**不**经过 `Notifier`（其 DND/重试/告警语义是中奖通知的，对验证码是错的；且 `_send_with_retry` 的 `time.sleep` 退避会阻塞 HTTP worker）。
+分层纪律：service 编排，复用 `app/notifications/` 插件层（**仅 EmailChannel**），**不**经过 `Notifier`（其 DND/重试/告警语义是中奖通知的，对验证码是错的；且 `_send_with_retry` 的 `time.sleep` 退避会阻塞 HTTP worker）。
+
+**渠道实例注入（autoplan A3）**：service **不在内部 new 渠道**。main.py lifespan 已构造一组 channels（含条件构造的 EmailChannel），将其存到 `app.state.channels`；API 层从 `request.app.state.channels` 取已构造实例注入 service。service 只持有引用，不持有所有权——避免 NAS 常驻进程下 httpx.Client 重复构造泄漏。`EmailChannel` 持有的是 `smtplib`（用完即关，无长连接），但统一注入避免配置漂移。
+
+**解密复用（autoplan A3）**：抽公共函数 `decrypt_channel_config(ch_row: NotificationChannel, crypto: CryptoService) -> dict | None`（建议落 `app/infrastructure/crypto.py` 或 `app/notifications/_decrypt.py`）。`Notifier._decrypt_config`（当前私有）改为调用它，`PasswordResetService` 共用——明文拒绝、解密失败 WARNING log tag、`key_version` 失配处理只有一份实现。blast radius：Notifier 改 1 处调用，新增 1 个公共函数，无行为变化。
 
 ```python
 class PasswordResetService:
     def __init__(self, engine: Engine, *,
-                 channels: dict[str, NotifierChannel] | None = None,  # 可注入假插件
-                 rate_limiter: RateLimiter | None = None,             # 可注入，便于单测
+                 email_channel: NotifierChannel | None,   # 从 app.state.channels 注入；None=未配 SMTP
+                 crypto: CryptoService,                    # 解密渠道 config
+                 rate_limiter: RateLimiter | None = None,  # 实例属性注入（非模块级全局，autoplan M4），便于单测
                  code_ttl_minutes: int = 15,
                  max_attempts: int = 5,
                  resend_interval_seconds: int = 60): ...
 
     def request_reset(self, username: str, *, client_ip: str) -> None:
-        """统一话术语义：用户不存在/无渠道/限流跳过/send 失败——全部静默，不抛错。
+        """统一话术语义：用户不存在/无 email 渠道/SMTP 未配/限流跳过/send 失败——全部静默，不抛错。
         仅 IP 超限抛 RateLimited（API 层转 429）。"""
 
     def verify_and_reset(self, username: str, code: str, new_password: str) -> None:
-        """成功: 单事务改 password_hash + 码标 used_at。
-        失败: attempts+1 独立小事务持久化（防爆破计数不丢，
-        与 InviteService._record_failed_invite_attempt 同模式），抛 ResetRejected。"""
+        """成功: 单事务（单 commit）改 password_hash + 码标 used_at。
+        失败（码错/过期/超 attempts）: attempts+1 与码判定同事务单 commit（autoplan A4，
+        对齐 InviteService.consume 主 session 计数模式），抛 ResetRejected。"""
 ```
 
-渠道选择：email 优先；无 email 则 bark > feishu 顺序取第一个 `enabled=True` 且解密成功的渠道。解密复用现有设施（`app/infrastructure/crypto.py` 的 CipherProvider，`{"ct": ...}` 格式，解密失败 WARNING + 跳过——同 `Notifier._decrypt_config` 纪律，明文 config 绝不入日志）。
+**渠道选择**：仅查 `NotificationChannel(type='email', enabled=True)`，取第一条解密成功者。无 email 渠道或 `email_channel is None`（SMTP 未配）→ 走「无可用 email 渠道」分支（统一话术，不写码）。**不退回 bark/feishu**（autoplan 渠道白名单决议）。
 
 ### 3.3 限流器
 
-内存滑动窗口（模块级 dict + threading.Lock）：
+内存滑动窗口——**实例属性注入**（autoplan M4，非模块级全局，避免测试间状态泄漏）：
 - IP 维度：`/auth/forgot-password` 每分钟 ≤3 次，超限 → 429
 - 用户维度：同用户距上次发码 <60s → 静默跳过（仍 200 统一话术，不发新码）
 
-进程重启清零可接受——DB 侧 attempts 上限 + 码 15min TTL 是硬兜底。NAS 单进程部署，无需 Redis。
+进程重启清零可接受——DB 侧 attempts 上限 + 码 15min TTL 是硬兜底。
+
+**单进程依赖约束（autoplan M2）**：此限流器依赖 uvicorn 单 worker（Dockerfile CMD `uvicorn app.main:app --host 0.0.0.0 --port 8280` 无 `--workers`，已核 Dockerfile）。开发模式 `uv run uvicorn app.main:app --reload`（CLAUDE.md 常用命令）会启 reloader + server 两进程，IP 限流窗口实际翻倍；未来多 worker 部署须迁 Redis 或共享内存。生产 NAS 单 worker 不受影响。
 
 ### 3.4 API（`app/api/auth.py` 新增）
 
-两个匿名端点，与 register/login 一样豁免 CSRF（首次请求无 csrf cookie）：
+两个匿名端点：
 
 - `POST /auth/forgot-password` body `{username: str(1..64)}`
-  → 始终 200 `{'ok': True, 'message': '若账号存在且已配置通知渠道，验证码已发送'}`
-  → 用户存在且无渠道时响应体追加 `'no_channel': True`（§3.5）
+  → 始终 200 `{'ok': True, 'message': '若账号存在，验证码已发送至你的邮箱'}`
+  → 用户不存在 / 无 email 渠道 / SMTP 未配 / 限流跳过 —— **统一话术，不差异化响应**（autoplan A1：删除原 `no_channel` 信号）
   → IP 超限 429
 - `POST /auth/reset-password` body `{username, code: str(6 位数字), new_password: str(8..128)}`
   → 成功 200 `{'ok': True}`；失败 400 `{'detail': '验证码错误或已过期'}`（码错/过期/超 attempts/用户不存在——同文案）
 
-### 3.5 前端如何得知「未配置渠道」
+**`reset-password` 加 Origin 校验（autoplan A5）**：reset 是 state-changing（改 password_hash）但匿名。攻击场景——攻击者已知用户名 + 通过渠道泄露拿到验证码 → 诱导受害者点跨站链接 POST reset → 密码改成攻击者已知值 → 接管账号。对齐 `app/api/auth.py` login 现成模式（`auth.py:138-146`）：有 `Origin` header 须在 `cors_origins` allow-list，否则 403；无 Origin 放行（同源工具/TestClient）。**不豁免 CSRF**——与 register/login（进入认证态，豁免有意义）不同。
 
-统一话术是**对外默认值**；但「未配渠道」是用户本人可修复的合法状态，值得显式提示：
+### 3.5 用户名存在性：统一话术，不差异化泄露
 
-- `POST /auth/forgot-password` 响应体固定为统一话术，**不**区分用户存在与否
-- 但用户**存在且无任何启用渠道**时，响应增加字段 `{'ok': True, 'message': <统一话术>, 'no_channel': True}`；其余情况无此字段
-- 前端仅当 `no_channel === true` 时显示「该账号未配置通知渠道，请联系管理员重置」，否则一律显示统一话术
-- 信息论上 `no_channel=True` 泄露「用户名存在」——接受此权衡：小圈子邀请制，用户名非秘密；提示价值远大于枚举风险（login 端点已有「用户名存在才能试密码」的同级别暴露面）
+「未配 email 渠道」「SMTP 未配」「用户不存在」「限流」「send 失败」全部返回**完全相同**的 200 统一话术。
+
+**删除原 `no_channel: true` 信号（autoplan A1）**：原设计在「用户存在但未配渠道」时主动泄露用户名存在性换取提示价值，但引用「login 端点已有同级别暴露」是事实错误（`auth.py:149-150` login 是统一 401，不泄露）。未配 email 渠道的用户改由「管理员后台重置」兜底路径服务（§3.7），无需 forgot 端点暴露其存在。
 
 ### 3.6 前端 Login.vue
 
-tab: `login | register | forgot`。forgot tab 两步状态机（同 tab 内）：
+tab: `login | register | forgot`（`tab` 类型扩 `'forgot'`）。forgot 是多步状态机，**拆独立 `<ForgotFlow>` 子组件**（autoplan D1，避免硬塞进单 `submit()` 函数导致三分支×多步难测）：
 
-1. **步骤 1**：用户名输入 +「发送验证码」按钮 → POST forgot → 显示统一话术提示 → 进入步骤 2。按钮 60s 倒计时禁用（与后端重发间隔对齐）。
-   - 响应含 `no_channel: true`（§3.5）时，改显「该账号未配置通知渠道，请联系管理员重置」，不进入步骤 2。
-2. **步骤 2**：验证码 + 新密码 + 确认新密码 → 本地校验（两次密码一致、码 6 位数字）→ POST reset → 成功：提示「密码已重置，请登录」+ 自动切回 login tab；失败：显示 400 文案。
+1. **步骤 1**：用户名输入 +「发送验证码」按钮 → POST forgot → 显示统一话术提示 → 进入步骤 2。按钮 60s 倒计时禁用（与后端重发间隔对齐，autoplan D2）。
+2. **步骤 2**：验证码 + 新密码 + 确认新密码（**二次确认输入框**，autoplan D2）→ 本地校验（两次密码一致、码 6 位数字）→ POST reset → 成功：提示「密码已重置，请登录」+ 自动切回 login tab；失败：显示 400 文案。
+
+**交互态规约（autoplan D2）**：步骤指示器（1/2，`aria-current="step"`）；新密码长度即时提示（≥8）。
 
 `autocomplete`：验证码 `one-time-code`，新密码 `new-password`。
+
+### 3.7 管理员后台重置（autoplan 决议：兜底未配 email 用户）
+
+未配 email 渠道的用户无法自助重置。新增管理员端点兜底（邀请制场景，admin 在线可即时处理）：
+
+- `POST /admin/users/{id}/reset-password`（挂 `current_admin` 依赖）→ admin 直接设新密码（或生成随机临时密码返回给 admin，由 admin 线下转交）→ 记 audit log（对齐现有 admin 操作审计 pattern）
+- 端点形态、audit 字段、admin 鉴权对齐现有 `app/api/admin.py` 管理员操作
 
 ## 4. 数据流与错误处理
 
@@ -118,17 +134,24 @@ tab: `login | register | forgot`。forgot tab 两步状态机（同 tab 内）�
 POST /auth/forgot-password {username}
  1. 限流器查 IP（超限 → 429）
  2. session（get_session_dep 注入）查用户 → 不存在 → 200 统一话术（INFO log）
- 3. 查该用户启用渠道，email 优先 → 无渠道 → 200 统一话术 + no_channel=true（INFO log，不写码）
+ 3. 查该用户启用 email 渠道 → 无 email 渠道或 SMTP 未配（email_channel is None）
+    → 200 统一话术（INFO log，不写码，不退回 bark/feishu）
  4. 同用户 60s 内已有码 → 200 统一话术（不发新码）
  5. secrets 生成 6 位数字码
  6. 事务A（单 commit）: UPDATE 旧活跃码 used_at=now + INSERT 新码行 → commit
  7. 事务外: 解密渠道 config → 插件 send(NotificationPayload(
       title='【兑奖了吗】密码重置验证码',
       body='验证码 123456，15 分钟内有效。若非本人操作请忽略。'))
- 8. send 失败 → 事务B: 码 used_at=now 标作废 + WARNING(exc_info) → 仍 200 统一话术
+ 8. send 失败 → 事务B（重试+告警，autoplan C1 决议）:
+    码 used_at=now 标作废，本地短退避重试 2-3 次（秒级，非 Notifier 指数退避）；
+    仍失败 → ERROR 级日志 + admin Bark 告警让运维介入，仍返回 200 统一话术
 ```
 
-关键事务纪律：渠道 `send()` 在 DB 事务外调用（先 commit 码落库再 send）——HTTP 路径不拿写锁等 SMTP 网络 IO。代价：send 失败留一条作废记录（可审计，无害）。
+关键事务纪律：渠道 `send()` 在 DB 事务外调用（先 commit 码落库再 send）——HTTP 路径不拿写锁等 SMTP 网络 IO。
+
+**事务B 失败处理（autoplan C1）**：send 成功但事务B（作废码）失败会留"幽灵活码"——活码在 15min TTL 内继续接收 reset 尝试计数，攻击者知用户名即可持续打错码消耗用户 attempts 配额（DoS，非爆破）。决议：事务B 失败时本地短退避重试 2-3 次，仍失败则 ERROR 告警；**不回滚事务A**（保护"HTTP 不持写锁等网络 IO"核心前提）。`send` 用 `httpx timeout=10`（bark/feishu 已是 10s），避免 EmailChannel 15s 长 SMTP 阻塞。
+
+**与 APScheduler 写不互斥（autoplan M1）**：send 期间不持 DB 连接（事务A 关 Session 后 send，与 Notifier 路径A/B 一致）；APScheduler jobstore 写与事务A/B 抢 pool_size=1 唯一写连接的边缘场景由 `busy_timeout=5000ms` 兜底。
 
 ### 4.2 错误矩阵
 
@@ -136,12 +159,12 @@ POST /auth/forgot-password {username}
 |---|---|---|
 | 用户名不存在（forgot） | 200 统一话术 | INFO |
 | 用户名不存在（reset） | 400 统一文案 | 无码可查，直接拒绝 |
-| 用户无渠道 | 200 统一话术 + `no_channel: true` | INFO，不写码 |
+| 用户无 email 渠道 / SMTP 未配 | 200 统一话术（**与不存在同**，autoplan A1） | INFO，不写码 |
 | 渠道 config 解密失败 | 视同 send 失败 | WARNING（不含明文），码作废 |
-| 渠道 send 失败 | 200 统一话术 | WARNING(exc_info)，码作废 |
+| 渠道 send 失败 | 200 统一话术 | WARNING(exc_info)，码作废 + 事务B 重试（§4.1 step 8） |
 | 60s 内重复请求 | 200 统一话术 | 不发新码 |
 | IP 超限（>3/min） | 429 | 不写码 |
-| 码错误 / 过期 / attempts≥5 | 400 统一文案 | attempts+1 独立持久化 |
+| 码错误 / 过期 / attempts≥5 | 400 统一文案 | attempts+1 与码判定同事务单 commit（autoplan A4） |
 | 新密码 <8 位 / 码非 6 位数字 | 422（pydantic） | 无 |
 
 防枚举回归要求：测试逐字断言「用户不存在」与「正常发送」的 forgot 响应体完全一致；「码错误」与「用户不存在」的 reset 响应体完全一致。
@@ -150,15 +173,20 @@ POST /auth/forgot-password {username}
 
 - 6 位数字码 + 5 次尝试 + 15min TTL → 在线爆破需期望 50 万次尝试，远超上限
 - 码只存 SHA-256 → DB 泄露不暴露有效码
-- 统一话术 + login 已有的统一 401 纪律一致 → 用户名不可枚举
+- 统一话术（删 `no_channel`，autoplan A1）+ login 已有的统一 401 纪律一致 → 用户名不可枚举
 - code 生成用 `secrets`（非 `random`）
-- 端点匿名但无状态变更泄露：forgot 唯一副作用是向**该用户自己的渠道**发码；reset 要求持有码（知识因子）
+- **渠道白名单 = 仅 email**（autoplan Challenge 1）：原方案 email 优先 + bark/feishu 退回，在 Bark key 泄露场景下退化为"知用户名即可重置"（攻击者调 forgot，码发到泄露的 Bark 设备）。仅走 email 后该风险窗口基本消解——email 地址泄露概率远低于 Bark key。未配 email 用户走管理员后台重置（§3.7）
+- **reset 端点 Origin 校验**（autoplan A5）：阻断"CSRF + 验证码泄露 → 接管账号"链路。攻击者诱导受害者点跨站链接改密码成攻击者已知值；Origin 校验对齐 login 现成模式（`auth.py:138-146`）
+- **幽灵活码 DoS 分析**（autoplan C1）：send 成功但事务B 失败时，活码在 TTL 内继续接收 attempts 计数——攻击者知用户名即可持续打错码锁码（DoS 迫使用户赶在 5 次错码前提交，非爆破）。缓解：事务B 重试+告警（§4.1 step 8），活码被新请求顶替后攻击者须从头来过。LAN 威胁模型下 IP 限流几乎失效，DB attempts 是硬兜底
+- forgot 唯一副作用是向该用户 email 渠道发码；reset 要求持有码（知识因子）+ Origin 校验
 
 ## 5. 测试策略（核心：pool_size=1 死锁规避）
 
-### 5.1 铁律（上次回滚的根源教训 + test_admin.py 已验证 pattern）
+### 5.1 铁律（autoplan C2 重写：原"每测试最多 1 次 HTTP"误诊根因）
 
-1. **每个测试最多 1 次 HTTP 调用**
+**根因实证**：`tests/api/test_auth.py:46-67` `test_register_login_logout_flow` 单测做 6 次 HTTP（register/login/me/csrf/logout/me），全部通过，554 tests green。死锁根源**不是**"多 HTTP 调用"，而是"HTTP 请求存活期内（依赖注入的 Session 还活着）嵌套开 `with Session`"。`test_auth.py:90` 是正确模式：HTTP 完成后才开 Session 验证。
+
+1. **HTTP 调用之间串行即可，无需拆测试**（原"每测试最多 1 次 HTTP"作废，autoplan C2）
 2. 准备数据用独立 `_seed_*` 辅助函数（`with Session` 开→写→commit→**关闭**），完成后才做 HTTP 调用
 3. HTTP 调用后如需验证 DB 状态，**再开新的** `with Session`（此时请求已结束、连接已归还）
 4. **绝不**在 HTTP 调用进行中/依赖注入 session 存活期内嵌套开 Session；**绝不**嵌套 `with Session`
@@ -180,27 +208,31 @@ def _seed_code(db_engine, user_id: int, code: str = '123456', *,
 
 def _client(db_engine, monkeypatch, fake_send):
     """TestClient + dependency_overrides[get_session_dep] +
-    假渠道插件注入（fake_send 捕获 payload 供断言）。"""
+    假渠道插件注入（fake_send 捕获 payload 供断言）+
+    每测试 new 一个 RateLimiter 实例注入（autoplan M4，非模块级全局，避免测试间状态泄漏）。"""
 ```
 
-### 5.3 后端用例（tests/api/test_password_reset.py，每条 ≤1 次 HTTP）
+### 5.3 后端用例（tests/api/test_password_reset.py，HTTP 间串行不拆测试，autoplan C2）
 
 | # | 用例 | 要点 |
 |---|---|---|
 | 1 | forgot 成功发码 | 200 统一话术；fake_send 收 1 次且 body 含 6 位码；新 Session 断言码行（hash 非明文、expires≈15min） |
-| 2 | forgot 用户不存在 | 200 **逐字同** #1 响应体；fake_send 未调；响应无 `no_channel` |
-| 3 | forgot 用户无渠道 | 200 同话术 + `no_channel: true`；无码行 |
-| 4 | forgot email 优先于 bark | 配双渠道；fake_send 只走 email 插件 |
-| 5 | forgot 60s 内重发静默跳过 | _seed 预置 30s 前的码；fake_send 未调；仍只有 1 条码；响应无 `no_channel` |
-| 6 | IP 限流 429 | service 单元测试直接调 4 次 request_reset（**不走 HTTP**）；HTTP 层只测一次超限响应（可选） |
+| 2 | forgot 用户不存在 | 200 **逐字同** #1 响应体；fake_send 未调 |
+| 3 | forgot 用户无 email 渠道 | 200 **逐字同** #1（autoplan A1：删 no_channel，不差异化）；fake_send 未调；无码行 |
+| 4 | forgot SMTP 未配 | email_channel=None；200 **逐字同** #1；fake_send 未调 |
+| 5 | forgot 60s 内重发静默跳过 | _seed 预置 30s 前的码；fake_send 未调；仍只有 1 条码 |
+| 6 | IP 限流 429 | service 单元测试直接调 4 次 request_reset（**不走 HTTP**，RateLimiter 实例注入 autoplan M4）；HTTP 层只测一次超限响应（可选） |
 | 7 | forgot send 失败码作废 | fake_send 返回 FAILED；200；新 Session 断言 used_at 非空 |
-| 8 | reset 成功 | 200；新 Session 断言 password_hash 已变、码 used_at 非空 |
-| 9 | reset 码错误 | 400；attempts=1、password_hash 未变 |
+| 7b | **send 成功但事务B 失败 → 重试+告警**（autoplan C1） | 模拟事务B 第一次失败、第二次成功：码最终 used；或全失败：ERROR 告警触发（fake admin_bark 捕获） |
+| 8 | reset 成功 | 200；新 Session 断言 password_hash 已变、码 used_at 非空（**单事务单 commit**，autoplan A4） |
+| 9 | reset 码错误 | 400；新 Session 断言 attempts=1、password_hash 未变（**attempts+1 主 session 单事务**，A4） |
 | 10 | reset attempts≥5 拒绝 | _seed attempts=5；正确码也 400 |
 | 11 | reset 码过期拒绝 | _seed expired；400 |
 | 12 | reset 用户不存在 | 400 **逐字同** #9 响应体 |
 | 13 | reset 新密码太短 | 422 pydantic |
 | 14 | reset 旧码被新码顶替后失效 | _seed 两条码（旧 used、新活跃）；旧码 400 |
+| 15 | **reset Origin 校验**（autoplan A5） | 跨站 Origin → 403；同源/无 Origin → 正常处理 |
+| 16 | **管理员后台重置**（§3.7） | admin POST /admin/users/{id}/reset-password → 200；新 Session 断言 password_hash 已变 + audit log 有记录；非 admin → 403 |
 
 ### 5.4 前端用例（web vitest）
 
@@ -221,19 +253,20 @@ cd web && npm test                                   # 前端 vitest
 
 | Task | 内容 | 测试 |
 |---|---|---|
-| T1 | 迁移 0002 + `PasswordResetCode` model | model 默认值/约束断言 |
-| T2 | `PasswordResetService.request_reset` + 限流器 | 用例 1-7（service 级为主） |
-| T3 | `PasswordResetService.verify_and_reset` | 用例 8-14 |
-| T4 | API 端点接线（统一话术/CSRF 豁免/429/pydantic） | HTTP 层用例 |
-| T5 | Login.vue forgot tab + vitest | §5.4 |
+| T0 | **抽公共 `decrypt_channel_config` 函数**（autoplan A3）：Notifier._decrypt_config 改调它，无行为变化 | Notifier 回归 554 全绿 |
+| T1 | 迁移（`down_revision='t6f_user_note'`，autoplan F1）+ `PasswordResetCode` model | model 默认值/约束断言 |
+| T2 | `PasswordResetService.request_reset` + 限流器（实例注入，M4） + 仅 email 渠道选择 | 用例 1-7b（service 级为主） |
+| T3 | `PasswordResetService.verify_and_reset`（主 session 单事务，A4） | 用例 8-14 |
+| T4 | API 端点接线（统一话术删 no_channel / reset Origin 校验 A5 / 429 / pydantic）+ main.py channels 注入 app.state | HTTP 层用例（含 15 Origin 校验） |
+| T5 | 管理员后台重置端点 + audit log（§3.7） | 用例 16 |
+| T6 | Login.vue forgot tab + `<ForgotFlow>` 子组件 + vitest | §5.4 |
 
 ## 7. 明确不做（YAGNI）
 
 - 邮件重置链接（需公开域名，NAS 内网部署不适用）
-- 管理员后台重置按钮（本次不做；未配渠道用户线下找管理员，沿用现状）
 - 验证码 Fernet 加密存储（短寿命码 SHA-256 已够）
-- 多渠道同发 / 用户自选渠道
-- Redis 限流（单进程内存滑窗足够）
+- 多渠道同发 / 用户自选渠道 / **bark-feishu 退回**（autoplan：仅 email，渠道白名单决议）
+- Redis 限流（单进程内存滑窗足够，多 worker 时再迁）
 - 重置后强制下线其他会话（JWT 无服务端状态，7 天 cookie 自然过期；小圈子风险可接受）
 
 ---
