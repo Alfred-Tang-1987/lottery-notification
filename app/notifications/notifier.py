@@ -1,4 +1,3 @@
-import json
 import logging
 import time
 from datetime import UTC, datetime
@@ -17,6 +16,7 @@ from app.models import (
     NotificationRule,
     Ticket,
 )
+from app.notifications._decrypt import decrypt_channel_config
 from app.notifications.base import ChannelStatus, NotificationPayload, NotifierChannel, SendResult
 from app.notifications.templates import build_path_a, build_path_b
 
@@ -258,37 +258,8 @@ class Notifier:
         return last
 
     def _decrypt_config(self, ch_row: NotificationChannel) -> dict | None:
-        """解密渠道配置。只接受 {"ct": ...} 格式，拒绝明文（spec §8.1）。
-
-        解密失败（Fernet key 失配 / 密文损坏 / key_version 轮换错位）须记 WARNING——
-        bare except 静默返回 None 会让该用户该渠道永不推送且运维无感知，破坏「中奖永不
-        静默漏通知」（spec §10）。明文拒绝属配置校验，单独记 INFO 便于排查。
-        """
-        raw = json.loads(ch_row.config_json)
-        if 'ct' not in raw:
-            logger.warning(
-                'notify_decrypt_skip_plaintext user_id=%s channel_id=%s type=%s '
-                '（spec §8.1 拒绝明文，疑似旧数据/手改）',
-                ch_row.user_id,
-                ch_row.id,
-                ch_row.type,
-            )
-            return None  # 明文拒绝
-        try:
-            blob = (ch_row.key_version, raw['ct'])  # 加密存储 {"ct": ...}
-            plaintext = self._crypto.decrypt(blob)
-            return json.loads(plaintext)
-        except Exception:
-            logger.warning(
-                'notify_decrypt_failed user_id=%s channel_id=%s type=%s key_version=%s '
-                '（密文损坏 / key_version 失配 / Fernet key 轮换错位，该渠道将跳过）',
-                ch_row.user_id,
-                ch_row.id,
-                ch_row.type,
-                ch_row.key_version,
-                exc_info=True,
-            )
-            return None
+        """委托公共实现（Plan 08 / T0 抽出，PasswordResetService 共用）。"""
+        return decrypt_channel_config(ch_row, self._crypto)
 
     def _alert_admin(self, payload: NotificationPayload, *, user_id: int) -> None:
         """全渠道失败 → admin Bark fallback（spec §8.1/§10）。
