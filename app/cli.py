@@ -84,6 +84,33 @@ def cmd_create_admin(argparse_ns) -> None:
     print(f'admin {argparse_ns.username} 创建成功')
 
 
+def cmd_reset_password(argparse_ns) -> None:
+    """重置已存在用户的密码（运维兜底：admin 忘密码且自助忘记密码流程不可用时）。
+
+    与 ``create-admin`` 互补：create-admin 仅 bootstrap 首个 admin（重复 username 抛
+    IntegrityError）；本命令改已存在用户的 ``password_hash``，不动其他字段。
+
+    silent-failure 防护：
+    - 用户不存在 -> sys.exit(1)：不静默成功（否则运维误以为已重置，实则无人能登）。
+    - 空密码 -> sys.exit(2)：不静默写空密码哈希（bcrypt 接受空串，但空密码 = 无认证）。
+    """
+    from sqlmodel import select
+
+    password = resolve_password(argparse_ns)
+    if not password:
+        print('ERROR: password 不能为空（提供 --password / ADMIN_PASSWORD / 交互输入）', file=sys.stderr)
+        sys.exit(2)
+    with Session(engine) as s:
+        user = s.exec(select(User).where(User.username == argparse_ns.username)).first()
+        if user is None:
+            print(f'ERROR: 用户 {argparse_ns.username} 不存在', file=sys.stderr)
+            sys.exit(1)
+        user.password_hash = hash_password(password)
+        s.add(user)
+        s.commit()  # 单事务单 commit（silent-failure：状态变更只 commit 一次）
+    print(f'{argparse_ns.username} 密码已重置')
+
+
 def cmd_smoke(argparse_ns) -> None:
     """手动触发一期闭环冒烟（spec §13 Phase 1.0.13）。
 
@@ -157,6 +184,16 @@ def main(argv=None) -> None:
         '避免密码进 shell history / ps）',
     )
     ca.set_defaults(func=cmd_create_admin)
+
+    rp = sub.add_parser('reset-password', help='重置已存在用户的密码（运维兜底）')
+    rp.add_argument('--username', required=True)
+    rp.add_argument(
+        '--password',
+        default=None,
+        help='新密码；省略则读 ADMIN_PASSWORD 环境变量，再省略则交互 prompt（推荐，'
+        '避免密码进 shell history / ps）',
+    )
+    rp.set_defaults(func=cmd_reset_password)
 
     smoke = sub.add_parser('ssq', help='手动触发一期 ssq 端到端冒烟')
     smoke.set_defaults(func=cmd_smoke)
