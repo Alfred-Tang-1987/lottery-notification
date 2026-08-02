@@ -108,6 +108,10 @@ class PasswordResetService:
         全部取到局部变量；commit 后绝不触碰 session 挂接对象——过期行任一属性访问
         都会重新占用唯一连接，事务B 的短 Session 将拿不到连接（QueuePool deadlock）。
         故解密也在 commit 前做（纯 CPU，不涉网络），解密失败直接不写码静默返回。
+
+        已知时序暴露（终审接受的权衡）：send 路径（同步 SMTP）天然慢于各早退分支，
+        本端点统一 200 无法完全抹平延迟差；枚举面受 3/min IP 限流约束，且部署为
+        LAN 内网威胁模型，故不做时序补盲（final review 认定的可接受残留）。
         """
         if not self._rate_limiter.hit(client_ip):
             raise RateLimited(client_ip)
@@ -257,13 +261,17 @@ class PasswordResetService:
         if row is None or row.expires_at <= now or row.attempts >= self._max_attempts:
             raise ResetRejected(username)
 
+        # 双分支等量 bcrypt，消除时序侧信道：成败两路各执行一次 hash_password
+        #（~100-300ms），攻击者无法以延迟区分码对错（统一话术防枚举的时序层保障）。
+        new_hash = hash_password(new_password)
+
         if row.code_hash != _hash_code(code):
             row.attempts += 1
             session.add(row)
             session.commit()  # 计数必须落库（防爆破），与判定同事务
             raise ResetRejected(username)
 
-        user.password_hash = hash_password(new_password)
+        user.password_hash = new_hash
         row.used_at = now
         session.add(user)
         session.add(row)
