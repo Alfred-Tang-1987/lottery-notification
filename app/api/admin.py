@@ -5,9 +5,11 @@
 """
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
 from app.api.deps import current_user, get_session_dep, require_admin, verify_csrf
+from app.api.security import hash_password
 from app.models import ApiSourceHealth, DrawResult, PendingComparison, User
 from app.services.audit_service import write_audit
 
@@ -77,6 +79,43 @@ def force_verify(
 def system_health(session: Session = Depends(get_session_dep)):
     sources = session.exec(select(ApiSourceHealth)).all()
     return {'sources': [{'source': s.source, 'status': s.status} for s in sources]}
+
+
+class AdminResetPasswordIn(BaseModel):
+    new_password: str = Field(min_length=8, max_length=128)
+
+
+@router.post('/users/{user_id}/reset-password')
+def admin_reset_password(
+    user_id: int,
+    body: AdminResetPasswordIn,
+    admin: User = Depends(current_user),
+    session: Session = Depends(get_session_dep),
+    _csrf_ok: None = Depends(verify_csrf),
+):
+    """管理员后台重置用户密码（Plan 08 / T5，spec §3.7）。
+
+    未配 email 渠道用户无法自助重置时的兜底路径（邀请制场景，admin 线下告知新密码）。
+    改密 + AdminAuditLog 单事务原子 commit（对齐 force_verify pattern）；
+    审计 new_values 不含密码明文（write_audit 脱敏只对 dict key，此处干脆不传）。
+    """
+    user = session.get(User, user_id)
+    if user is None:
+        raise HTTPException(404, '用户不存在')
+    uid, uname = user.id, user.username
+    user.password_hash = hash_password(body.new_password)
+    session.add(user)
+    write_audit(
+        session,
+        admin_id=admin.id,
+        action='reset_password',
+        target_type='user',
+        target_id=str(user_id),
+        new_values={'username': user.username, 'by': 'admin_reset'},
+        commit=False,
+    )
+    session.commit()
+    return {'id': uid, 'username': uname}
 
 
 # /push-logs 已迁移至 app/api/admin_ext.py（6 维筛选 + 分页 envelope PushLogPageOut，
