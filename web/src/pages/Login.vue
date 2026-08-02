@@ -2,19 +2,27 @@
 import { ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { apiPost } from '../api/client';
+import ForgotFlow from '../components/ForgotFlow.vue';
 
 const router = useRouter();
-const tab = ref<'login' | 'register'>('login');
+const tab = ref<'login' | 'register' | 'forgot'>('login');
 const form = ref({
   username: '',
   password: '',
   invite_code: '',
 });
 const err = ref('');
+const resetDoneMsg = ref('');
 const loading = ref(false);
+
+function onResetDone() {
+  tab.value = 'login';
+  resetDoneMsg.value = '密码已重置，请登录';
+}
 
 async function submit() {
   err.value = '';
+  resetDoneMsg.value = '';
   loading.value = true;
   try {
     if (tab.value === 'login') {
@@ -65,9 +73,19 @@ async function submit() {
         >
           注册
         </button>
+        <button
+          type="button"
+          role="tab"
+          :aria-selected="tab === 'forgot'"
+          class="tab"
+          :class="{ active: tab === 'forgot' }"
+          @click="tab = 'forgot'"
+        >
+          忘记密码
+        </button>
       </div>
 
-      <form @submit.prevent="submit">
+      <form v-if="tab !== 'forgot'" @submit.prevent="submit">
         <label class="field"
         >
           <span class="field-label">用户名</span>
@@ -109,12 +127,16 @@ async function submit() {
           />
         </label>
 
+        <p v-if="resetDoneMsg" class="info" role="status">{{ resetDoneMsg }}</p>
+
         <p v-if="err" class="error" role="alert">{{ err }}</p>
 
         <button type="submit" class="submit" :disabled="loading">
           {{ loading ? '请稍候…' : (tab === 'login' ? '登录' : '注册') }}
         </button>
       </form>
+
+      <ForgotFlow v-else @done="onResetDone" />
 
       <p class="hint">理性购彩 量力而行 · 彩票为独立随机事件，历史不代表未来</p>
     </div>
@@ -215,6 +237,15 @@ input:focus-visible {
   margin-bottom: 16px;
   padding: 10px 12px;
   background: #fef2f2;
+  border-radius: var(--radius);
+}
+
+.info {
+  color: var(--fg);
+  font-size: var(--text-sm);
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  background: var(--surface-2);
   border-radius: var(--radius);
 }
 
