@@ -12,7 +12,7 @@ import pytest
 from cryptography.fernet import Fernet
 from sqlmodel import Session, select
 
-from app.api.security import hash_password, verify_password  # noqa: F401 (brief 要求双 import)
+from app.api.security import verify_password
 from app.infrastructure.crypto import CryptoService
 from app.models import NotificationChannel, PasswordResetCode, User
 from app.notifications.base import ChannelStatus, SendResult
