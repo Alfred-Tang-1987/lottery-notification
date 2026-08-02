@@ -6,12 +6,13 @@
 """
 
 import json
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from cryptography.fernet import Fernet
 from sqlmodel import Session, select
 
+from app.api.security import hash_password, verify_password  # noqa: F401 (brief 要求双 import)
 from app.infrastructure.crypto import CryptoService
 from app.models import NotificationChannel, PasswordResetCode, User
 from app.notifications.base import ChannelStatus, SendResult
@@ -19,6 +20,7 @@ from app.services.password_reset_service import (
     PasswordResetService,
     RateLimited,
     RateLimiter,
+    ResetRejected,
 )
 
 _KEY = Fernet.generate_key().decode()
@@ -187,3 +189,97 @@ def test_request_ip_rate_limited_raises(db_engine):
     with pytest.raises(RateLimited):
         _request(db_engine, svc)  # 第 3 次超限（窗口内 2 次已记）
     assert len(fake.calls) == 2  # 超限次未发码
+
+
+def _seed_code(db_engine, user_id: int, code='123456', *, expired=False,
+               attempts=0, used=False) -> int:
+    """独立 Session 直接写码行。返回 code_id。"""
+    import hashlib as _hl
+    now = datetime.now(UTC).replace(tzinfo=None)
+    with Session(db_engine) as s:
+        row = PasswordResetCode(
+            user_id=user_id,
+            code_hash=_hl.sha256(code.encode()).hexdigest(),
+            channel_type='email',
+            expires_at=now + timedelta(minutes=-1 if expired else 15),
+            attempts=attempts,
+            used_at=now if used else None,
+        )
+        s.add(row)
+        s.commit()
+        s.refresh(row)
+        return row.id
+
+
+def _verify(db_engine, svc, username='alice', code='123456', new_pw='newpass123'):
+    with Session(db_engine) as s:
+        svc.verify_and_reset(username, code, new_pw, session=s)
+
+
+def _svc_no_send(db_engine) -> PasswordResetService:
+    return PasswordResetService(
+        db_engine, email_channel=FakeEmailChannel(), crypto=_crypto(),
+    )
+
+
+def test_reset_success_changes_password_consumes_code(db_engine):
+    uid = _seed_user(db_engine)
+    _seed_code(db_engine, uid)
+    _verify(db_engine, _svc_no_send(db_engine))
+    with Session(db_engine) as s:
+        u = s.get(User, uid)
+        assert verify_password('newpass123', u.password_hash)
+        row = s.exec(select(PasswordResetCode)).first()
+        assert row.used_at is not None  # 同事务作废
+
+
+def test_reset_wrong_code_increments_attempts(db_engine):
+    uid = _seed_user(db_engine)
+    _seed_code(db_engine, uid)
+    with pytest.raises(ResetRejected):
+        _verify(db_engine, _svc_no_send(db_engine), code='000000')
+    with Session(db_engine) as s:
+        row = s.exec(select(PasswordResetCode)).first()
+        assert row.attempts == 1        # attempts+1 主 session 单事务（A4）
+        assert row.used_at is None
+        u = s.get(User, uid)
+        assert not verify_password('newpass123', u.password_hash)
+
+
+def test_reset_attempts_exhausted_rejected(db_engine):
+    uid = _seed_user(db_engine)
+    _seed_code(db_engine, uid, attempts=5)
+    with pytest.raises(ResetRejected):
+        _verify(db_engine, _svc_no_send(db_engine))  # 正确码也拒
+    with Session(db_engine) as s:
+        u = s.get(User, uid)
+        assert not verify_password('newpass123', u.password_hash)
+
+
+def test_reset_expired_code_rejected(db_engine):
+    uid = _seed_user(db_engine)
+    _seed_code(db_engine, uid, expired=True)
+    with pytest.raises(ResetRejected):
+        _verify(db_engine, _svc_no_send(db_engine))
+
+
+def test_reset_used_code_rejected(db_engine):
+    uid = _seed_user(db_engine)
+    _seed_code(db_engine, uid, used=True)
+    with pytest.raises(ResetRejected):
+        _verify(db_engine, _svc_no_send(db_engine))
+
+
+def test_reset_unknown_user_rejected(db_engine):
+    with pytest.raises(ResetRejected):
+        _verify(db_engine, _svc_no_send(db_engine), username='ghost')
+
+
+def test_reset_old_code_invalidated_after_new(db_engine):
+    """旧码被新码顶替（used_at 已置）后不可用。"""
+    uid = _seed_user(db_engine)
+    _seed_code(db_engine, uid, code='111111', used=True)   # 旧码已作废
+    _seed_code(db_engine, uid, code='222222')              # 新码活跃
+    with pytest.raises(ResetRejected):
+        _verify(db_engine, _svc_no_send(db_engine), code='111111')
+    _verify(db_engine, _svc_no_send(db_engine), code='222222')  # 新码可用
