@@ -104,7 +104,7 @@ def test_backfill_draw_costs_skips_draws_without_tickets(db_engine, monkeypatch)
     import app.cli as cli_mod
 
     monkeypatch.setattr(cli_mod, 'engine', db_engine)
-    uid = _seed_user(db_engine)
+    _seed_user(db_engine)
     # 只造 DrawResult，无 ticket
     with Session(db_engine) as s:
         s.add(DrawResult(

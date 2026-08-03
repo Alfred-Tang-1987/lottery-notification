@@ -15,9 +15,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-import pytest
 from cryptography.fernet import Fernet
-from sqlalchemy import inspect
 from sqlmodel import Session, select
 
 from app.models import DrawCost, DrawResult, LotteryType, Ticket, User
