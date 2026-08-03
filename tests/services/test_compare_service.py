@@ -12,6 +12,7 @@ from sqlmodel import Session, select
 
 from app.models import (
     Comparison,
+    DrawCost,
     DrawResult,
     PendingComparison,
     PrizeClaim,
@@ -391,3 +392,98 @@ def test_correction_resets_unresolved_so_row_reenters_refill(db_engine):
         cmp = s.get(Comparison, cmp_id)
         assert cmp.unresolved is False, '官方更正重比命中须重置 unresolved=False，否则该行永久卡死、永不再查官方金额'
         assert cmp.corrected_at is not None  # 确认走了 existing 更新分支
+
+
+# ---------------------------------------------------------------------------
+# DrawCost 记账（spec §4：成本按开奖日记账；只要有 enabled 追投注就记）
+# ---------------------------------------------------------------------------
+
+
+def test_compare_records_draw_cost_per_user(db_engine):
+    """比对一期 -> DrawCost 落库，cost=该用户该彩种该期所有 enabled 追投注 cost 之和。"""
+    with Session(db_engine) as s:
+        u = _make_user(s)
+        uid = u.id
+        _seed_ticket(s, u.id)  # cost=200
+        t2 = Ticket(
+            user_id=u.id,
+            lottery_code='ssq',
+            play_type='single',
+            numbers_json=json.dumps({'front': [1, 2, 3, 4, 5, 6], 'back': [7]}),
+            multiplier=1,
+            append=False,
+            cost=300,
+            enabled=True,
+        )
+        s.add(t2)
+        s.commit()
+        dr = _seed_draw(s)
+        draw_date = dr.draw_date
+    CompareService(db_engine).process_pending()
+    with Session(db_engine) as s:
+        dc = s.exec(select(DrawCost)).first()
+        assert dc is not None, '比对后应记 DrawCost'
+        assert dc.user_id == uid
+        assert dc.lottery_code == 'ssq'
+        assert dc.draw_no == '062'
+        assert dc.cost == 500  # 200 + 300
+        assert dc.draw_date == draw_date  # 取自 DrawResult.draw_date
+
+
+def test_compare_draw_cost_excludes_disabled_tickets(db_engine):
+    """disabled 注不计入期次成本（比对范围由 enabled 号码池决定）。"""
+    with Session(db_engine) as s:
+        u = _make_user(s)
+        _seed_ticket(s, u.id)  # cost=200 enabled
+        s.add(Ticket(
+            user_id=u.id,
+            lottery_code='ssq',
+            play_type='single',
+            numbers_json=json.dumps({'front': [1, 2, 3, 4, 5, 6], 'back': [7]}),
+            multiplier=1, append=False, cost=999, enabled=False,
+        ))
+        s.commit()
+        _seed_draw(s)
+    CompareService(db_engine).process_pending()
+    with Session(db_engine) as s:
+        dc = s.exec(select(DrawCost)).first()
+        assert dc.cost == 200  # 仅 enabled 的 200
+
+
+def test_compare_draw_cost_idempotent_on_reprocess(db_engine):
+    """更正重比（重新认领 outbox）-> DrawCost 原地更新，不重复记账、不产生第二行。"""
+    with Session(db_engine) as s:
+        u = _make_user(s)
+        _seed_ticket(s, u.id)  # cost=200
+        dr = _seed_draw(s)
+        dr_id = dr.id
+    CompareService(db_engine).process_pending()
+    # 模拟官方更正重比：重新入 outbox
+    with Session(db_engine) as s:
+        s.add(PendingComparison(draw_result_id=dr_id))
+        s.commit()
+    CompareService(db_engine).process_pending()
+    with Session(db_engine) as s:
+        dcs = list(s.exec(select(DrawCost)).all())
+        assert len(dcs) == 1, '重比应 upsert 不重复'
+        assert dcs[0].cost == 200
+
+
+def test_compare_draw_cost_per_user_isolation(db_engine):
+    """两用户同追投同彩种 -> 各自 DrawCost 行，成本独立（用户隔离）。"""
+    with Session(db_engine) as s:
+        u1 = _make_user(s, 'u1')
+        u2 = _make_user(s, 'u2')
+        uid1, uid2 = u1.id, u2.id
+        _seed_ticket(s, u1.id)  # 200
+        s.add(Ticket(
+            user_id=u2.id, lottery_code='ssq', play_type='single',
+            numbers_json=json.dumps({'front': [1, 2, 3, 4, 5, 6], 'back': [7]}),
+            multiplier=1, append=False, cost=400, enabled=True,
+        ))
+        s.commit()
+        _seed_draw(s)
+    CompareService(db_engine).process_pending()
+    with Session(db_engine) as s:
+        dcs = {dc.user_id: dc.cost for dc in s.exec(select(DrawCost)).all()}
+        assert dcs == {uid1: 200, uid2: 400}
