@@ -4,6 +4,7 @@ from app.models.lottery import LotteryType
 from app.models.ticket import Ticket
 from app.models.draw import DrawResult, DrawCorrection, PendingComparison
 from app.models.comparison import Comparison, PrizeClaim
+from app.models.draw_cost import DrawCost
 from app.models.notification import (
     NotificationChannel,
     NotificationRule,
@@ -22,6 +23,7 @@ __all__ = [
     'ApschedulerJob',
     'Comparison',
     'DrawCorrection',
+    'DrawCost',
     'DrawResult',
     'InviteCode',
     'LotteryType',

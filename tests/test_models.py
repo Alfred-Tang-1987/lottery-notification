@@ -33,3 +33,13 @@ def test_comparisons_unique_constraint(db_engine):
     insp = inspect(db_engine)
     uqs = {tuple(c['column_names']) for c in insp.get_unique_constraints('comparisons')}
     assert ('draw_result_id', 'ticket_id') in uqs
+
+
+def test_draw_costs_table_created(db_engine):
+    """draw_costs 表结构（spec §4 期次成本记账）：字段 + 唯一约束兜底幂等。"""
+    insp = inspect(db_engine)
+    cols = {c['name'] for c in insp.get_columns('draw_costs')}
+    assert {'id', 'user_id', 'lottery_code', 'draw_no', 'cost', 'draw_date', 'created_at'} == cols
+    uqs = {tuple(c['column_names']) for c in insp.get_unique_constraints('draw_costs')}
+    assert ('user_id', 'lottery_code', 'draw_no') in uqs
+
