@@ -13,7 +13,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = 'd1_draw_costs'
-down_revision: str | Sequence[str] | None = 'p8_password_reset_codes'
+down_revision: str | Sequence[str] | None = 'fix_prize_amount_cents'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -48,6 +48,28 @@ def upgrade() -> None:
     )
     op.create_index(
         op.f('ix_draw_costs_draw_no'), 'draw_costs', ['draw_no'], unique=False
+    )
+
+    # 历史回填（spec §4）：迁移前已有 DrawResult+tickets 但无 DrawCost（成本口径切换前的
+    # 历史断层）。按 (user, lottery, draw_no) 聚合 enabled 追投注 cost 一次性补齐。
+    # 与 compare_service._upsert_draw_costs 同语义：每张 enabled 追投注对该彩种每期都计成本。
+    # ON CONFLICT 幂等（迁移重跑/部分完成安全）。
+    op.execute(
+        """
+        INSERT INTO draw_costs (user_id, lottery_code, draw_no, cost, draw_date, created_at)
+        SELECT t.user_id,
+               t.lottery_code,
+               dr.draw_no,
+               COALESCE(SUM(t.cost), 0),
+               dr.draw_date,
+               CURRENT_TIMESTAMP
+        FROM draw_results dr
+        JOIN tickets t ON t.lottery_code = dr.lottery_code AND t.enabled = 1
+        GROUP BY t.user_id, dr.id, dr.draw_no, dr.draw_date
+        ON CONFLICT(user_id, lottery_code, draw_no) DO UPDATE SET
+            cost = excluded.cost,
+            draw_date = excluded.draw_date
+        """
     )
 
 
