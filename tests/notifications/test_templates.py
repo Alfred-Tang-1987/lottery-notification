@@ -15,11 +15,12 @@ def test_path_a_template_float():
 
 
 def test_path_a_template_fixed_amount():
-    p = build_path_a(lottery_name='双色球', draw_no='062', tier_name='三等奖', tier=3, amount=3000)
-    assert '30.00' in p.body  # 3000分 → 30.00元
+    # 300000 分 = 3000 元（双色球三等奖）；锁定分->元换算不缩小 100 倍
+    p = build_path_a(lottery_name='双色球', draw_no='062', tier_name='三等奖', tier=3, amount=300000)
+    assert '3000.00' in p.body  # 300000分 -> 3000.00元
     assert '60 天' in p.body  # 兑奖期
     assert p.tier == 3
-    assert p.amount == 3000
+    assert p.amount == 300000
 
 
 def test_path_b_template():
@@ -121,3 +122,37 @@ def test_path_b_no_click_to_detail_phrase():
         unwon_lottery_names=['双色球'],
     )
     assert '点击查看明细' not in p.body, '无落地页时不得承诺点击查看'
+
+
+def test_path_b_fixed_prize_rendered_in_yuan_not_shrunk_100x():
+    """固定档金额以「分」传入，必须正确换算为元（回归 2026-08-03 用户报告）。
+
+    用户实测：周/月报中双色球最低奖（六等 5 元）显示为「0.05 元」。
+    根因：prize_tables 固定档金额曾以「元」录入（6 等 = 5）被当「分」处理 ->
+    _fmt_amount(5) = 0.05 元。修复后 prize_amount = 500 分 -> _fmt_amount(500) = 5.00 元。
+    本测试锁定端到端文案：500 分（6 等 5 元）-> 「5.00 元」。
+    """
+    from app.notifications.templates import build_path_b
+
+    # win_details 第三项 = prize_amount（分）：双色球六等 500 分 = 5 元
+    p = build_path_b(
+        date_str='2026-07-20 ~ 2026-07-26',
+        tracked_lottery_count=1,
+        win_details=[('双色球', '六等奖', 500)],
+        unwon_lottery_names=[],
+    )
+    assert '5.00 元' in p.body, p.body
+    assert '0.05 元' not in p.body, '固定档金额仍被缩小 100 倍（元当分）'
+
+
+def test_path_a_fixed_prize_rendered_in_yuan_correctly():
+    """路径A 固定档金额同样以「分」传入，必须正确换算为元。
+
+    双色球三等奖 3000 元 = 300000 分 -> 「3000.00 元」（非「30.00 元」）。
+    旧测试 amount=3000 断言「30.00 元」锁定了 100 倍 bug，已随 prize_tables 修复更正。
+    """
+    from app.notifications.templates import build_path_a
+
+    p = build_path_a(lottery_name='双色球', draw_no='062', tier_name='三等奖', tier=3, amount=300000)
+    assert '3000.00 元' in p.body, p.body
+    assert p.amount == 300000
