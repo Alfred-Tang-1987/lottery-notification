@@ -417,11 +417,16 @@ def mount_spa(app: FastAPI, static_dir: Path) -> None:
     def spa_catch_all(full_path: str):
         """history 模式：非 API/静态路径回退 index.html（spec §12.3）。
 
-        排除已知 API 前缀——防御性 belt-and-suspenders（路由顺序已保证 API 先命中）。
+        排除已知 API 前缀--防御性 belt-and-suspenders（路由顺序已保证 API 先命中）。
+
+        index.html 须 Cache-Control: no-cache：SPA 的 JS/CSS 是 hash 文件名（可强缓存），
+        但 index.html 引用这些 hash。若 index.html 被浏览器启发式缓存，部署后用户仍加载
+        旧 index.html -> 旧 hash chunk -> 新功能到不了用户（2026-08-03 生产复现：忘记密码
+        tab 缺失）。no-cache 让浏览器每次回源验证 ETag，hash 资源仍走本地缓存。
         """
         if full_path.startswith(('auth/', 'admin/', 'channels/', 'health')):
             return JSONResponse(status_code=404, content={'detail': 'not found'})
-        return FileResponse(index_html)
+        return FileResponse(index_html, headers={'Cache-Control': 'no-cache'})
 
 
 # 模块级一次性注册（生产 static/ 存在时挂载，开发/未 build 时跳过）。

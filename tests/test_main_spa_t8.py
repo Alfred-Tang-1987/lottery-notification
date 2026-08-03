@@ -101,3 +101,26 @@ def test_spa_assets_served_via_staticfiles(tmp_path):
         assert 'console.log("spa")' in r.text
     finally:
         _cleanup_spa_routes(main_mod.app)
+
+
+def test_spa_index_html_has_no_cache_header(tmp_path):
+    """index.html 必须 Cache-Control: no-cache，防止浏览器缓存旧入口 chunk。
+
+    SPA 的 JS/CSS 是 hash 文件名（可强缓存），但 index.html 引用这些 hash--若
+    index.html 被浏览器启发式缓存，部署后用户仍加载旧 index.html -> 旧 hash chunk
+    -> 新功能（如忘记密码 tab）永远到不了用户（2026-08-03 生产复现）。no-cache 让
+    浏览器每次回源验证 ETag/Last-Modified，hash 资源仍走本地缓存，两全。
+    """
+    import app.main as main_mod
+
+    static_dir = _build_static_dir(tmp_path)
+    main_mod.mount_spa(main_mod.app, static_dir)
+    try:
+        client = TestClient(main_mod.app)
+        r = client.get('/')
+        assert r.status_code == 200
+        cc = r.headers.get('cache-control', '')
+        assert 'no-cache' in cc, f'index.html 须 Cache-Control: no-cache，实际: {cc!r}'
+    finally:
+        _cleanup_spa_routes(main_mod.app)
+
