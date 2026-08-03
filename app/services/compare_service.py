@@ -10,7 +10,7 @@ import logging
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import text
+from sqlalchemy import func, text
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, select
 
@@ -19,6 +19,7 @@ from app.domain.entry import Entry
 from app.domain.spec import LotterySpec
 from app.models import (
     Comparison,
+    DrawCost,
     DrawResult,
     PendingComparison,
     PrizeClaim,
@@ -172,6 +173,13 @@ class CompareService:
                         exc_info=True,
                     )
                     continue
+
+            # 期次成本记账（spec §4：成本按开奖日记账；只要有 enabled 追投注就记）。
+            # 与 comparisons 同事务 commit（silent-failure：状态变更单事务一次 commit）。
+            # per-user 聚合 cost（坏注被 savepoint 隔离跳过，但仍计入成本--成本由「是否
+            # 追投该期」决定，与比对是否成功无关；号码格式异常是数据问题，投入的钱已花）。
+            # 重比走 upsert（uq 兜底），不重复记账。
+            _upsert_draw_costs(s, dr)
             s.commit()
 
     def _upsert_comparison(
@@ -230,6 +238,49 @@ class CompareService:
             session.flush()  # 拿 cmp.id 给 PrizeClaim FK
             if hit.is_win:
                 _create_claim(session, cmp.id)
+
+
+def _upsert_draw_costs(session: Session, draw_result: DrawResult) -> None:
+    """期次成本记账（spec §4：成本按开奖日记账；只要有 enabled 追投注就记一行 per user）。
+
+    成本聚合基准：所有 enabled 追投注（与比对范围一致，spec §4 line99），坏注（号码格式
+    异常被 savepoint 隔离）仍计入--成本由「是否追投该期」决定，与比对是否成功无关，投入
+    的钱已花。per-user group by 一次查全，逐 user upsert（uq (user_id,lottery_code,draw_no)
+    兜底幂等：更正重比原地更新 cost，不重复记账）。
+
+    draw_date 取 draw_result.draw_date（aware CST，与 DrawResult 同表示，dashboard 按本列归期）。
+    无追投注时跳过（不记 0 成本期--该期对该用户无投入）。
+    """
+    rows = session.exec(
+        select(Ticket.user_id, func.coalesce(func.sum(Ticket.cost), 0))
+        .where(
+            Ticket.lottery_code == draw_result.lottery_code,
+            Ticket.enabled == True,  # noqa: E712
+        )
+        .group_by(Ticket.user_id)
+    ).all()
+    for user_id, cost_sum in rows:
+        cost = int(cost_sum or 0)
+        existing = session.exec(
+            select(DrawCost).where(
+                DrawCost.user_id == user_id,
+                DrawCost.lottery_code == draw_result.lottery_code,
+                DrawCost.draw_no == draw_result.draw_no,
+            )
+        ).first()
+        if existing:
+            existing.cost = cost
+            existing.draw_date = draw_result.draw_date
+        else:
+            session.add(
+                DrawCost(
+                    user_id=user_id,
+                    lottery_code=draw_result.lottery_code,
+                    draw_no=draw_result.draw_no,
+                    cost=cost,
+                    draw_date=draw_result.draw_date,
+                )
+            )
 
 
 def _create_claim(session: Session, comparison_id: int) -> None:
