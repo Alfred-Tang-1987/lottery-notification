@@ -12,6 +12,7 @@ from app.api.deps import current_user, get_session_dep, require_admin, verify_cs
 from app.api.security import hash_password
 from app.models import ApiSourceHealth, DrawResult, PendingComparison, User
 from app.services.audit_service import write_audit
+from app.services.password_reset_service import invalidate_active_codes
 
 router = APIRouter(prefix='/admin', tags=['admin'], dependencies=[Depends(require_admin)])
 
@@ -96,14 +97,18 @@ def admin_reset_password(
     """管理员后台重置用户密码（Plan 08 / T5，spec §3.7）。
 
     未配 email 渠道用户无法自助重置时的兜底路径（邀请制场景，admin 线下告知新密码）。
-    改密 + AdminAuditLog 单事务原子 commit（对齐 force_verify pattern）；
+    改密 + 作废活跃验证码 + AdminAuditLog 单事务原子 commit（对齐 force_verify pattern）；
     审计 new_values 不含密码明文（write_audit 脱敏只对 dict key，此处干脆不传）。
+
+    安全：改密同事务作废该用户所有活跃验证码（与 verify_and_reset 成功路径一致）-- 否则
+    旧码仍可把刚被 admin 重置的密码改回，绕过 admin 干预。
     """
     user = session.get(User, user_id)
     if user is None:
         raise HTTPException(404, '用户不存在')
     uid, uname = user.id, user.username
     user.password_hash = hash_password(body.new_password)
+    invalidate_active_codes(session, user.id)  # 同事务作废活跃验证码（防绕过）
     session.add(user)
     write_audit(
         session,

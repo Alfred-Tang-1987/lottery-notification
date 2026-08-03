@@ -71,6 +71,30 @@ def _hash_code(code: str) -> str:
     return hashlib.sha256(code.encode()).hexdigest()
 
 
+def invalidate_active_codes(session: Session, user_id: int) -> int:
+    """作废该用户所有活跃验证码（used_at IS NULL -> now），返回作废条数。
+
+    纯 DB 操作（无 IO），供改密路径复用，保证「密码变更 -> 活跃码同事务作废」原子性。
+    调用方须在持有写锁的 session 内调用并 commit；本函数不自行 commit
+    （对齐 verify_and_reset：改密 + 作废同事务单 commit）。
+
+    安全语义：用户已发起忘记密码（待用码存在）时，admin/CLI 重置了密码须同步作废旧码
+    --否则旧码仍可 verify_and_reset 把刚被重置的密码改回，绕过运维/admin 干预。
+    """
+    now = _now_naive_utc()
+    count = 0
+    for row in session.exec(
+        select(PasswordResetCode).where(
+            PasswordResetCode.user_id == user_id,
+            PasswordResetCode.used_at.is_(None),
+        )
+    ).all():
+        row.used_at = now
+        session.add(row)
+        count += 1
+    return count
+
+
 class PasswordResetService:
     def __init__(
         self,

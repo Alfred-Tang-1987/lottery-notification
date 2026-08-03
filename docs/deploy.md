@@ -102,6 +102,34 @@ docker compose exec app uv run python -m app.cli create-admin --username admin -
 - **升级**：`git pull && git submodule update --init && docker compose up -d --build`（Alembic 自动迁移；前端会重新构建）
 - **健康**：`curl http://<NAS>:8280/health`（200=正常；503=DB/启动校验失败）
 
+## 密码重置
+
+系统有**三条**重置路径，按场景选用，互不冲突（改密均同事务作废该用户活跃验证码，防止旧码把刚重置的密码改回）：
+
+| 场景 | 路径 | 前置条件 |
+|------|------|----------|
+| 用户自助（忘密码） | 登录页「忘记密码」-> email 验证码 -> 重置 | 该用户已配 email 渠道 + 全局 SMTP |
+| admin 后台干预 | 登录后台 -> 用户列表 -> 重置密码 | admin 能登录 |
+| 运维兜底（admin 登不进 / 用户未配 email） | CLI `reset-password` | SSH + `docker exec` 权限 |
+
+### 运维兜底：CLI 重置任意用户密码
+
+当 admin 忘了密码（后台端点用不了）且该 admin 未配 email 渠道（自助流程发不出码）时，用 CLI：
+
+```bash
+# 交互输入新密码（推荐，不进 shell history）
+docker compose exec app uv run python -m app.cli reset-password --username admin
+
+# 或读环境变量
+docker compose exec -e ADMIN_PASSWORD='<新密码>' app uv run python -m app.cli reset-password --username admin
+```
+
+- **不限 role**：可重置任意用户（admin 或普通用户）。该命令是受信任的运维工具（需 SSH + docker exec 权限方可执行），不承担访问控制 -- 那是 SSH/docker 权限的职责。
+- **安全**：改密同事务作废该用户所有活跃验证码（与自助/admin 端点路径一致）；明文不入库（bcrypt 哈希）。
+- **静默失败防护**：用户不存在 `exit 1`，空密码 `exit 2`，不静默成功。
+- 与 `create-admin` 的区别：`create-admin` 仅用于 bootstrap 首个 admin（重复 username 报错）；`reset-password` 改已存在用户的密码。
+
+
 ## 冒烟（端到端）
 
 手动跑一期完整闭环（spec §13 Phase 1.0.13：抓取 ssq → 双源校验 → 比对）：
