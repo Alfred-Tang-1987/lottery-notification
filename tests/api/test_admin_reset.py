@@ -19,7 +19,7 @@ from app.api.security import (
 )
 from app.config import reset_settings_cache
 from app.main import app
-from app.models import AdminAuditLog, User
+from app.models import AdminAuditLog, PasswordResetCode, User
 
 
 def _set_env(monkeypatch):
@@ -125,3 +125,41 @@ def test_admin_reset_password_short_422(db_engine, monkeypatch):
         assert r.status_code == 422
     finally:
         app.dependency_overrides.clear()
+
+
+def test_admin_reset_password_invalidates_active_codes(db_engine, monkeypatch):
+    """admin 改密须同事务作废目标用户所有活跃验证码。
+
+    缺口场景：用户已发起忘记密码（生成待用码），admin 此时用后台端点重置了密码。
+    若不动作废，旧码仍有效 -> 用户凭旧码再次 verify_and_reset 把刚被 admin 重置的
+    密码改回旧值，绕过 admin 干预。与 verify_and_reset 成功路径作废语义对齐。
+    """
+    import hashlib as _hl
+    from datetime import UTC, datetime, timedelta
+
+    uid = _seed_user(db_engine)
+    # 种两条活跃码
+    now = datetime.now(UTC).replace(tzinfo=None)
+    with Session(db_engine) as s:
+        for code in ('111111', '222222'):
+            s.add(PasswordResetCode(
+                user_id=uid, code_hash=_hl.sha256(code.encode()).hexdigest(),
+                channel_type='email', expires_at=now + timedelta(minutes=15),
+                attempts=0, used_at=None,
+            ))
+        s.commit()
+
+    client = _admin_client(db_engine, monkeypatch)
+    try:
+        r = client.post(f'/admin/users/{uid}/reset-password',
+                        json={'new_password': 'newpass456'})
+        assert r.status_code == 200
+        with Session(db_engine) as s:
+            active = list(s.exec(select(PasswordResetCode).where(
+                PasswordResetCode.user_id == uid,
+                PasswordResetCode.used_at.is_(None),
+            )).all())
+            assert active == []  # 无活跃码残留
+    finally:
+        app.dependency_overrides.clear()
+

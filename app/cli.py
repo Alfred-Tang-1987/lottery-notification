@@ -85,16 +85,22 @@ def cmd_create_admin(argparse_ns) -> None:
 
 
 def cmd_reset_password(argparse_ns) -> None:
-    """重置已存在用户的密码（运维兜底：admin 忘密码且自助忘记密码流程不可用时）。
+    """重置已存在用户的密码（运维重置任意用户密码）。
 
     与 ``create-admin`` 互补：create-admin 仅 bootstrap 首个 admin（重复 username 抛
-    IntegrityError）；本命令改已存在用户的 ``password_hash``，不动其他字段。
+    IntegrityError）；本命令改已存在用户的 ``password_hash``，不限 role。需 SSH+docker exec
+    权限方可执行（受信任的运维工具），对任意用户（含普通用户忘密码且自助流程不可用时）兜底。
+
+    安全：改密同事务作废该用户所有活跃验证码（与 verify_and_reset 成功路径一致）-- 否则
+    旧码仍可把刚被重置的密码改回，绕过运维干预。
 
     silent-failure 防护：
     - 用户不存在 -> sys.exit(1)：不静默成功（否则运维误以为已重置，实则无人能登）。
     - 空密码 -> sys.exit(2)：不静默写空密码哈希（bcrypt 接受空串，但空密码 = 无认证）。
     """
     from sqlmodel import select
+
+    from app.services.password_reset_service import invalidate_active_codes
 
     password = resolve_password(argparse_ns)
     if not password:
@@ -106,8 +112,9 @@ def cmd_reset_password(argparse_ns) -> None:
             print(f'ERROR: 用户 {argparse_ns.username} 不存在', file=sys.stderr)
             sys.exit(1)
         user.password_hash = hash_password(password)
+        invalidate_active_codes(s, user.id)  # 同事务作废活跃验证码（防绕过）
         s.add(user)
-        s.commit()  # 单事务单 commit（silent-failure：状态变更只 commit 一次）
+        s.commit()  # 单事务单 commit：密码变更 + 码作废原子（silent-failure 纪律）
     print(f'{argparse_ns.username} 密码已重置')
 
 
@@ -185,7 +192,7 @@ def main(argv=None) -> None:
     )
     ca.set_defaults(func=cmd_create_admin)
 
-    rp = sub.add_parser('reset-password', help='重置已存在用户的密码（运维兜底）')
+    rp = sub.add_parser('reset-password', help='重置已存在用户的密码（运维，不限 role）')
     rp.add_argument('--username', required=True)
     rp.add_argument(
         '--password',
