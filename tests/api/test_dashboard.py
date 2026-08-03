@@ -17,7 +17,7 @@ from app.api.deps import get_session_dep
 from app.api.security import COOKIE_NAME, create_session_token
 from app.config import reset_settings_cache
 from app.main import app
-from app.models import Comparison, DrawResult, LotteryType, PrizeClaim, Ticket, User
+from app.models import Comparison, DrawCost, DrawResult, LotteryType, PrizeClaim, Ticket, User
 
 _CST = ZoneInfo('Asia/Shanghai')
 
@@ -106,6 +106,13 @@ def test_dashboard_returns_aggregated_snapshot(db_engine):
             cost=200,
         )
         s.add(ticket)
+        s.flush()
+        # 期次成本记账（spec §4：成本按开奖日记账，DrawCost 由 compare_service 记）。
+        # 此端到端测试直接造 DrawCost 行模拟记账后的状态。
+        s.add(DrawCost(
+            user_id=uid, lottery_code='ssq', draw_no='2026062',
+            cost=200, draw_date=draw_date,
+        ))
         s.flush()
         comparison = Comparison(
             user_id=uid,
@@ -285,22 +292,20 @@ def test_dashboard_summary_filters_by_time_period(db_engine):
     cst_now = datetime.now(_CST).replace(tzinfo=None)
 
     with Session(db_engine) as s:
-        # Ticket from current month
-        t_current = Ticket(
-            user_id=uid, lottery_code='ssq', play_type='single',
-            numbers_json='{}', cost=200,
-        )
-        s.add(t_current)
-        s.flush()
-
-        # Ticket from 2 months ago
-        t_old = Ticket(
-            user_id=uid, lottery_code='ssq', play_type='single',
-            numbers_json='{}', cost=300,
-        )
-        # Manually set created_at to 2 months ago
-        t_old.created_at = cst_now - timedelta(days=60)
-        s.add(t_old)
+        # 本月开奖的 DrawCost（spec §4：成本按开奖日记账）
+        s.add(DrawCost(
+            user_id=uid, lottery_code='ssq', draw_no='2026084',
+            cost=200, draw_date=cst_now.replace(day=2),
+        ))
+        # 2 个月前开奖的 DrawCost
+        if cst_now.month <= 2:
+            old_date = cst_now.replace(year=cst_now.year - 1, month=cst_now.month + 10, day=15)
+        else:
+            old_date = cst_now.replace(month=cst_now.month - 2, day=15)
+        s.add(DrawCost(
+            user_id=uid, lottery_code='ssq', draw_no='2026050',
+            cost=300, draw_date=old_date,
+        ))
         s.commit()
 
     client = _auth_client(db_engine, uid)
@@ -309,19 +314,19 @@ def test_dashboard_summary_filters_by_time_period(db_engine):
     r = client.get('/api/dashboard')
     assert r.status_code == 200
     summary_default = r.json()['summary']
-    assert summary_default['total_cost'] == 200  # Default is 'month', only current month ticket
+    assert summary_default['total_cost'] == 200  # Default is 'month', only current month draw
 
-    # Explicit period=all: should include all tickets
+    # Explicit period=all: should include all draw costs
     r = client.get('/api/dashboard?period=all')
     assert r.status_code == 200
     summary_all = r.json()['summary']
     assert summary_all['total_cost'] == 500  # 200 + 300
 
-    # Filter by current month: should only include current month ticket
+    # Filter by current month: should only include current month draw cost
     r = client.get('/api/dashboard?period=month')
     assert r.status_code == 200
     summary_month = r.json()['summary']
-    assert summary_month['total_cost'] == 200, f"Expected 200 (current month only), got {summary_month['total_cost']}"
+    assert summary_month['total_cost'] == 200, f"Expected 200 (current month draw only), got {summary_month['total_cost']}"
 
 
 def test_dashboard_custom_period_with_date_range(db_engine):
@@ -330,26 +335,21 @@ def test_dashboard_custom_period_with_date_range(db_engine):
     uid = _make_user(db_engine, 'custom_period_user')
 
     with Session(db_engine) as s:
-        # Ticket from 2026-06-15
-        t1 = Ticket(
-            user_id=uid, lottery_code='ssq', play_type='single',
-            numbers_json='{}', cost=200,
-        )
-        t1.created_at = datetime(2026, 6, 15, 10, 0, 0)  # naive CST
-        s.add(t1)
-
-        # Ticket from 2026-07-02
-        t2 = Ticket(
-            user_id=uid, lottery_code='ssq', play_type='single',
-            numbers_json='{}', cost=300,
-        )
-        t2.created_at = datetime(2026, 7, 2, 10, 0, 0)
-        s.add(t2)
+        # 开奖日 2026-06-15 的 DrawCost（不在 custom 范围内）
+        s.add(DrawCost(
+            user_id=uid, lottery_code='ssq', draw_no='2026065',
+            cost=200, draw_date=datetime(2026, 6, 15, 10, 0, 0),
+        ))
+        # 开奖日 2026-07-02 的 DrawCost（在 custom 范围内）
+        s.add(DrawCost(
+            user_id=uid, lottery_code='ssq', draw_no='2026072',
+            cost=300, draw_date=datetime(2026, 7, 2, 10, 0, 0),
+        ))
         s.commit()
 
     client = _auth_client(db_engine, uid)
 
-    # Custom range: 2026-07-01 to 2026-07-03 → only t2 matches
+    # Custom range: 2026-07-01 to 2026-07-03 -> only 2026-07-02 draw matches
     r = client.get('/api/dashboard?period=custom&date_from=2026-07-01&date_to=2026-07-03')
     assert r.status_code == 200
     summary = r.json()['summary']
@@ -367,15 +367,15 @@ def test_dashboard_summary_filters_by_lottery_code(db_engine):
     uid = _make_user(db_engine, 'lottery_filter_user')
 
     with Session(db_engine) as s:
-        t_ssq = Ticket(
-            user_id=uid, lottery_code='ssq', play_type='single',
-            numbers_json='{}', cost=200,
-        )
-        t_dlt = Ticket(
-            user_id=uid, lottery_code='dlt', play_type='single',
-            numbers_json='{}', cost=400,
-        )
-        s.add_all([t_ssq, t_dlt])
+        # 期次成本：ssq=200, dlt=400（DrawCost，spec §4 按开奖日记账）
+        s.add(DrawCost(
+            user_id=uid, lottery_code='ssq', draw_no='2026084',
+            cost=200, draw_date=datetime.now(_CST).replace(tzinfo=None, day=2),
+        ))
+        s.add(DrawCost(
+            user_id=uid, lottery_code='dlt', draw_no='2026083',
+            cost=400, draw_date=datetime.now(_CST).replace(tzinfo=None, day=2),
+        ))
         s.commit()
 
     client = _auth_client(db_engine, uid)
@@ -386,7 +386,7 @@ def test_dashboard_summary_filters_by_lottery_code(db_engine):
     summary_all = r.json()['summary']
     assert summary_all['total_cost'] == 600  # 200 + 400
 
-    # Filter by ssq: only ssq tickets
+    # Filter by ssq: only ssq draw costs
     r = client.get('/api/dashboard?lottery_code=ssq')
     assert r.status_code == 200
     summary_ssq = r.json()['summary']
@@ -478,21 +478,20 @@ def test_dashboard_default_period_is_month(db_engine):
     cst_now = datetime.now(_CST).replace(tzinfo=None)
 
     with Session(db_engine) as s:
-        # Ticket from current month
-        t_current = Ticket(
-            user_id=uid, lottery_code='ssq', play_type='single',
-            numbers_json='{}', cost=200,
-        )
-        s.add(t_current)
-        s.flush()
-
-        # Ticket from 2 months ago
-        t_old = Ticket(
-            user_id=uid, lottery_code='ssq', play_type='single',
-            numbers_json='{}', cost=300,
-        )
-        t_old.created_at = cst_now - timedelta(days=60)
-        s.add(t_old)
+        # 本月开奖的 DrawCost（spec §4：成本按开奖日记账）
+        s.add(DrawCost(
+            user_id=uid, lottery_code='ssq', draw_no='2026084',
+            cost=200, draw_date=cst_now.replace(day=2),
+        ))
+        # 2 个月前开奖的 DrawCost
+        if cst_now.month <= 2:
+            old_date = cst_now.replace(year=cst_now.year - 1, month=cst_now.month + 10, day=15)
+        else:
+            old_date = cst_now.replace(month=cst_now.month - 2, day=15)
+        s.add(DrawCost(
+            user_id=uid, lottery_code='ssq', draw_no='2026050',
+            cost=300, draw_date=old_date,
+        ))
         s.commit()
 
     client = _auth_client(db_engine, uid)
@@ -513,22 +512,16 @@ def test_dashboard_custom_period_rolling_window(db_engine):
     cst_now = datetime.now(_CST).replace(tzinfo=None)
 
     with Session(db_engine) as s:
-        # Ticket from 10 days ago
-        t_recent = Ticket(
-            user_id=uid, lottery_code='ssq', play_type='single',
-            numbers_json='{}', cost=200,
-        )
-        t_recent.created_at = cst_now - timedelta(days=10)
-        s.add(t_recent)
-        s.flush()
-
-        # Ticket from 40 days ago
-        t_old = Ticket(
-            user_id=uid, lottery_code='ssq', play_type='single',
-            numbers_json='{}', cost=300,
-        )
-        t_old.created_at = cst_now - timedelta(days=40)
-        s.add(t_old)
+        # 开奖日 10 天前的 DrawCost（在 last-30-days 范围内）
+        s.add(DrawCost(
+            user_id=uid, lottery_code='ssq', draw_no='2026078',
+            cost=200, draw_date=cst_now - timedelta(days=10),
+        ))
+        # 开奖日 40 天前的 DrawCost（不在范围内）
+        s.add(DrawCost(
+            user_id=uid, lottery_code='ssq', draw_no='2026062',
+            cost=300, draw_date=cst_now - timedelta(days=40),
+        ))
         s.commit()
 
     client = _auth_client(db_engine, uid)
@@ -1045,3 +1038,60 @@ def test_dashboard_monthly_returns_last_12_months(db_engine):
     assert last_entry['month'] == last_month
     assert last_entry['cost'] == 200
     assert last_entry['prize'] == 1000
+
+
+def _seed_draw_cost(db_engine, uid, lottery_code, draw_no, cost, draw_date):
+    """造 DrawCost 行（期次成本记账后的状态），供 dashboard 归期断言。"""
+    with Session(db_engine) as s:
+        s.add(DrawCost(
+            user_id=uid, lottery_code=lottery_code, draw_no=draw_no,
+            cost=cost, draw_date=draw_date,
+        ))
+        s.commit()
+
+
+def test_dashboard_total_cost_uses_draw_cost_by_draw_date(db_engine):
+    """成本按 DrawCost.draw_date（开奖日 CST 日历日）归期，不再按 Ticket.created_at。
+
+    spec §4：8月2日双色球开奖 -> 成本记在 8 月（开奖日），而非建号日。
+    """
+    _seed_lottery(db_engine)
+    uid = _make_user(db_engine, 'eve')
+    cst_now = datetime.now(_CST).replace(tzinfo=None)
+    # 开奖日落在当前 CST 月内
+    draw_date_this_month = cst_now.replace(day=2, hour=21, minute=30, second=0, microsecond=0)
+    _seed_draw_cost(db_engine, uid, 'ssq', '2026084', 600, draw_date_this_month)
+    # ticket 的 created_at 故意设为上月（旧口径会错记到上月）
+    with Session(db_engine) as s:
+        s.add(Ticket(
+            user_id=uid, lottery_code='ssq', play_type='single',
+            numbers_json='{}', cost=999,
+        ))
+        s.commit()
+
+    client = _auth_client(db_engine, uid)
+    r = client.get('/api/dashboard?period=month')
+    assert r.status_code == 200, r.text
+    summary = r.json()['summary']
+    # 成本来自 DrawCost（600），不是 ticket.cost（999）
+    assert summary['total_cost'] == 600, f"Expected 600 (DrawCost by draw_date), got {summary['total_cost']}"
+
+
+def test_dashboard_total_cost_excludes_other_month_draw_cost(db_engine):
+    """上月开奖的 DrawCost 不计入本月成本（归期按 draw_date 月份）。"""
+    _seed_lottery(db_engine)
+    uid = _make_user(db_engine, 'fra')
+    cst_now = datetime.now(_CST).replace(tzinfo=None)
+    # 上月开奖日
+    if cst_now.month == 1:
+        last_month_date = cst_now.replace(year=cst_now.year - 1, month=12, day=15)
+    else:
+        last_month_date = cst_now.replace(month=cst_now.month - 1, day=15)
+    _seed_draw_cost(db_engine, uid, 'ssq', '2026070', 400, last_month_date)
+    _seed_draw_cost(db_engine, uid, 'ssq', '2026084', 300, cst_now.replace(day=2))
+
+    client = _auth_client(db_engine, uid)
+    r = client.get('/api/dashboard?period=month')
+    assert r.status_code == 200, r.text
+    summary = r.json()['summary']
+    assert summary['total_cost'] == 300, f"Expected 300 (this month draw only), got {summary['total_cost']}"

@@ -19,7 +19,7 @@ from sqlmodel import Session, select
 
 from app.api.deps import current_user, get_session_dep
 from app.config import get_settings
-from app.models import Comparison, DrawResult, LotteryType, PrizeClaim, Ticket, User
+from app.models import Comparison, DrawCost, DrawResult, LotteryType, PrizeClaim, Ticket, User
 
 _CST = ZoneInfo('Asia/Shanghai')
 logger = logging.getLogger(__name__)
@@ -76,6 +76,45 @@ def _build_time_filter(period: str, date_from: str | None = None, date_to: str |
 
     # Unknown period defaults to all
     return None
+
+
+def _build_time_filter_cst(period: str, date_from: str | None = None, date_to: str | None = None):
+    """Build time filter on **CST naive** boundaries for DrawCost.draw_date.
+
+    DrawCost.draw_date 取自 DrawResult.draw_date，生产路径写 aware CST
+    (fetch_service._store: datetime.combine(d, min.time(), tzinfo=_CST))，SQLite 存时
+    strip tzinfo -> naive CST 字符串。故归期边界须用 CST naive（与 _build_time_filter
+    的 UTC naive 不同列，不可混用）。spec §4：成本按开奖日（CST 日历日）记账。
+    """
+    if period == 'all':
+        return None
+
+    cst_now = datetime.now(_CST).replace(tzinfo=None)
+
+    if period == 'month':
+        start_of_month = cst_now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        if cst_now.month == 12:
+            end_of_month = cst_now.replace(year=cst_now.year + 1, month=1, day=1)
+        else:
+            end_of_month = cst_now.replace(month=cst_now.month + 1, day=1)
+        return lambda col: and_(col >= start_of_month, col < end_of_month)
+
+    elif period == 'year':
+        start_of_year = cst_now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+        end_of_year = cst_now.replace(year=cst_now.year + 1, month=1, day=1)
+        return lambda col: and_(col >= start_of_year, col < end_of_year)
+
+    elif period == 'custom':
+        if date_from and date_to:
+            try:
+                start_date = datetime.strptime(date_from, '%Y-%m-%d')
+                end_date = datetime.strptime(date_to, '%Y-%m-%d').replace(hour=23, minute=59, second=59)
+                return lambda col: and_(col >= start_date, col <= end_date)
+            except ValueError as e:
+                raise ValueError(f'Invalid date format: {e}') from e
+
+    return None
+
 
 router = APIRouter(prefix='/api/dashboard', tags=['dashboard'])
 
@@ -215,37 +254,48 @@ def _pending_claims(session: Session, user_id: int, period: str = 'month', lotte
 
 
 def _summary(session: Session, user_id: int, period: str = 'month', lottery_code: str | None = None, date_from: str | None = None, date_to: str | None = None) -> SummaryOut:
-    """盈亏摘要：投入按 tickets.cost；中奖按 comparisons.prize_amount。
+    """盈亏摘要：投入按 DrawCost.draw_date（开奖日记账，spec §4）；中奖按 comparisons.prize_amount。
     pending_amount 统计 prize_amount IS NULL 的中奖笔数（浮动奖未回填，无金额可计）。
     win_rate = win_count / ticket_count（ticket_count=0 时返回 0.0）。
-    welfare_contribution 按每票(lottery_type.welfare_rate × cost)累加。
+    welfare_contribution 按每期 DrawCost × 该彩种 welfare_rate 累加。
 
     Filters:
     - period: 'month' (current month), 'year' (current year), 'all', 'custom' (with date_from/date_to)
     - lottery_code: filter by specific lottery type
     - date_from/date_to: required when period='custom' (YYYY-MM-DD format)
-    """
-    # Build time filter for Ticket.created_at and Comparison.created_at
-    time_filter = _build_time_filter(period, date_from=date_from, date_to=date_to)
 
-    # Ticket conditions
+    时区：DrawCost.draw_date 存 naive CST（取自 DrawResult.draw_date），归期用 CST 边界
+    （_build_time_filter_cst）；Comparison/Ticket.created_at 存 naive UTC，归期用 UTC 边界
+    （_build_time_filter）。两列不同时区，不可混用同一过滤器。
+    """
+    # Ticket conditions（ticket_count 归期仍按 created_at UTC）
+    ticket_time_filter = _build_time_filter(period, date_from=date_from, date_to=date_to)
     ticket_conds = [Ticket.user_id == user_id, Ticket.enabled == True]  # noqa: E712
     if lottery_code:
         ticket_conds.append(Ticket.lottery_code == lottery_code)
-    if time_filter:
-        ticket_conds.append(time_filter(Ticket.created_at))
-
-    cost_row = session.exec(
-        select(func.coalesce(func.sum(Ticket.cost), 0)).where(and_(*ticket_conds))
-    ).first()
-    total_cost = int(cost_row or 0)
+    if ticket_time_filter:
+        ticket_conds.append(ticket_time_filter(Ticket.created_at))
 
     ticket_count_row = session.exec(
         select(func.count(Ticket.id)).where(and_(*ticket_conds))
     ).first()
     ticket_count = int(ticket_count_row or 0)
 
+    # 成本归期：DrawCost.draw_date（CST 日历日 = 开奖日，spec §4）
+    cost_time_filter = _build_time_filter_cst(period, date_from=date_from, date_to=date_to)
+    cost_conds = [DrawCost.user_id == user_id]
+    if lottery_code:
+        cost_conds.append(DrawCost.lottery_code == lottery_code)
+    if cost_time_filter:
+        cost_conds.append(cost_time_filter(DrawCost.draw_date))
+
+    cost_row = session.exec(
+        select(func.coalesce(func.sum(DrawCost.cost), 0)).where(and_(*cost_conds))
+    ).first()
+    total_cost = int(cost_row or 0)
+
     # Comparison conditions
+    time_filter = _build_time_filter(period, date_from=date_from, date_to=date_to)
     comp_conds = [Comparison.user_id == user_id]
     if lottery_code:
         # Join through DrawResult to filter by lottery_code
@@ -278,21 +328,21 @@ def _summary(session: Session, user_id: int, period: str = 'month', lottery_code
     # 中奖率：win_count / ticket_count
     win_rate = (win_count / ticket_count) if ticket_count > 0 else 0.0
 
-    # 公益贡献：按每票的 lottery_type.welfare_rate × cost 累加
+    # 公益贡献：按每期 DrawCost × 该彩种 welfare_rate 累加（spec §4 成本按开奖日记账）
     welfare_contribution = 0
     if total_cost > 0:
         # Preload lottery types for welfare_rate lookup
         lt_rows = session.exec(select(LotteryType)).all()
         lt_map = {lt.code: lt for lt in lt_rows}
 
-        # Build ticket cost aggregation with filters
-        ticket_cost_stmt = (
-            select(Ticket.lottery_code, func.sum(Ticket.cost))
-            .where(and_(*ticket_conds))
-            .group_by(Ticket.lottery_code)
+        # Build DrawCost aggregation with filters（按 draw_date 归期）
+        draw_cost_stmt = (
+            select(DrawCost.lottery_code, func.sum(DrawCost.cost))
+            .where(and_(*cost_conds))
+            .group_by(DrawCost.lottery_code)
         )
-        tickets_with_lottery = session.exec(ticket_cost_stmt).all()
-        for lt_code, cost_sum in tickets_with_lottery:
+        draw_costs_with_lottery = session.exec(draw_cost_stmt).all()
+        for lt_code, cost_sum in draw_costs_with_lottery:
             lt = lt_map.get(lt_code)
             if lt is not None:
                 try:
