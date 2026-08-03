@@ -178,6 +178,18 @@ def cmd_backfill_history(argparse_ns) -> None:
             print(f'{code}: 失败 {exc}', file=sys.stderr)
 
 
+def cmd_backfill_draw_costs(argparse_ns) -> None:
+    """历史期次成本回填（spec §4）：补齐迁移前 DrawCost 历史断层。
+
+    遍历所有 DrawResult，per-user 聚合 enabled 追投注 cost 写 DrawCost（upsert 幂等，
+    重复运行安全）。无追投注的 DrawResult 跳过。无网络调用，纯本地 DB。
+    """
+    from app.services.compare_service import backfill_draw_costs
+
+    count = backfill_draw_costs(engine)
+    print(f'回填 DrawCost 完成：处理 {count} 期 DrawResult')
+
+
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(prog='app.cli', description='运维 CLI（spec §13）')
     sub = p.add_subparsers(dest='cmd', required=True)
@@ -207,6 +219,8 @@ def main(argv=None) -> None:
 
     bh = sub.add_parser('backfill-history', help='手动回填各彩种最近 50 期历史开奖')
     bh.set_defaults(func=cmd_backfill_history)
+    bdc = sub.add_parser('backfill-draw-costs', help='回填历史期次成本（DrawCost，spec §4）')
+    bdc.set_defaults(func=cmd_backfill_draw_costs)
 
     args = p.parse_args(argv)
     args.func(args)

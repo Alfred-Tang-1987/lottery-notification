@@ -283,6 +283,26 @@ def _upsert_draw_costs(session: Session, draw_result: DrawResult) -> None:
             )
 
 
+def backfill_draw_costs(engine: Engine) -> int:
+    """历史期次成本回填（spec §4）：遍历所有 DrawResult，per-user 聚合 enabled 追投注
+    cost 写 DrawCost（upsert 幂等）。
+
+    用于迁移后补历史数据：迁移前已有 DrawResult+comparisons 但无 DrawCost（成本口径
+    切换前的历史断层）。CLI backfill-draw-costs 调用此函数一次性补齐。
+
+    返回回填的 DrawCost 行数（含 upsert 更新的既有行）。无追投注的 DrawResult 跳过
+    （无投入不记账）。
+    """
+    count = 0
+    with Session(engine) as s:
+        draws = list(s.exec(select(DrawResult)).all())
+        for dr in draws:
+            _upsert_draw_costs(s, dr)
+            count += 1
+        s.commit()
+    return count
+
+
 def _create_claim(session: Session, comparison_id: int) -> None:
     """中奖 → 写 prize_claim(pending)，兑奖截止 60 天（以官方为准，可配置）。"""
     session.add(
