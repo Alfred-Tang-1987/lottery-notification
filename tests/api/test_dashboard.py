@@ -1012,6 +1012,13 @@ def test_dashboard_monthly_returns_last_12_months(db_engine):
         s.add(draw)
         s.flush()
 
+        # 期次成本记账（spec §4：DrawCost 按 draw_date 归月）
+        s.add(DrawCost(
+            user_id=uid, lottery_code='ssq', draw_no='2026100',
+            cost=200, draw_date=draw.draw_date,
+        ))
+        s.flush()
+
         comp = Comparison(
             user_id=uid, draw_result_id=draw.id, ticket_id=t.id,
             hits_json='{}', prize_tier=5, prize_amount=1000, is_win=True,

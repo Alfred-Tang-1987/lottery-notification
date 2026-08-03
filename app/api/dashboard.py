@@ -694,13 +694,13 @@ def dashboard_monthly(
     session: Session = Depends(get_session_dep),
 ) -> list[MonthlyPointOut]:
     """返回当前用户的月度投入/中奖数据（最近12个月），供 MyStats 月柱图使用。"""
-    # Monthly cost aggregation
+    # Monthly cost aggregation: 按 DrawCost.draw_date（CST 开奖日）归月（spec §4）
     cost_rows = session.exec(
         select(
-            func.strftime('%Y-%m', Ticket.created_at).label('month'),
-            func.sum(Ticket.cost).label('cost'),
+            func.strftime('%Y-%m', DrawCost.draw_date).label('month'),
+            func.sum(DrawCost.cost).label('cost'),
         )
-        .where(Ticket.user_id == user.id, Ticket.enabled == True)  # noqa: E712
+        .where(DrawCost.user_id == user.id)
         .group_by('month')
         .order_by('month')
     ).all()
