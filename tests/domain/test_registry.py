@@ -66,7 +66,7 @@ def test_compare_entry_positional_fc3d():
     entry = Entry('fc3d', 'single', (1, 2, 3), None)
     results = compare(spec, draw_front=(1, 2, 3), draw_back=None, entry=entry)
     assert len(results) == 1
-    assert results[0].is_win and results[0].tier == 1 and results[0].amount == 1040
+    assert results[0].is_win and results[0].tier == 1 and results[0].amount == 104000
 
 
 def test_compare_entry_hybrid_qxc():

@@ -110,8 +110,8 @@ def test_outbox_claim_idempotent(db_engine):
 def test_compare_fixed_prize_applies_multiplier(db_engine):
     """倍投放大固定奖金额（lottery-rules §倍投：中奖金额 × 倍数）。
 
-    双色球三等奖（5红+1蓝 = 3000 分）× 3 倍 = 9000 分。
-    回归保护：旧版直接存 hit.amount（单注 3000），漏乘 multiplier。
+    双色球三等奖（5红+1蓝 = 3000 元 = 300000 分）× 3 倍 = 900000 分。
+    回归保护：旧版直接存 hit.amount（单注 300000），漏乘 multiplier。
     """
     with Session(db_engine) as s:
         u = _make_user(s)
@@ -135,7 +135,7 @@ def test_compare_fixed_prize_applies_multiplier(db_engine):
     with Session(db_engine) as s:
         cmp = s.exec(select(Comparison)).first()
         assert cmp is not None and cmp.prize_tier == 3
-        assert cmp.prize_amount == 9000  # 3000 × 3 倍
+        assert cmp.prize_amount == 900000  # 300000 分 × 3 倍
 
 
 def test_compare_float_prize_amount_stays_null_with_multiplier(db_engine):

@@ -15,7 +15,7 @@ def test_ssq_first_prize_float():
 
 
 def test_ssq_sixth_prize_fixed():
-    """0红+1蓝 = 六等奖 5 元。"""
+    """0红+1蓝 = 六等奖 5 元 = 500 分。"""
     r = PartitionCompare.compare(
         'ssq',
         (8, 9, 10, 11, 12, 13),
@@ -24,7 +24,7 @@ def test_ssq_sixth_prize_fixed():
         (7,),
         append=False,
     )
-    assert r.is_win and r.tier == 6 and r.amount == 5
+    assert r.is_win and r.tier == 6 and r.amount == 500
 
 
 def test_ssq_no_win():
@@ -54,7 +54,7 @@ def test_dlt_append_multiplier_applied():
 
 
 def test_ssq_third_prize():
-    """5红+1蓝 = 三等 3000。"""
+    """5红+1蓝 = 三等 3000 元 = 300000 分。"""
     r = PartitionCompare.compare(
         'ssq',
         (1, 2, 3, 4, 5, 33),
@@ -63,4 +63,4 @@ def test_ssq_third_prize():
         (7,),
         append=False,
     )
-    assert r.is_win and r.tier == 3 and r.amount == 3000
+    assert r.is_win and r.tier == 3 and r.amount == 300000
