@@ -64,5 +64,8 @@ jobs:
         with:
           fetch-depth: 0 # gitleaks 扫全历史（C3）
       - uses: gitleaks/gitleaks-action@dcedce43c6f43de0b836d1fe38946645c9c638dc  # v2
+        env:
+          # gitleaks-action 检查 process.env.GITHUB_TOKEN（src/gitleaks.js）；默认不在 env，须显式传入
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: 内网标识 + 子模块回归门禁
         run: bash scripts/publish-check.sh --grep-only
