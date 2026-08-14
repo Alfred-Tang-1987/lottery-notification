@@ -224,7 +224,7 @@ def validate_startup() -> None:
     _ds_state = _data_source_state(settings)
     if _ds_state == 'missing':
         log.warning(
-            '数据源 key 全部为空（MXNZP_API_KEY/MXNZP_APP_SECRET/JUHE_API_KEY）'
+            '数据源未完整配置（MXNZP_API_KEY/MXNZP_APP_SECRET/JUHE_API_KEY）'
             '——开奖抓取不可用，dashboard 将无数据。配置见 README「数据源注册」。'
         )
     elif _ds_state == 'single_source':
