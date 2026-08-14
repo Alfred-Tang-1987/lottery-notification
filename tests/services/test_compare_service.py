@@ -487,3 +487,31 @@ def test_compare_draw_cost_per_user_isolation(db_engine):
     with Session(db_engine) as s:
         dcs = {dc.user_id: dc.cost for dc in s.exec(select(DrawCost)).all()}
         assert dcs == {uid1: 200, uid2: 400}
+
+
+def test_compare_one_passes_draw_date_to_domain(db_engine, monkeypatch):
+    """compare_service 必须把 dr.draw_date 透传给领域 compare（规则版本门接线）。
+
+    若该线断开，draw_date=None → 领域层默认现行表 → 2026-01-31 前的历史期
+    更正重比会按新规误判（eng-review Issue 3）。
+    """
+    import app.services.compare_service as cs_mod
+
+    with Session(db_engine) as s:
+        u = _make_user(s)
+        dr = _seed_draw(s)  # draw_date = datetime.utcnow()
+        draw_date = dr.draw_date
+        _seed_ticket(s, u.id)
+
+    captured = {}
+    real_compare = cs_mod.domain_compare
+
+    def _spy(spec, *, draw_front, draw_back, entry, draw_date=None):
+        captured['draw_date'] = draw_date
+        return real_compare(spec, draw_front=draw_front, draw_back=draw_back, entry=entry, draw_date=draw_date)
+
+    monkeypatch.setattr(cs_mod, 'domain_compare', _spy)
+    CompareService(db_engine).process_pending()
+    assert captured.get('draw_date') == draw_date, (
+        f'compare_service 必须把 dr.draw_date 透传给领域 compare；实际 {captured.get("draw_date")}'
+    )

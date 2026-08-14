@@ -154,7 +154,7 @@ class FloatRefillWorker:
                             # 仅乘 multiplier，避免 AttributeError（4A）。PrizeTier.append_multiplier
                             # 默认 1.0（truthy），故 ssq 等非追加彩种即使 ticket.append=True 也会乘 1.0
                             # （no-op）——这是数据一致性问题而非回填逻辑问题，由 Ticket.append 入库校验保证。
-                            tier_info = self._find_tier(dr.lottery_code, cmp.prize_tier)
+                            tier_info = self._find_tier(dr.lottery_code, cmp.prize_tier, dr.draw_date)
                             if ticket is not None and ticket.append and tier_info and tier_info.append_multiplier:
                                 amount = int(amount * tier_info.append_multiplier)  # 追加 1.8x
                             if ticket is not None:
@@ -184,10 +184,12 @@ class FloatRefillWorker:
         return refilled
 
     @staticmethod
-    def _find_tier(lottery_code: str, tier: int):
-        """从 prize_tables 查找指定奖级信息；未知彩种/tier 返回 None（guard 用，4A）。"""
+    def _find_tier(lottery_code: str, tier: int, draw_date=None):
+        """从 prize_tables 查找指定奖级信息；未知彩种/tier 返回 None（guard 用，4A）。
+
+        draw_date 透传 get_tiers 做规则版本路由（历史期按当时规则查 append_multiplier）。"""
         try:
-            for t in get_tiers(lottery_code):
+            for t in get_tiers(lottery_code, draw_date):
                 if t.tier == tier:
                     return t
         except KeyError:
