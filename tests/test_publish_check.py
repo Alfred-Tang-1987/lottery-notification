@@ -73,8 +73,6 @@ def test_every_wordlist_pattern_has_teeth(tmp_path):
     测试持有独立的样本清单（与脚本词表互抄没意义；样本匹配不上=脚本词表衰退）。
     样本字面值一律拆分书写，防本文件命中门禁。
     """
-    import re
-
     src = SCRIPT.read_text()
     block = src.split('PATTERNS=(')[1].split(')')[0]
     patterns = []
@@ -104,3 +102,20 @@ def test_every_wordlist_pattern_has_teeth(tmp_path):
         r = _run(tmp_path)
         assert r.returncode == 1, f'模式 {pat!r} 未能拦截样本 {sample!r}（词表衰退）'
     assert set(samples) <= set(patterns), 'samples 有脚本中已不存在的模式（词表被删）'
+
+
+def test_grep_error_fails_closed(tmp_path):
+    """门禁扫描出错（grep exit 2）必须 fail-closed：即使无命中也不得 exit 0（防 GNU grep
+    在 Linux/CI 扫描遇不可读文件/坏链接时静默放行）。用 grep shim 触发，避免平台差异。"""
+    (tmp_path / 'README.md').write_text('# 干净项目\n')
+    bindir = tmp_path / 'bin'
+    bindir.mkdir()
+    shim = bindir / 'grep'
+    shim.write_text('#!/bin/sh\nexit 2\n')
+    shim.chmod(0o755)
+    env = {**os.environ, 'PUBLISH_CHECK_ROOT': str(tmp_path), 'PATH': f'{bindir}:{os.environ["PATH"]}'}
+    r = subprocess.run(['bash', str(SCRIPT), '--grep-only'], capture_output=True, env=env, timeout=60)
+    out = (r.stdout or b'') + (r.stderr or b'')
+    out_text = out.decode('utf-8', errors='replace')
+    assert r.returncode == 1, f'grep 出错必须 fail-closed（exit 1）：{out_text}'
+    assert 'WARN' in out_text, '应输出扫描出错的 WARN 提示'
