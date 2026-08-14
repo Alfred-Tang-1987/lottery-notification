@@ -83,14 +83,20 @@ _QLC = [
     PrizeTier(7, 'front_hit==4 and back_hit==0', 500, _F),
 ]
 
-# 现状 qxc 表原样保留（T3 再改）
+# 七星彩（2020-10-13 新规：任意 N 位对位计数，非连续；front_hit=前区对位数、back_hit=后区命中）：
+# 三等 3000 / 四等 500 / 五等 30 / 六等 5 元（lottery.gov.cn 规则第二十二条，2026-08-14 核对）。
 _QXC = [
     PrizeTier(1, 'front_hit==6 and back_hit==1', None, _V),
     PrizeTier(2, 'front_hit==6 and back_hit==0', None, _V),
-    PrizeTier(3, 'front_hit==5 and back_hit==1', 180000, _F),
-    PrizeTier(4, 'front_hit==5 and back_hit==0', 30000, _F),
-    PrizeTier(5, 'front_hit==4 and back_hit==1', 10000, _F),
-    PrizeTier(6, '(front_hit==4 and back_hit==0) or (front_hit==3 and back_hit==1)', 1000, _F),
+    PrizeTier(3, 'front_hit==5 and back_hit==1', 300000, _F),
+    PrizeTier(4, '(front_hit==5 and back_hit==0) or (front_hit==4 and back_hit==1)', 50000, _F),
+    PrizeTier(5, '(front_hit==4 and back_hit==0) or (front_hit==3 and back_hit==1)', 3000, _F),
+    PrizeTier(
+        6,
+        '(front_hit==3 and back_hit==0) or (front_hit==2 and back_hit==1) or (front_hit==1 and back_hit==1) or (front_hit==0 and back_hit==1)',
+        500,
+        _F,
+    ),
 ]
 
 _FC3D = [PrizeTier(1, 'front_hit==3', 104000, _F)]
