@@ -128,6 +128,56 @@ def test_recompare_honors_version_gate(db_engine):
         assert new_row.prize_amount == 500000
 
 
+def test_recompare_qlc_third_tier_misrecord_not_preserved(db_engine, monkeypatch):
+    """final-review Important 1 回归：qlc 三等（固定→浮动重分类）的存量误录金额不得被
+    保护①写回——304500 分（3045 元）是旧固定表误录（官方历来浮动，旧 refill 只回填
+    (1,2)），recompare 后必须清 None，交给保护②按真实浮动金额回填。
+
+    保护②（_force_refill_float_rows）在单测里不得打真实网络：stub FloatRefillWorker，
+    记录调用（max_age_days=None 不限窗口被触发），但实际不回填，保证断言确定且无网络。"""
+    import app.services.refill_service as refill_mod
+
+    captured = {}
+
+    class _StubFloatRefillWorker:
+        """保护②的替身：记录实例化参数与调用，不发起官方奖金查询。"""
+
+        def __init__(self, engine, amount_lookup, max_age_days):
+            captured['max_age_days'] = max_age_days
+            captured['amount_lookup'] = amount_lookup
+
+        def refill(self):
+            captured['refill_called'] = True
+            return 0
+
+    monkeypatch.setattr(refill_mod, 'FloatRefillWorker', _StubFloatRefillWorker)
+
+    with Session(db_engine) as s:
+        _seed_lottery(s, code='qlc', name='七乐彩')
+        u = _seed_user(s)
+        # qlc 三等 = 6+0：draw 前区 7 码 + 特别号 1；票 6 前区全中、特别号不中
+        dr = _seed_draw(s, 'qlc', '2026101', (1, 2, 3, 4, 5, 6, 7), (8,), datetime(2026, 8, 1))
+        t = _seed_ticket(s, u.id, (1, 2, 3, 4, 5, 6), (9,), lottery_code='qlc')
+        # 模拟旧固定表写出的误录行：tier=3 / 304500 分（3045 元）
+        s.add(Comparison(user_id=u.id, draw_result_id=dr.id, ticket_id=t.id,
+                         hits_json='{"front_hit":6,"back_hit":0}',
+                         prize_tier=3, prize_amount=304500, is_win=True))
+        s.commit()
+        dr_id, t_id = dr.id, t.id
+
+    recompare_all(db_engine)
+
+    with Session(db_engine) as s:
+        row = s.exec(select(Comparison).where(
+            Comparison.draw_result_id == dr_id, Comparison.ticket_id == t_id)).one()
+        assert row.prize_amount is None, (
+            f'qlc 三等误录金额不得被保护①写回，实得 {row.prize_amount}'
+        )
+        assert row.prize_tier == 3 and row.is_win is True  # 重分类为浮动，待保护②回填
+    assert captured.get('refill_called') is True, '保护②应被触发（重比收尾强制回填）'
+    assert captured.get('max_age_days') is None, '保护②须用 max_age_days=None（不限窗口）'
+
+
 def test_recompare_preserves_refilled_float_amount(db_engine):
     """发现 1（HIGH）：已回填的浮动档金额不得被 recompare 抹成 None——7 天窗口会让它
     永久丢失。构造：一期 dlt + 中一等（5+2）票，Comparison(tier=1, prize_amount=50000000,
