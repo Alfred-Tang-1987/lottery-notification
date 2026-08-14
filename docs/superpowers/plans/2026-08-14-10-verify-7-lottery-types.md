@@ -13,7 +13,7 @@
 **前置事实（2026-08-14 官方源核实，写 plan 时已查证）：**
 
 - **大乐透 2026 新规已生效**（财综〔2025〕51 号，2026-01-31 第 26014 期起）：9 档并 **7 档**——新三等 = 原(5+0)+(4+2) = 5000 元；新四等 = 4+1 = 300 元；新五等 = 原(4+0)+(3+2) = 150 元；新六等 = 3+1 或 2+2 = 15 元；新七等 = 3+0/1+2/2+1/0+2 = 5 元；一二等浮动、追加 80% 不变；奖池 ≥8 亿时固定档上浮（6666/380/200/18/7）。**代码现表把 2019 金额贴在错误的合并条件上，且把不中奖的 1+1/2+0/0+1 判成七等 100 元**——必须重写。
-- **七星彩 2020 新规**（2020-10-11 起）：「**任意 N 位对位一致**」计数，非连续。三/四/五/六等 = 3000/500/30/5 元；六等含 3+0、2+1、1+1、0+1。**代码用「首位起前缀连续命中」近似 + 旧版金额 1800/300/100/10，且漏判 2+1/1+1/0+1**——静默漏中奖，必须修。
+- **七星彩 2020 新规**（2020-10-13 起）：「**任意 N 位对位一致**」计数，非连续。三/四/五/六等 = 3000/500/30/5 元；六等含 3+0、2+1、1+1、0+1。**代码用「首位起前缀连续命中」近似 + 旧版金额 1800/300/100/10，且漏判 2+1/1+1/0+1**——静默漏中奖，必须修。
 - **七乐彩**：一二三等皆浮动（70%/10%/20%）；四~七等固定 200/50/10/5 元；七等仅 4+0。**代码把三等误录固定 3045 元、四等误录 300 元、七等多判 3+1**。
 - **双色球 2026 新规**：固定档不变（2026-08-13 第 2026093 期官方公告实测 3000/200/10/5）；新增「福运奖」（奖池 ≥15 亿时 3+0 也得 5 元，<3 亿停执行）依赖奖池数据 → B2。
 - **fc3d**：UI 可建 `danxuan` 票，但 `app/domain/entry.py:48` 只接受 single/zhixuan → 比对抛 NotImplementedError 被 per-ticket 隔离**静默跳过**，fc3d 票永不比对。pl3 的 zuxuan3/6 同理可建不可比对。
@@ -788,7 +788,7 @@ git commit -m "feat(plan-10/T2): qlc 奖级修正——三等浮动/四等 200/�
 # tests/domain/test_qxc_compare.py
 """QxcHybridCompare 测试（Plan 10 / T3 重写）。
 
-依据：7星彩 2020-10-11 新规——「任意 N 位对位一致」（按位对号、不要求连续），
+依据：7星彩 2020-10-13 新规——「任意 N 位对位一致」（按位对号、不要求连续），
 非旧版「连续 N 位」。固定档 3000/500/30/5 元（lottery.gov.cn 规则第二十二条，
 2026-08-14 核对；旧版 1800/300/20 已作废）。
 """
@@ -880,7 +880,7 @@ class QxcHybridCompare(CompareStrategy):
     front_hit = 前区 6 位中**任意位置对位命中数**（0-6，按位对号入座、不要求连续）；
     back_hit = 后区单值是否命中（0/1）。
 
-    规则依据（2026-08-14 核对 lottery.gov.cn 7星彩规则第二十二条，2020-10-11 起施行）：
+    规则依据（2026-08-14 核对 lottery.gov.cn 7星彩规则第二十二条，2020-10-13 起施行）：
     三至六等为「投注号码中任意 N 个数字与开奖号码对应位置数字相同」——任意位、非连续。
     旧实现曾用「首位起前缀连续命中」近似并注释「Phase 2 校准」，本次按官方规则修正；
     同时补上了旧实现漏判的六等 2+1 / 1+1 / 0+1（静默漏中奖，违反「中奖永不静默漏通知」）。
@@ -907,7 +907,7 @@ class QxcHybridCompare(CompareStrategy):
 `prize_tables.py` 的 `_QXC` 常量替换为：
 
 ```python
-# 七星彩（2020-10-11 新规：任意 N 位对位计数，非连续；front_hit=前区对位数、back_hit=后区命中）：
+# 七星彩（2020-10-13 新规：任意 N 位对位计数，非连续；front_hit=前区对位数、back_hit=后区命中）：
 # 三等 3000 / 四等 500 / 五等 30 / 六等 5 元（lottery.gov.cn 规则第二十二条，2026-08-14 核对）。
 _QXC = [
     PrizeTier(1, 'front_hit==6 and back_hit==1', None, _V),
@@ -939,7 +939,7 @@ qxc 节（「### 七星彩 qxc」）整节替换为：
 - 旧规则（纯 7 位 0–9、连续对位）**已作废**，勿用。
 - **中奖判定：任意 N 位对位一致（按位对号、不要求连续）**。玩法：单式/复式/倍投。
 
-#### 奖级表（2020-10-11 起施行；lottery.gov.cn 规则第二十二条，2026-08-14 核对）
+#### 奖级表（2020-10-13 起施行；lottery.gov.cn 规则第二十二条，2026-08-14 核对）
 
 | 奖级 | 条件（前区对位数+后区） | 奖金 |
 |---|---|---|
@@ -1243,6 +1243,8 @@ git commit -m "feat(plan-10/T5): lottery-rules.md 补 2026 新规章节 + 全量
 
 设计要点：`_compare_one` 已是「按 draw_result 全量重比该期所有追投票」的幂等入口（upsert 原地更新 + `corrected_at`），recompare 只需为**每个 verified DrawResult** 重入它。`--dry-run` 先统计会变更的行数（比对内存结果 vs 现存行，不写库），实跑才写。这同时服务两个场景：① 修表后清理旧错误行；② 未来任何规则修正的一键重算。
 
+**浮动档金额保护（eng-review 主复核发现 1，HIGH）**：`_upsert_comparison` 对浮动档会置 `prize_amount=None`（浮动档 `hit.amount is None`），重入 `_compare_one` 会把**已回填的浮动奖金额抹成 null**；而 `FloatRefillWorker` 主查询有 `created_at >= cutoff`（7 天窗口）过滤，超期老行不会再回填 → 已中奖金额静默永久丢失。故 recompare 必须：① 重比前快照该期「旧规则下为浮动档、is_win、prize_amount 非空」的行（旧规则经版本门 `get_tiers(code, draw_date)` 判定），重比后对「tier 未变、仍 is_win、仍浮动」的行写回快照金额（保住 dlt/ssq/qxc 一二等已回填金额）；② 收尾对「重比后为浮动档、is_win、金额 None」的行（含 qlc 三等固定→浮动、历史期未回填浮动行）**绕过 created_at 窗口强制回填**——给 `FloatRefillWorker` 加 `max_age_days: int | None = None`（None=不限窗口），recompare 用 None 实例化跑一次 `refill()`。
+
 - [ ] **Step 1: RED——`tests/services/test_recompare.py`**
 
 ```python
@@ -1250,7 +1252,9 @@ git commit -m "feat(plan-10/T5): lottery-rules.md 补 2026 新规章节 + 全量
 """recompare_all 测试（Plan 10 / T6；eng-review 外部声音发现 1——旧错误表写出的
 comparisons 行需要显式重算入口，否则永久错显示）。"""
 
-from sqlmodel import Session
+from datetime import datetime
+
+from sqlmodel import Session, select
 
 from app.models import Comparison, DrawResult, LotteryType, Ticket, User
 from app.services.compare_service import recompare_all
@@ -1272,13 +1276,11 @@ def test_recompare_corrects_stale_dlt_false_win(db_engine):
     """旧表误判的 dlt 1+1『中奖 100 元』行，recompare 后按新表判未中奖（is_win 翻 False，
     tier/amount 清 None），同一行原地更新（uq_cmp_draw_ticket 不产生新行）。"""
     with Session(db_engine) as s:
-        LotteryType(code='dlt', name='大乐透', category='sport',
-                    spec_json='{}', draw_schedule_json='{}')
         s.add(LotteryType(code='dlt', name='大乐透', category='sport',
                           spec_json='{}', draw_schedule_json='{}'))
         u = User(username='alice', password_hash='x', role='user', invite_code='alice')
         s.add(u); s.commit(); s.refresh(u)
-        dr = _seed_draw(s, 'dlt', '2026099', (1, 2, 3, 4, 5), (6, 7), __import__('datetime').datetime(2026, 8, 1))
+        dr = _seed_draw(s, 'dlt', '2026099', (1, 2, 3, 4, 5), (6, 7), datetime(2026, 8, 1))
         t = Ticket(user_id=u.id, lottery_code='dlt', play_type='single',
                    numbers_json='{"front":[1,9,9,9,9],"back":[6,8]}', cost=200)
         s.add(t); s.commit(); s.refresh(t)
@@ -1294,7 +1296,7 @@ def test_recompare_corrects_stale_dlt_false_win(db_engine):
     assert stats['draws'] >= 1 and stats['rows'] >= 1
     with Session(db_engine) as s:
         row = s.exec(
-            __import__('sqlmodel').select(Comparison).where(
+            select(Comparison).where(
                 Comparison.draw_result_id == dr_id, Comparison.ticket_id == t_id)
         ).one()
         assert row.is_win is False, '新表下 1+1 不中奖——旧行必须被纠正'
@@ -1316,6 +1318,14 @@ def test_recompare_honors_version_gate(db_engine):
     """版本门接线：2026-01-30 的 dlt 期重比按 2019 表（4+2=四等 3000），
     2026-01-31 起按七档（4+2=三等 5000）——recompute 复用 _compare_one 即自动获得。"""
     # …种两期不同 draw_date 的 dlt + 同号 4+2 票，断言两行 tier 分别为 4 与 3…
+
+
+def test_recompare_preserves_refilled_float_amount(db_engine):
+    """发现 1（HIGH）：已回填的浮动档金额不得被 recompare 抹成 None——7 天窗口会让它
+    永久丢失。构造：一期 dlt + 中一等（5+2）票，Comparison(tier=1, prize_amount=50000000,
+    is_win=True) 模拟已回填 500 万元；recompare 后该行 prize_amount 仍 == 50000000。"""
+    # …种一期 dlt（5+2）+ 一张 5+2 票 + 一张已回填 tier=1/50000000 的 comparison；
+    #   recompare 后断言该行 prize_amount 未被置空（保护①写回快照）…
 ```
 
 （`...` 处沿用本仓库既有 seed 辅助模式补全；断言点已固定。）
@@ -1332,9 +1342,9 @@ def test_cli_recompare_invokes_service(monkeypatch):
     from app import cli as cli_mod
 
     captured = {}
-    monkeypatch.setattr(cli_mod, 'recompute_target', None, raising=False)
+    monkeypatch.setattr(cli_mod, '_engine_from_env', lambda: object())  # 不真实构造 engine
     monkeypatch.setattr(
-        'app.services.compare_service.recompare_all',
+        cli_mod, 'recompare_all',
         lambda engine, lottery_code=None, dry_run=False:
         captured.update(lottery_code=lottery_code, dry_run=dry_run) or {'draws': 1, 'rows': 2, 'changed': 1},
     )
@@ -1360,8 +1370,14 @@ def recompare_all(engine: Engine, lottery_code: str | None = None, dry_run: bool
     用途：奖级表修正后清理旧表写出的错误行（eng-review 外部声音发现 1）；
     未来任何规则修正的一键重算。per-draw 失败隔离（try/except + log，不中断整批）。
     dry_run=True：只统计会变更的行数，不写库。
+
+    浮动档金额保护（eng-review 主复核发现 1，HIGH）：_upsert_comparison 对浮动档
+    置 prize_amount=None，会抹掉已回填金额；FloatRefillWorker 又有 7 天 created_at
+    窗口，超期老行不会再回填 → 静默永久丢失。故：① 重比前快照「旧规则下浮动档、
+    金额非空」行，重比后对 tier 未变者写回；② 收尾对「浮动档、金额 None」行绕过
+    窗口强制回填（max_age_days=None）。
     """
-    from app.models import DrawResult
+    from app.models import Comparison, DrawResult
 
     svc = CompareService(engine)
     stats = {'draws': 0, 'rows': 0, 'changed': 0}
@@ -1377,18 +1393,22 @@ def recompare_all(engine: Engine, lottery_code: str | None = None, dry_run: bool
             stats['changed'] += _count_changed(engine, dr_id)
         else:
             before = _snapshot_rows(engine, dr_id)
+            preserved = _snapshot_refilled_float_amounts(engine, dr_id)  # 发现 1 保护①
             try:
                 svc._compare_one(dr_id)
             except Exception:
                 logger.warning('recompare_skip_draw draw_result_id=%s', dr_id, exc_info=True)
                 continue
+            _restore_float_amounts(engine, dr_id, preserved)  # 发现 1 保护①
             stats['draws'] += 1
             stats['rows'] += max(len(before), 1)
             stats['changed'] += _diff_rows(before, _snapshot_rows(engine, dr_id))
+    if not dry_run:
+        _force_refill_float_rows(engine)  # 发现 1 保护②：绕过 7 天窗口强制回填
     return stats
 ```
 
-（`_snapshot_rows`/`_diff_rows`/`_count_changed` 为同文件私有辅助：抽该期 comparisons 的 `(ticket_id, tier, amount, is_win)` 元组集做前后对比。实现时若发现 `_compare_one` 的 draw_cost 记账在重比路径会重复累加，须在该路径先删该期 `DrawCost` 行再让 `_compare_one` 重建——**实现前先读 `_compare_one` 尾部的 cost 记账段确认**，并把结论写进 commit message。）
+（私有辅助：`_snapshot_rows`/`_diff_rows`/`_count_changed` 抽该期 comparisons 的 `(ticket_id, tier, amount, is_win)` 元组集做前后对比；`_snapshot_refilled_float_amounts`/`_restore_float_amounts` 实现发现 1 保护①——用 `get_tiers(code, dr.draw_date)` 判**旧规则**下的浮动档，快照 `(ticket_id, prize_amount)` 非空行，重比后对 tier 未变、仍 is_win、金额被置 None 的行写回；`_force_refill_float_rows` 实现保护②——对「浮动档、is_win、金额 None、unresolved=False」的行，用 `max_age_days=None`（不限窗口）实例化 `FloatRefillWorker` 跑一次回填。**注**：`_compare_one` 尾部的 `_upsert_draw_costs` 是 upsert（uq `user_id/lottery_code/draw_no` 原地更新，见 compare_service.py:243-283），重比**不会**重复累加成本，无需先删 DrawCost。）
 
 `app/cli.py` 注册子命令（沿用既有 `backfill-draw-costs` 模式）：
 
