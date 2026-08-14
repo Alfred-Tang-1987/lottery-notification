@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目状态
 
-**Plan 01–07 全部完成（基础设施 / 领域层 / 仓储核心闭环 / 调度推送 / 认证用户管理 / Web UI 部署 / 浮动奖金查询），554 tests green（+1 skipped）。** Plan 06 9 页 UI + Docker 部署 + CLI 全部落地；Plan 07 浮动奖金查询（CwlPrizeSource + SportteryPrizeSource JSON+PDF 降级 + FloatRefillWorker 金额公式 + 22:00 回填 cron）已合入。plan 在 `docs/superpowers/plans/`。改代码前先读 spec + 对应 plan；实现通过 **workflow orchestrator**（见下）自动跑 plan。
+**Plan 01–07 全部完成（基础设施 / 领域层 / 仓储核心闭环 / 调度推送 / 认证用户管理 / Web UI 部署 / 浮动奖金查询），681 passed, 1 skipped。** Plan 06 9 页 UI + Docker 部署 + CLI 全部落地；Plan 07 浮动奖金查询（CwlPrizeSource + SportteryPrizeSource JSON+PDF 降级 + FloatRefillWorker 金额公式 + 22:00 回填 cron）已合入。plan 在 `docs/superpowers/plans/`。改代码前先读 spec + 对应 plan；实现通过 **workflow orchestrator**（见下）自动跑 plan。
 
 ## 项目是什么
 
@@ -85,12 +85,12 @@ alembic/               # 首迁移 0001 含全 schema；import_linter 配置内�
 uv sync --extra dev                                          # 装依赖（uv.lock 锁定；首次 uv python install 3.12）
 uv run pytest -v                                             # 全量测试
 uv run pytest tests/test_models_t4c.py::test_defaults -v     # 单测试
-uv run uvicorn app.main:app --reload                         # 启动 API（需 .env）
+uv run uvicorn app.main:app --reload --port 8280               # 启动 API（需 .env；端口与部署对齐）
 uv run alembic upgrade head                                  # 应用迁移
 uv run lint-imports                                          # app.domain 不得 import infra/adapters/api/services
 
 # 前端（web/）
-cd web && npm install && npm run dev                         # 开发（代理 /api → :8000）
+cd web && npm install && npm run dev                         # 开发（代理 /api → :8280）
 cd web && npm test                                           # vitest 组件/逻辑测试（不进 Python gate）
 cd web && npm run build                                      # 产物到 ../static
 
@@ -101,10 +101,10 @@ cd docs/superpowers/workflows && node --test 'tests/*.test.js'
 docker compose up -d --build
 docker compose build                                         # 仅构建
 
-# 更新 run-plans-engine 子模块（必须同时更 submodule 指针 + 派生副本）
-cd .claude/workflow-engine && git pull origin main && cd ../..
-node .claude/workflow-engine/scripts/sync.mjs
-git add .claude/workflow-engine .claude/workflows/run-plans.js
+# 更新 run-plans-engine（内部开发工具，gitignored，不入库）
+export WORKFLOW_ENGINE_URL=<内网引擎仓库地址>   # 本机 shell 配置，勿写入仓库
+./scripts/setup-workflow-engine.sh             # clone/更新引擎 + 同步派生副本
+git add .claude/workflows/run-plans.js
 git commit -m "chore(workflow): bump run-plans-engine"
 ```
 
@@ -144,14 +144,9 @@ Workflow({ scriptPath: '.claude/workflows/run-plans.js', args: { plan: '03' } })
 - `docs/superpowers/workflow-design.md` — 旧版 workflow 设计文档（已迁移，以子模块为准）
 - `docs/superpowers/plans/` — implementation plan（7 份业务 plan：01-07 全部完成）
 
-## 更新 run-plans-engine 子模块
+## 部署约束
 
-详见「常用命令」节；核心要点：必须同时更新 submodule 指针（`.claude/workflow-engine`）和派生副本（`.claude/workflows/run-plans.js`），只执行 `git submodule update` 会两者不同步。新版 engine 将 `dist/run-plans.js` 作为 canonical 源，由 `scripts/sync.mjs` 复制并注入 `@sha` 头。
-
-
-## NAS 部署约束
-
-- 端口 **8280**（已核实空闲）
-- **`restart: always`**（FnOS 关机会 `docker stop`，`unless-stopped` 不会自启）
-- 部署目录：`<NAS_DOCKER_DIR>`
+- 端口默认 **8280**（`docker-compose.yml` 可改，同步改 `CORS_ORIGINS`）
+- **`restart: always`**（宿主机重启后自启；`unless-stopped` 会静默消失——tests/test_docker_t9.py 是护栏）
+- 通用部署/运维流程见 `docs/deploy.md`；作者 NAS 专属细节在本地 `deploy-nas-internal.md`（gitignored，不入库）
 - 密钥从 `.env` 注入，不进库不进日志
