@@ -17,7 +17,7 @@
 
 | 决策点 | 结论 |
 |---|---|
-| 许可证 | **Apache-2.0**（宽松许可。作者可商用，但无法排他——已明确接受） |
+| 许可证 | **AGPL-3.0-only**（强 copyleft。**2026-08-14 推翻原 Apache-2.0 决策**：强 copyleft 符合「衍生代码（含 SaaS 网络部署）必须开源」的诉求。作者不受自身许可约束，自托管/小圈子共享不受影响；任何人改造后部署为网络服务必须按 AGPL-3.0-only 开源全部衍生代码） |
 | 主源 | **GitHub 为主源**：日常推 GitHub，仓库内容即公开内容 |
 | gitea | **pull-mirror**：gitea 从 GitHub 拉镜像；NAS 部署 clone URL 不变 |
 | 内网信息 | **就地净化**：内网 IP/URL → 占位符；NAS 专属运维细节移出仓库（gitignored）；部署文档通用化 |
@@ -64,7 +64,7 @@ GitHub 为主源 ⇒ 主分支任何内容都可能被公开阅读。因此：
 | `CLAUDE.md` | 删「本机 model 现状」（含内网 router IP）一行；NAS 部署约束泛化；workflow 引擎更新流程更新 |
 | `docs/superpowers/specs/*` `plans/*` `run-plans-engine-TODOS.md` | 内网 IP/URL → 占位符 |
 | `web/src/pages/Dashboard.vue` 注释 | 内网 IP → 占位符 |
-| 新增 `LICENSE` | Apache-2.0 全文 |
+| 新增 `LICENSE` | AGPL-3.0-only 全文 |
 | 新增 `scripts/setup-workflow-engine.sh` | 见 §3.2 |
 
 ### 3.5 GitHub Actions（可选，推荐最小集）
@@ -108,7 +108,7 @@ GitHub 为主源 ⇒ 主分支任何内容都可能被公开阅读。因此：
 
 ## 5. 交付物
 
-- `LICENSE`（Apache-2.0 全文）、`README.md`（含快速开始/访问模式表/能力边界/英文合规声明）、净化后文档（§3.4 清单）
+- `LICENSE`（AGPL-3.0-only 全文）、`README.md`（含快速开始/访问模式表/能力边界/英文合规声明）、净化后文档（§3.4 清单）
 - 子模块移除 + `scripts/setup-workflow-engine.sh`（env 化，无字面 IP）
 - remote 配置（GitHub 主源）+ gitea mirror 配置（Gitea UI 手动步骤，文档化）
 - **发布门禁**：`scripts/publish-check.sh`（gitleaks + 加宽 grep）、`.github/workflows/ci.yml`（lint + import-linter + 全量 pytest + npm test/build + 泄露扫描）
@@ -128,7 +128,7 @@ GitHub 为主源 ⇒ 主分支任何内容都可能被公开阅读。因此：
 ## 7. 风险与约束
 
 - **历史不可重写**：orchestrator 进度续跑依赖 git log 约定，旧提交中的私有 IP 保留（低风险，内网网段）
-- **商用权益**：Apache-2.0 下任何人均可商用；若未来需要排他商用，需换 source-available 许可（BSL/ELv2/FSL）——当前不采用
+- **商用权益**：AGPL-3.0-only 下，**任何人改造后部署为网络服务（含 SaaS、内部平台）必须按 AGPL-3.0-only 开源全部衍生代码**（§13 网络服务条款）。作者（版权持有者）不受自身许可约束，可自由商用/闭源。第三方仅调用未改造的本项目 API 接口不触发传染（AGPL 传染触发于「修改后网络部署」，非「调用」）
 - **第三方数据源**：代码仅调用 API，不附数据；使用者需自行遵守 MXNZP / 聚合数据 / 高德 API 条款
 - **GitHub Actions 需外网**：仅作公开质量门禁；NAS 构建/部署仍走 gitea 镜像，不受 GitHub 可用性影响
 
@@ -139,7 +139,7 @@ GitHub 为主源 ⇒ 主分支任何内容都可能被公开阅读。因此：
 
 ## Phase 1 — CEO Review（战略与范围）
 
-**前提门**：六条前提经用户确认通过（P1 开源目标 / P2 Apache-2.0 / P3 GitHub 主源 + gitea 镜像 / P4 精简内网 / P5 子模块私有并移除 / P6 核对+修复）。
+**前提门**：六条前提经用户确认通过（P1 开源目标 / **P2 AGPL-3.0-only（2026-08-14 推翻原 Apache-2.0，改强 copyleft）** / P3 GitHub 主源 + gitea 镜像 / P4 精简内网 / P5 子模块私有并移除 / P6 核对+修复）。
 
 **外部声音**：Codex 未安装 → 仅 Claude 独立 subagent（`[subagent-only]`）。其对仓库的事实断言**已逐一核实**，多数成立，一处数字纠正（fc3d seeds 为 3 玩法非 12——但文档声明 12 种，差距仍成立）。
 
@@ -164,7 +164,7 @@ GitHub 为主源 ⇒ 主分支任何内容都可能被公开阅读。因此：
 **NOT in scope（延后理由）**
 - 复式/胆拖/fushi 组合展开、fc3d 其余 9 玩法、pl3 zuxuan3/6、pl5 定位复式、qxc 真实开奖校准——**MVP 外能力**，若 C1 采纳则列入 roadmap；不采纳则仍为 Phase B 修复范围（成本高）
 - gitea pull-mirror 反向拓扑（NAS 主源 + GitHub 镜像）——用户已选 GitHub 主源，不反转
-- AGPL-3.0 替代许可——用户已选 Apache-2.0（前提门通过），不重议
+- 其他替代许可（BSL/ELv2/FSL 等 source-available）——**2026-08-14 已从 Apache-2.0 改定为 AGPL-3.0-only**（强 copyleft，符合衍生含 SaaS 必须开源的诉求）；BSL/ELv2/FSL 等纯禁商路线不采用（AGPL-3.0-only 已满足诉求）
 - 历史重写/squash——破坏 orchestrator 进度续跑，不采用
 
 **What already exists（复用）
@@ -176,7 +176,7 @@ GitHub 为主源 ⇒ 主分支任何内容都可能被公开阅读。因此：
 **Dream state delta（12 月理想态）
 ```
 CURRENT（NAS 私有，无许可，仅 ssq 生产验证）
-   ──→ THIS PLAN（GitHub 公开 + Apache-2.0 + 净化 + 诚实能力边界）
+   ──→ THIS PLAN（GitHub 公开 + AGPL-3.0-only + 净化 + 诚实能力边界）
    ──→ 12-MONTH IDEAL（社区参考实现：双源交叉校验 + 单事务 + savepoint 隔离的「正确性示范」；
         有明确能力边界与 roadmap；未实现玩法被诚实标注而非宣称）
 ```
@@ -188,7 +188,7 @@ CURRENT（NAS 私有，无许可，仅 ssq 生产验证）
 | 前提有效 | 部分挑战（C1） | 一致，六前提确认 |
 | 解决的正确问题 | 质疑「无 WHY/受众」+ Phase B 目标错位 | 采纳 C1/C7 后成立 |
 | 范围校准 | 过宽（Phase B 会膨胀） | 采纳 C1 重定界 |
-| 替代方案 | 提出反向拓扑/AGPL | 均已被用户决策覆盖，不反转 |
+| 替代方案 | 提出反向拓扑/AGPL | 拓扑已被用户决策覆盖不反转；**AGPL 经 2026-08-14 重新评估后被采纳**（推翻原 Apache-2.0） |
 | 竞争/风险 | 竞品存在 + 声誉风险（过度宣称） | 采纳 C7 诚实边界 |
 | 6 月轨迹 | GitHub 主源日常摩擦 vs 无社区回报 | 保留用户选择，README 定位缓解 |
 
@@ -208,7 +208,7 @@ CURRENT（NAS 私有，无许可，仅 ssq 生产验证）
 | 7 | CEO | 采纳 C6（泄露扫描入 CI + 词表加宽） | Mechanical | P1 完整性 | 一次性→持续门禁 | — |
 | 8 | CEO | 采纳 C7（英文合规声明 + 差异化定位） | Mechanical | P3 务实 | 声誉风险缓解 | — |
 | 9 | CEO | 拒绝反向拓扑（NAS 主源） | Taste | 用户主权 | 用户已选 GitHub 主源，不反转 | NAS-primary + GitHub mirror |
-| 10 | CEO | 拒绝 AGPL-3.0 | Taste | 用户主权 | 用户已选 Apache-2.0（前提门通过） | AGPL-3.0 |
+| 10 | CEO | **推翻：采纳 AGPL-3.0-only**（2026-08-14） | Taste | 用户主权 | 用户重新评估后明确「任何基于衍生代码（含 SaaS 网络部署）也必须开源」→ 强 copyleft AGPL-3.0-only 符合诉求；作者不受自身许可约束，自托管不受影响 | ~~Apache-2.0~~（原决策已推翻）、BSL/ELv2/FSL（纯禁商，非诉求） |
 
 ## Phase 3 — Eng Review（架构与测试）
 
@@ -241,7 +241,7 @@ CURRENT（NAS 私有，无许可，仅 ssq 生产验证）
 
 **架构 ASCII（公开拓扑）**
 ```
-[ 开发机 ] --git push--> [ GitHub（主源，Apache-2.0，净化版） ]
+[ 开发机 ] --git push--> [ GitHub（主源，AGPL-3.0-only，净化版） ]
                               │ pull-mirror（cron 同步）
                               ▼
                     [ NAS Gitea（只读镜像） ] --git clone--> [ NAS Docker 部署 ]
