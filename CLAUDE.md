@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目状态
 
-**Plan 01–07 全部完成（基础设施 / 领域层 / 仓储核心闭环 / 调度推送 / 认证用户管理 / Web UI 部署 / 浮动奖金查询），694 passed, 1 skipped。** Plan 06 9 页 UI + Docker 部署 + CLI 全部落地；Plan 07 浮动奖金查询（CwlPrizeSource + SportteryPrizeSource JSON+PDF 降级 + FloatRefillWorker 金额公式 + 22:00 回填 cron）已合入。plan 在 `docs/superpowers/plans/`。改代码前先读 spec + 对应 plan；实现通过 **workflow orchestrator**（见下）自动跑 plan。
+**Plan 01–07 全部完成（基础设施 / 领域层 / 仓储核心闭环 / 调度推送 / 认证用户管理 / Web UI 部署 / 浮动奖金查询），694 passed, 1 skipped；Plan 10（7 彩种文档 vs 代码核对 + B1 修复）已合入，749 passed, 1 skipped。** Plan 06 9 页 UI + Docker 部署 + CLI 全部落地；Plan 07 浮动奖金查询（CwlPrizeSource + SportteryPrizeSource JSON+PDF 降级 + FloatRefillWorker 金额公式 + 22:00 回填 cron）已合入；Plan 10 落地 5 项 B1 代码修复（dlt 2026 七档新规 + 规则版本门 / qlc 浮动档 + refill 浮动集动态化 / qxc 任意对位 + 六等漏判档 / fc3d danxuan + API 玩法校验 / recompare CLI）。plan 在 `docs/superpowers/plans/`。改代码前先读 spec + 对应 plan；实现通过 **workflow orchestrator**（见下）自动跑 plan。
 
 ## 项目是什么
 
@@ -141,6 +141,7 @@ Workflow({ scriptPath: '.claude/workflows/run-plans.js', args: { plan: '03' } })
 - `docs/superpowers/workflows/USAGE.md` — 旧版 workflow 使用指南
 - `docs/superpowers/workflow-design.md` — 旧版 workflow 设计文档
 - `docs/superpowers/plans/` — implementation plan（7 份业务 plan：01-07 全部完成）
+- `docs/reference/lottery-verification-2026-08-14.md` — **7 彩种「文档 vs 代码」核对报告（plan-10 产出）**
 
 ## 部署约束
 
