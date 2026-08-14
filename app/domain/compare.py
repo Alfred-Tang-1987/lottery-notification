@@ -14,11 +14,13 @@ from app.domain.prize_tables import get_tiers
 class CompareStrategy:
     """比对策略接口。子类实现 compare。
 
-    签名为位置参数（lottery, draw_front, draw_back, combo_front, combo_back）+ append 关键字，
-    与调用方约定一致；T7 PositionalCompare 用 **_kw 忽略不适用的分区参数。"""
+    签名为位置参数（lottery, draw_front, draw_back, combo_front, combo_back）+ append/draw_date
+    关键字，与调用方约定一致；PositionalCompare 用 **_kw 忽略不适用的分区参数。"""
 
     @staticmethod
-    def compare(lottery, draw_front, draw_back, combo_front, combo_back, *, append) -> HitResult:
+    def compare(
+        lottery, draw_front, draw_back, combo_front, combo_back, *, append, draw_date=None
+    ) -> HitResult:
         raise NotImplementedError
 
 
@@ -27,9 +29,10 @@ def _eval_condition(cond: str, front_hit: int, back_hit: int) -> bool:
     return bool(eval(cond, {'__builtins__': {}}, {'front_hit': front_hit, 'back_hit': back_hit}))
 
 
-def _match_tier(lottery: str, front_hit: int, back_hit: int) -> PrizeTier | None:
-    """按奖级号升序匹配第一个 condition 命中的 tier（tier 1 最高，先试）。"""
-    for t in get_tiers(lottery):
+def _match_tier(lottery: str, front_hit: int, back_hit: int, draw_date=None) -> PrizeTier | None:
+    """按奖级号升序匹配第一个 condition 命中的 tier（tier 1 最高，先试）。
+    draw_date 透传 get_tiers 做规则版本路由（None=现行表）。"""
+    for t in get_tiers(lottery, draw_date):
         if _eval_condition(t.condition, front_hit, back_hit):
             return t
     return None
@@ -39,12 +42,14 @@ class PartitionCompare(CompareStrategy):
     """分区型：双色球/大乐透/七乐彩。集合匹配红/蓝球个数。"""
 
     @staticmethod
-    def compare(lottery, draw_front, draw_back, combo_front, combo_back, *, append) -> HitResult:
+    def compare(
+        lottery, draw_front, draw_back, combo_front, combo_back, *, append, draw_date=None
+    ) -> HitResult:
         draw_front_s, draw_back_s = set(draw_front), set(draw_back or ())
         front_hit = len(set(combo_front) & draw_front_s)
         back_hit = len(set(combo_back) & draw_back_s) if combo_back else 0
 
-        tier = _match_tier(lottery, front_hit, back_hit)
+        tier = _match_tier(lottery, front_hit, back_hit, draw_date)
         if tier is None:
             return HitResult(front_hit, back_hit, None, None, is_win=False)
 
@@ -72,6 +77,7 @@ class PositionalCompare(CompareStrategy):
         append=False,
         draw=None,
         combo=None,
+        draw_date=None,
         **_kw,
     ) -> HitResult:
         # 归一 draw / combo 来源
@@ -85,7 +91,7 @@ class PositionalCompare(CompareStrategy):
         hit = sum(1 for a, b in zip(d, c, strict=False) if a == b)
         all_match = bool(d) and hit == len(d)
         if all_match:
-            tier = _match_tier(lottery, front_hit=hit, back_hit=0)
+            tier = _match_tier(lottery, front_hit=hit, back_hit=0, draw_date=draw_date)
             if tier:
                 return HitResult(hit, 0, tier.tier, tier.amount, is_win=True)
         return HitResult(hit, 0, None, None, is_win=False)
@@ -106,7 +112,9 @@ class QxcHybridCompare(CompareStrategy):
     """
 
     @staticmethod
-    def compare(lottery, draw_front, draw_back, combo_front, combo_back, *, append=False, **_kw) -> HitResult:
+    def compare(
+        lottery, draw_front, draw_back, combo_front, combo_back, *, append=False, draw_date=None, **_kw
+    ) -> HitResult:
         # 前区：首位起前缀连续命中位数
         front_hit = 0
         for a, b in zip(draw_front, combo_front, strict=False):
@@ -117,7 +125,7 @@ class QxcHybridCompare(CompareStrategy):
         # 后区：单值是否命中（draw_back/combo_back 均为单元素 tuple）
         back_hit = 1 if (combo_back and draw_back and combo_back[0] == draw_back[0]) else 0
 
-        tier = _match_tier(lottery, front_hit=front_hit, back_hit=back_hit)
+        tier = _match_tier(lottery, front_hit=front_hit, back_hit=back_hit, draw_date=draw_date)
         if tier is None:
             return HitResult(front_hit, back_hit, None, None, is_win=False)
         return HitResult(front_hit, back_hit, tier.tier, tier.amount, is_win=True)
@@ -136,12 +144,13 @@ REGISTRY: dict[str, type[CompareStrategy]] = {
 }
 
 
-def compare(spec, *, draw_front, draw_back, entry) -> list[HitResult]:
+def compare(spec, *, draw_front, draw_back, entry, draw_date=None) -> list[HitResult]:
     """领域入口：按 spec.code 选策略 → 展开 entry → 对每个 SingleCombo 比对。
 
     spec: LotterySpec（决定路由策略 + number_style）
     draw_front / draw_back: 本期开奖号码（draw_back=None 表示无后区，如按位型）
     entry: Entry（原始注单；single 玩法 expand 返回自身一注，复式/胆拖 Phase 2）
+    draw_date：开奖日，用于奖级表规则版本路由（None=现行表；compare_service 恒传 dr.draw_date）
 
     返回每个展开单式的 HitResult（顺序与 expand 一致）。
     未知彩种 code 不在 REGISTRY → KeyError（不静默 fallback，显式失败暴露配置缺失）。
@@ -157,6 +166,7 @@ def compare(spec, *, draw_front, draw_back, entry) -> list[HitResult]:
                 lottery=spec.code,
                 draw=draw_front,
                 combo=combo.front,
+                draw_date=draw_date,
             )
         else:
             # partition / hybrid：前区 + 后区都参与
@@ -167,6 +177,7 @@ def compare(spec, *, draw_front, draw_back, entry) -> list[HitResult]:
                 combo_front=combo.front,
                 combo_back=combo.back,
                 append=entry.append,
+                draw_date=draw_date,
             )
         results.append(r)
     return results

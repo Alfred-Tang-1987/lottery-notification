@@ -150,6 +150,7 @@ class CompareService:
                             draw_front=draw_front,
                             draw_back=draw_back,
                             entry=entry,
+                            draw_date=dr.draw_date,  # 规则版本门：历史期更正重比按当时规则判定
                         )
                         # single/zhixuan 玩法展开为 1 注；复式/胆拖 Phase 2 扩展后逐注比对写行
                         for hit in results:
