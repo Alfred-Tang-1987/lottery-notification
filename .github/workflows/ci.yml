@@ -53,6 +53,12 @@ jobs:
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      # gitleaks-action v2 扫 PR 需要 GITHUB_TOKEN（breaking change）；SARIF 上传需 security-events。
+      # 仅本 job 放开，backend/frontend 保持全局 contents: read。
+      contents: read
+      pull-requests: write
+      security-events: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         with:
