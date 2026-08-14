@@ -178,6 +178,21 @@ def _build_scheduler_and_deps(engine: Engine, settings: Settings):
     return sched, deps
 
 
+def _data_source_state(settings: Settings) -> str:
+    """数据源配置三态：dual=双源交叉校验 / single_source=单源降级 / missing=全空。
+
+    validate_startup 的告警口径与 /health 的 data_sources 字段共用本函数——
+    判定逻辑只许有这一处，未来调整（如 MXNZP 半配警告）不会出现两处口径漂移。
+    """
+    has_mxnzp = bool(settings.mxnzp_api_key and settings.mxnzp_app_secret)
+    has_juhe = bool(settings.juhe_api_key)
+    if has_mxnzp and has_juhe:
+        return 'dual'
+    if has_mxnzp or has_juhe:
+        return 'single_source'
+    return 'missing'
+
+
 def validate_startup() -> None:
     """启动校验（spec §124）：
     - JWT_SECRET / CRYPTO_KEY：Settings field_validator 已强制；此处再实例化 CryptoService
@@ -203,6 +218,17 @@ def validate_startup() -> None:
     _smoke = crypto.encrypt('__startup_probe__', version=settings.current_key_version)
     crypto.decrypt(_smoke)
     settings.validate_email_bark_fallback()
+    # 数据源 key 检查（spec D4）：missing → WARNING（服务能跑但永远抓不到开奖，
+    # dashboard 空；静默等于「系统正常」假象）。single_source → INFO（合法单源模式，
+    # deploy.md 已文档化）。注意：不 raise——key 缺失不是启动错误，用户可能先起服务再配 key。
+    _ds_state = _data_source_state(settings)
+    if _ds_state == 'missing':
+        log.warning(
+            '数据源 key 全部为空（MXNZP_API_KEY/MXNZP_APP_SECRET/JUHE_API_KEY）'
+            '——开奖抓取不可用，dashboard 将无数据。配置见 README「数据源注册」。'
+        )
+    elif _ds_state == 'single_source':
+        log.info('单源模式运行（MXNZP 故障时无备源交叉校验，建议补齐 JUHE_API_KEY）。')
     # 奖金查询 API 字段名冒烟验证（OV2/OV8）：启动时确认 API 可用且字段名匹配。
     # 不匹配则 log error 但不阻止启动——PDF 降级可能仍可用（spec §10/§11）。
     _smoke_check_prize_sources(settings, log)
@@ -367,10 +393,14 @@ def health(db: Engine = Depends(get_db_for_health)):
         # hunter：db 故障不得静默——只在 HTTP 响应变 degraded 会让运维无迹可寻，延误发现。
         logger.warning('/health db 探活失败: %s', exc)
         db_ok = False
+    settings = get_settings()
     body = {
         'status': 'ok' if db_ok else 'degraded',
-        'tz': get_settings().tz,
+        'tz': settings.tz,
         'db': 'ok' if db_ok else 'down',
+        # key 缺失不打 503：缺 key ≠ 容器不健康（首次安装未配 key 属正常中间态），
+        # 否则 HEALTHCHECK 会把全新安装误判 unhealthy 重启循环。字段供人类/运维判读（D4）。
+        'data_sources': _data_source_state(settings),
     }
     # review-fix：DB down → HTTP 503，让编排层（Docker/k8s）正确标 unhealthy。
     # silent-failure 设防（L-20260706T010500Z 自验：HTTP 503 真能改变 Docker HEALTHCHECK

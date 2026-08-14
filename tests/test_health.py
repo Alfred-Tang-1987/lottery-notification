@@ -110,3 +110,60 @@ def test_health_returns_503_when_db_down():
         assert r.json()['db'] == 'down'
     finally:
         app.dependency_overrides.clear()
+
+
+# —— Plan 09 / T8：数据源 key 缺失告警（spec D4）——
+
+
+def _set_source_keys(monkeypatch, *, mxnzp_id='', mxnzp_secret='', juhe=''):
+    reset_settings_cache()
+    monkeypatch.setenv('JWT_SECRET', 'x' * 32)
+    monkeypatch.setenv('CRYPTO_KEY_V1', Fernet.generate_key().decode())
+    monkeypatch.setenv('MXNZP_API_KEY', mxnzp_id)
+    monkeypatch.setenv('MXNZP_APP_SECRET', mxnzp_secret)
+    monkeypatch.setenv('JUHE_API_KEY', juhe)
+
+
+def test_health_data_sources_missing(monkeypatch, db_engine):
+    """key 全空 → data_sources=missing，但 HTTP 仍 200（缺 key ≠ 容器不健康，
+    否则首次安装未配 key 就被 HEALTHCHECK 重启循环）。"""
+    _set_source_keys(monkeypatch)
+    app.dependency_overrides[get_db_for_health] = lambda: db_engine
+    try:
+        r = TestClient(app).get('/health')
+        assert r.status_code == 200
+        assert r.json()['data_sources'] == 'missing'
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_health_data_sources_single_source(monkeypatch, db_engine):
+    _set_source_keys(monkeypatch, mxnzp_id='id', mxnzp_secret='secret')
+    app.dependency_overrides[get_db_for_health] = lambda: db_engine
+    try:
+        r = TestClient(app).get('/health')
+        assert r.json()['data_sources'] == 'single_source'
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_health_data_sources_dual(monkeypatch, db_engine):
+    _set_source_keys(monkeypatch, mxnzp_id='id', mxnzp_secret='secret', juhe='key')
+    app.dependency_overrides[get_db_for_health] = lambda: db_engine
+    try:
+        r = TestClient(app).get('/health')
+        assert r.json()['data_sources'] == 'dual'
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_validate_startup_warns_when_all_source_keys_empty(monkeypatch, caplog):
+    """silent-failure 纪律：数据源 key 全空必须 WARNING 显眼告警——否则 dashboard
+    永远空、用户无从得知（D4）。"""
+    _set_source_keys(monkeypatch)
+    with caplog.at_level(logging.WARNING, logger='app.startup'):
+        validate_startup()
+    assert any(
+        '数据源' in rec.message and rec.levelno >= logging.WARNING
+        for rec in caplog.records
+    ), 'key 全空应 WARNING 告警'
