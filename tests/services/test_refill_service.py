@@ -81,9 +81,15 @@ def test_refill_skips_after_max_age_and_marks_unresolved(db_engine):
         assert cmp.unresolved is True  # 必须标记 unresolved
 
 
-def test_refill_explicit_tier_filter_only_float(db_engine):
-    """仅 prize_tier IN (1,2) 的浮动档才进入回填；三等奖固定档 prize_amount 有值，不应被选中。"""
-    cmp_id, _ = _seed_float_win(db_engine, days_ago=1, tier=3)
+def test_refill_filters_fixed_tiers_derived_from_tables(db_engine):
+    """仅浮动档进入回填——tier 过滤从奖级表动态推导（_FLOAT_TIERS），非硬编码 (1,2)。
+
+    Plan 10/T2 断言更新（旧断言编码硬编码 (1,2) 旧规则）：旧用例用 ssq tier=3 验证
+    「固定档不回填」——但 qlc 三等改浮动后，tier 3 已属 _FLOAT_TIERS 跨彩种并集
+    （ssq tier 3 的 None 行会被回填，这正是并集语义「多选行只会多回填尝试，不会漏」）。
+    改用 tier=4（ssq/dlt/qlc/qxc 均固定，不在 _FLOAT_TIERS）继续验证「固定档不回填」。
+    """
+    cmp_id, _ = _seed_float_win(db_engine, days_ago=1, tier=4)
     # 手动把 prize_amount 设为 None 模拟错误状态（固定档不应为 None）
     with Session(db_engine) as s:
         cmp = s.get(Comparison, cmp_id)
@@ -92,7 +98,7 @@ def test_refill_explicit_tier_filter_only_float(db_engine):
     from unittest.mock import MagicMock
 
     worker = FloatRefillWorker(db_engine, amount_lookup=MagicMock(return_value=999), max_age_days=7)
-    assert worker.refill() == 0  # tier 3 不是浮动档，不应回填
+    assert worker.refill() == 0  # tier 4 非浮动档（任何彩种），不应回填
     with Session(db_engine) as s:
         cmp = s.get(Comparison, cmp_id)
         assert cmp.prize_amount is None  # 未被修改
@@ -590,3 +596,24 @@ class TestRefillRateLimit:
         # 同组 2 行，第 1 行后 sleep，第 2 行（最后）不 sleep
         assert mock_sleep.call_count == 1
         mock_sleep.assert_called_with(0.5)
+
+
+# ────────── Plan 10 T2：浮动 tier 过滤动态化（eng-review 外部声音发现 2）──────────
+
+
+def test_refill_selects_qlc_third_float_tier(db_engine):
+    """qlc 三等（6+0，浮动）中奖行必须被 refill 选中——tier 过滤从奖级表动态推导，
+    不得硬编码 (1,2)。构造：verified qlc DrawResult + Comparison(is_win, prize_tier=3,
+    prize_amount=None) → refill 选中并对 amount_lookup 发 ('qlc', ..., tier=3)。"""
+    cmp_id, _ = _seed_float_win_with_ticket(db_engine, tier=3, lottery_code='qlc')
+    mock_lookup = MagicMock(return_value=5_000_000)
+    worker = FloatRefillWorker(db_engine, amount_lookup=mock_lookup, max_age_days=7)
+    n = worker.refill()
+    assert n == 1, f'qlc 三等浮动行必须被 refill 选中（不得被硬编码 (1,2) 过滤漏掉），实际 {n}'
+    # lookup 以 qlc + tier=3 调用——tier 过滤从奖级表动态推导（_FLOAT_TIERS 含 qlc 三等）
+    assert mock_lookup.call_count == 1
+    code, _draw_no, _draw_date, tier = mock_lookup.call_args[0]
+    assert code == 'qlc', f'lookup 应发 qlc，实得 {code}'
+    assert tier == 3, f'lookup 应带 tier=3，实得 {tier}'
+    with Session(db_engine) as s:
+        assert s.get(Comparison, cmp_id).prize_amount == 5_000_000
