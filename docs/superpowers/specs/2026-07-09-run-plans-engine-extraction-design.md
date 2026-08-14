@@ -385,7 +385,7 @@ console.log(`✓ synced run-plans.js → ${path.relative(CONSUMER_ROOT, DEST)} (
 
 ```
 阶段一：建通用仓库（本地）
-  1. 在 c:/Users/Alfred/Documents/projects/run-plans-engine 建 git 仓库
+  1. 在 <LOCAL_PATH>/run-plans-engine 建 git 仓库
   2. 从 lottery-notification 复制 engine 文件（按 7.1 映射表）
   3. 调整 sync.test.js 路径（7.2）+ 创建脚本（7.3）+ examples + README + .gitattributes
   4. 跑 node --test tests/ 验证全绿（含 sync.test 字节守护；同时检查所有 tests 是否有硬编码消费项目路径）
