@@ -4,7 +4,7 @@
 实现:
   - PartitionCompare : 双色球/大乐透/七乐彩（集合匹配红/蓝球个数；七乐彩后区特别号单独计命中）
   - PositionalCompare: 福彩3D/排列3/排列5（T7）
-  - QxcHybridCompare: 七星彩（T8）
+  - QxcHybridCompare: 七星彩（前区任意对位计数，2020 新规）
 """
 
 from app.domain.prize import HitResult, PrizeTier
@@ -98,30 +98,24 @@ class PositionalCompare(CompareStrategy):
 
 
 class QxcHybridCompare(CompareStrategy):
-    """七星彩混合型：前区 6 位按位连续命中 + 后区单值 0-14。
+    """七星彩混合型：前区 6 位按位对号计数 + 后区单值 0-14。
 
-    前区按位（0-9，允许跨位重复），后区单值（0-14）。
-    front_hit = 前区从首位起**连续命中位数**（前缀计数）。
+    front_hit = 前区 6 位中**任意位置对位命中数**（0-6，按位对号入座、不要求连续）；
     back_hit = 后区单值是否命中（0/1）。
 
-    语义澄清：lottery-rules.md「按位对应（无需连续对位）」指**选号无需连号**
-    （不要求选 1,2,3,4,5,6 连续数字），**非**命中判定方式。七星彩奖级按
-    **连续命中位数**（consecutive correct positions）判定——该彩种本质。
-    MVP 用「首位起前缀连续命中」近似；若官方按「最长连续段」(longest run)，
-    Phase 2 用真实开奖校准 front_hit 计算与 condition。一二等（6 位全对）不受影响。
+    规则依据（2026-08-14 核对 lottery.gov.cn 7星彩规则第二十二条，2020-10-13 起施行）：
+    三至六等为「投注号码中任意 N 个数字与开奖号码对应位置数字相同」——任意位、非连续。
+    旧实现曾用「首位起前缀连续命中」近似并注释「Phase 2 校准」，本次按官方规则修正；
+    同时补上了旧实现漏判的六等 2+1 / 1+1 / 0+1（静默漏中奖，违反「中奖永不静默漏通知」）。
+
+    draw_date 透传 _match_tier 做规则版本路由（qxc 现仅 2020 单版本，None=现行表；
+    签名与 PartitionCompare/PositionalCompare 保持一致——eng-review 外部声音发现 3）。
     """
 
     @staticmethod
-    def compare(
-        lottery, draw_front, draw_back, combo_front, combo_back, *, append=False, draw_date=None, **_kw
-    ) -> HitResult:
-        # 前区：首位起前缀连续命中位数
-        front_hit = 0
-        for a, b in zip(draw_front, combo_front, strict=False):
-            if a == b:
-                front_hit += 1
-            else:
-                break
+    def compare(lottery, draw_front, draw_back, combo_front, combo_back, *, append=False, draw_date=None, **_kw) -> HitResult:
+        # 前区：任意位置对位命中数（每位独立比较，位置敏感）
+        front_hit = sum(1 for a, b in zip(draw_front, combo_front, strict=False) if a == b)
         # 后区：单值是否命中（draw_back/combo_back 均为单元素 tuple）
         back_hit = 1 if (combo_back and draw_back and combo_back[0] == draw_back[0]) else 0
 
