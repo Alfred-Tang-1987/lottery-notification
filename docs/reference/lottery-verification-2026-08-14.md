@@ -24,7 +24,8 @@
 - ssq 生产基线（2026093 期真实夹具）全程绿。
 - 已实现面单元测试补齐：每彩种每个已实现奖级 ≥1 命中用例 + 不中奖边界用例。
 - 未实现项全部文档降级声明（README 能力边界 + lottery-rules.md 注记）并列 B2 roadmap，无过度宣称。
-- 全量回归绿（后端 pytest + 前端 vitest + build）；生产库存量票/比对行已核查并按需 recompare。
+- 全量回归绿（后端 pytest + 前端 vitest + build）。
+- **生产发布与 recompare（2026-08-15）**：plan-10 已部署 NAS（容器重建，751→752 全绿代码上线）。存量票核查干净（仅 ssq single ×5）。recompare 经 dry-run + **DB 副本探针**评估后**未实跑**：本库 0 行旧错误需修正（仅 ssq 单式票、ssq 规则未变，UPDATED=0），实跑唯一效果是补 250 行「票创建之前的历史期」phantom comparison（含 17 行 phantom 中奖 → 虚假 PrizeClaim）与 phantom DrawCost——纯伤害，判定不执行。**设计缺口**：`recompare_all` 重入 `_compare_one` 时无「票创建时间 ≤ 开奖日」过滤，全量回放会为晚创建的票补出它不存在的期的比对行；已记入 follow-up（待修：按 `Ticket.created_at ≤ DrawResult.draw_date` 过滤，或只重比已有比对行的期）。
 
 ## B2 roadmap（发布后，不进本 plan）
 
@@ -62,3 +63,4 @@
 - fc3d：号码结构/开奖日/单选 1040 元一致。**发现**：danxuan 票可建但 `_count_combos` 不接受 → 比对静默跳过（永不比对）。**处置（B1代码修复，T4）**：danxuan 纳入 `IMPLEMENTED_PLAY_TYPES`（展开 1 注）；API 建/改票对未实现玩法 400 拒绝；UI 裁剪未实现玩法选项。其余 11 玩法（组选三/六/1D/2D/通选/和数/包选/猜大小/猜三同/拖拉机/猜奇偶）→ B2。
 - pl3：直选 1040 元一致；组选三/六未实现 → T4 API 拦截 + UI 裁剪 + B2。
 - pl5：直选 10 万/注一致；定位/组合复式未实现 → B2（play_types 本只声明 zhixuan，无需拦截）。
+- **存量票核查（2026-08-15，NAS 生产库只读）**：启用票仅 `ssq | single | ×5`，无未实现玩法票（组选/复式/胆拖 0 张），无需人工处置。
