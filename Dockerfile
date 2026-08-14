@@ -31,6 +31,10 @@ RUN pip install --no-cache-dir uv
 WORKDIR /app
 # 先 copy 依赖锁文件，利用 layer cache（仅 lockfile 变化才重装 python 依赖）
 COPY pyproject.toml uv.lock ./
+# CN PyPI 镜像：国内构建访问 files.pythonhosted.org 持续超时（CN 网络限流，NAS 实测），
+# 默认清华 TUNA；非 CN 环境可用 --build-arg UV_INDEX_URL=https://pypi.org/simple 覆盖
+ARG UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ENV UV_DEFAULT_INDEX=${UV_INDEX_URL}
 # --frozen：严格按 uv.lock，不解析；--no-dev：生产不装测试/lint 依赖
 RUN uv sync --frozen --no-dev
 # 应用代码
