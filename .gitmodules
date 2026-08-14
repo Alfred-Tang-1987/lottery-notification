@@ -1,3 +1,0 @@
-[submodule ".claude/workflow-engine"]
-	path = .claude/workflow-engine
-	url = http://192.168.8.168:8418/gitea/run-plans-engine.git

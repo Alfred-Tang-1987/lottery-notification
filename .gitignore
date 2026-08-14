@@ -31,3 +31,12 @@ graphify-out/
 
 # Playwright MCP 临时页面快照（浏览外部文档时的 accessibility tree dump，一次性调试产物）
 .playwright-mcp/
+
+# workflow 引擎（私有内部工具，经 scripts/setup-workflow-engine.sh 按需 clone，不入库）
+.claude/workflow-engine/
+
+# NAS 专属运维记录（内网细节，本地保留，不入库）
+deploy-nas-internal.md
+
+# 自签证书（本地生成，HTTPS 部署用）
+certs/

@@ -78,6 +78,12 @@ for pat in "${PATTERNS[@]}" "${SECRET_PATTERNS[@]}"; do
   fi
 done
 
+# F20：子模块机制已永久移除（plan-09/T3），不得回归
+if [ -f .gitmodules ] || git -C "$ROOT" ls-files --error-unmatch .claude/workflow-engine >/dev/null 2>&1; then
+  echo 'FAIL: 检测到 .gitmodules 或已跟踪的 .claude/workflow-engine（子模块已移除，不得回归）' >&2
+  FAIL=1
+fi
+
 if [ "$GREP_ONLY" -eq 0 ]; then
   if ! command -v gitleaks >/dev/null 2>&1; then
     echo 'FAIL: 未安装 gitleaks。安装：brew install gitleaks；CI 场景用 --grep-only' >&2
