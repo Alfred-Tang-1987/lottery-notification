@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 逐彩种核对 `docs/reference/lottery-rules.md` vs `app/domain/` 实现，按 B1 范围处置：小差异 TDD 修复（dlt 2026 七档新规 / qlc 浮动档与金额 / qxc 任意对位语义与漏判 / fc3d danxuan 静默不比对）、未实现玩法诚实降级为文档声明 + B2 roadmap、已实现面补齐单元测试，产出带处置列的核对报告。
+**Goal:** 逐彩种核对 `docs/reference/lottery-rules.md` vs `app/domain/` 实现，按 B1 范围处置：小差异 TDD 修复（dlt 2026 七档新规 + 规则版本门 / qlc 浮动档与金额 + refill 浮动集动态化 / qxc 任意对位语义与漏判 / fc3d danxuan 静默不比对 / recompare 存量重算 CLI）、未实现玩法诚实降级为文档声明 + B2 roadmap、已实现面补齐单元测试，产出带处置列的核对报告。
 
-**Architecture:** 纯领域层数据/语义修正（`prize_tables.py` / `compare.py` / `entry.py`）+ API 边界玩法校验（`app/api/tickets.py`）+ 前端玩法列表裁剪（`web/src/lib/lotteries.ts`）。ssq 生产回归基线夹具先行（T0），之后每个彩种一个任务、独立 TDD 循环。不改表结构、不改适配器、不改调度。
+**Architecture:** 领域层数据/语义修正（`prize_tables.py` 版本化 + `compare.py` draw_date 透传 + `entry.py` 玩法白名单）+ refill worker 浮动集动态化 + API 边界玩法校验（`app/api/tickets.py`）+ 前端玩法列表裁剪（`web/src/lib/lotteries.ts`）+ `recompare` CLI（存量行重算）。ssq 生产回归基线夹具先行（T0），之后每个彩种一个任务、独立 TDD 循环。不改表结构、不改适配器、不改调度。
 
-**Tech Stack:** Python 3.12 / pytest / FastAPI TestClient / vitest。
+**Tech Stack:** Python 3.12 / pytest / FastAPI TestClient / vitest。**含 1 项评审新增任务（T6 recompare CLI，用户裁决）与 1 项范围例外（T1 规则版本门，eng-review Issue 3 用户裁决）。**
 
 **Spec:** `docs/superpowers/specs/2026-08-14-open-source-release-design.md` §4（B1 范围，autoplan 终审 2026-08-14 确认）
 
@@ -21,7 +21,7 @@
 
 ## Global Constraints
 
-- **B1 范围红线**：只做「小差异代码修复 + 文档降级 + 已实现面补测」。**不实现**复式/胆拖/组选三六/fc3d 其余玩法/pl5 定位组合复式/ssq 福运奖/dlt 奖池上浮档（全部 B2 roadmap）。
+- **B1 范围红线**：只做「小差异代码修复 + 文档降级 + 已实现面补测」。**不实现**复式/胆拖/组选三六/fc3d 其余玩法/pl5 定位组合复式/ssq 福运奖/dlt 奖池上浮档（全部 B2 roadmap）。**唯一例外（eng-review Issue 3 用户裁决）**：dlt 规则版本门——`get_tiers` 按开奖日路由 2019/2026 双版本表，属正确性修复而非新玩法。
 - **ssq 基线先行**：T0 的 `tests/domain/test_ssq_regression_baseline.py` 在任何 `prize_tables.py`/`compare.py` 改动前必须先合入且绿；之后每次改动后必须仍绿。
 - **TDD**：每任务 RED（失败测试）→ GREEN（最小修复）→ REFACTOR；commit 约定 `feat(plan-10/T<n>): <描述>`。
 - **领域层零 IO**（`uv run lint-imports` 强制）；金额一律分（int）；`draw_days` 0-based 周几。
@@ -210,39 +210,51 @@ git commit -m "feat(plan-10/T0): ssq 生产回归基线夹具（2026093 期真�
 
 ---
 
-### Task 1: dlt 修正为 2026 七档新规（TDD）
+### Task 1: dlt 修正为 2026 七档新规 + 规则版本门（TDD）
 
 **Files:**
-- Modify: `app/domain/prize_tables.py:33-57`（dlt 表重写）
+- Modify: `app/domain/prize_tables.py`（版本化结构 `_VERSIONED_TABLES` + dlt 2019/2026 双版本表 + `get_tiers` 加 `draw_date` 形参）
+- Modify: `app/domain/compare.py`（`_match_tier` 加 draw_date；三个策略 `compare` 签名加 `draw_date=None`；领域入口 `compare()` 加 `draw_date=None` 透传）
+- Modify: `app/services/compare_service.py:148-153`（`domain_compare(...)` 调用加 `draw_date=dr.draw_date`）
+- Modify: `app/services/refill_service.py:157,187`（`_find_tier` 加 draw_date 透传）
 - Modify: `tests/domain/test_prize_tables.py:53`（EXPECTED_FIXED_CENTS['dlt']）
 - Create: `tests/domain/test_dlt_2026_rules.py`
-- Modify: `docs/reference/lottery-rules.md`（dlt 节增奖级表）
+- Modify: `tests/services/test_compare_service.py`（增 1 例 draw_date 透传 spy 测试）
+- Modify: `docs/reference/lottery-rules.md`（dlt 节：2019 九档 + 2026 七档双表）
 - Modify: `docs/reference/lottery-verification-2026-08-14.md`（dlt 明细节）
 
 **Interfaces:**
-- Consumes: `PrizeTier(tier, condition, amount, amount_type, append_multiplier=1.0)`；`PartitionCompare.compare('dlt', draw_front, draw_back, combo_front, combo_back, *, append)`；T0 基线。
-- Produces: 2026 新规 dlt 奖级表（7 档；金额=奖池 <8 亿基础档，单位分）；lottery-rules.md dlt 权威表。
+- Consumes: `PrizeTier(tier, condition, amount, amount_type, append_multiplier=1.0)`；T0 基线。`DrawResult.draw_date` 类型为 `datetime`（`app/models/draw.py:14`）。
+- Produces（后续任务与调用方依赖的确切签名）：
+  - `get_tiers(lottery_code: str, draw_date: date | datetime | None = None) -> list[PrizeTier]`——`None` = 现行（最新）版本；传日期则返回「生效日 ≤ draw_date 的最新版本」。T2/T3 改表时**不得**改变此签名。
+  - `compare(spec, *, draw_front, draw_back, entry, draw_date=None) -> list[HitResult]`——领域入口新增可选 `draw_date` 并透传策略。
+  - 策略签名变为 `compare(lottery, draw_front, draw_back, combo_front, combo_back, *, append, draw_date=None)`（PositionalCompare 同样接收，仅传给 `_match_tier`）。
 
-- [ ] **Step 1: RED——改 `EXPECTED_FIXED_CENTS` + 写条件测试**
+设计要点（eng-review Issue 3 用户裁决：现在就做规则版本门）：奖级表改为按生效日版本化，重比历史期按**当时**规则判定。dlt 2019 九档表采用**官方正确版**（现行代码里的旧表是合并条件贴错金额的错误表，不作为历史版本保留）。
 
-`tests/domain/test_prize_tables.py` 的 `EXPECTED_FIXED_CENTS` 中 dlt 行改为：
+- [ ] **Step 1: RED——改 `EXPECTED_FIXED_CENTS` + 写条件/版本测试**
+
+`tests/domain/test_prize_tables.py` 的 `EXPECTED_FIXED_CENTS` 中 dlt 行改为（`get_tiers` 不传日期 = 现行 2026 表）：
 
 ```python
     'dlt': {3: 500000, 4: 30000, 5: 15000, 6: 1500, 7: 500},
 ```
 
-同时把上方注释块中 dlt 行改为 `#   dlt 三等5000 / 四等300 / 五等150 / 六等15 / 七等5 元（2026-02-01 新规，财综〔2025〕51 号）`。
+注释块 dlt 行改为 `#   dlt 三等5000 / 四等300 / 五等150 / 六等15 / 七等5 元（2026-02-01 新规，财综〔2025〕51 号；2019 九档经 draw_date 版本门保留）`。
 
 新建 `tests/domain/test_dlt_2026_rules.py`：
 
 ```python
 # tests/domain/test_dlt_2026_rules.py
-"""dlt 2026 新规（9 档并 7 档）条件测试（Plan 10 / T1）。
+"""dlt 2026 新规（9 档并 7 档）+ 规则版本门测试（Plan 10 / T1）。
 
 依据：财综〔2025〕51 号 + 体彩中心公告（2026-01-16），第 26014 期（2026-01-31）起执行。
 合并规则：原(5+0)+(4+2)→新三等；原(4+0)+(3+2)→新五等；1+1/2+0/0+1 不中奖。
 金额为奖池 <8 亿基础档；≥8 亿上浮档（6666/380/200/18/7）需奖池数据，B2 roadmap。
+版本门：2026-01-31 之前的开奖日按 2019 九档表判定（eng-review Issue 3）。
 """
+
+from datetime import date, datetime
 
 import pytest
 
@@ -253,9 +265,10 @@ DRAW_FRONT = (1, 2, 3, 4, 5)
 DRAW_BACK = (6, 7)
 
 
-def _dlt(front, back, append=False):
+def _dlt(front, back, append=False, draw_date=None):
     return PartitionCompare.compare(
-        'dlt', DRAW_FRONT, DRAW_BACK, tuple(front), tuple(back), append=append,
+        'dlt', DRAW_FRONT, DRAW_BACK, tuple(front), tuple(back),
+        append=append, draw_date=draw_date,
     )
 
 
@@ -278,6 +291,7 @@ def _dlt(front, back, append=False):
     ],
 )
 def test_dlt_2026_tiers(front, back, tier, amount):
+    """现行表（不传 draw_date = 最新版本）。"""
     r = _dlt(front, back)
     assert r.is_win, f'{front}+{back} 应中 {tier} 等'
     assert r.tier == tier and r.amount == amount
@@ -286,7 +300,7 @@ def test_dlt_2026_tiers(front, back, tier, amount):
 @pytest.mark.parametrize(
     ('front', 'back'),
     [
-        ((1, 9, 9, 9, 9), (6, 8)),   # 1+1 不中奖（旧表误判七等 100 元）
+        ((1, 9, 9, 9, 9), (6, 8)),   # 1+1 不中奖（旧错误表曾误判七等 100 元）
         ((1, 2, 9, 9, 9), (8, 9)),   # 2+0 不中奖
         ((9, 9, 9, 9, 9), (6, 8)),   # 0+1 不中奖
         ((9, 9, 9, 9, 9), (8, 9)),   # 0+0
@@ -303,49 +317,246 @@ def test_dlt_append_multiplier_only_on_float_tiers():
     assert tiers[2].append_multiplier == 1.8
     for n in range(3, 8):
         assert tiers[n].append_multiplier == 1.0, f'{n} 等不得有追加倍数'
+
+
+# —— 规则版本门（eng-review Issue 3）：历史期按当时规则判定 ——
+
+
+def test_dlt_version_boundary_old_draw_uses_2019_table():
+    """2026-01-30 及之前 → 2019 九档：4+2 = 四等 3000 元（新规下同号组合是三等 5000）。"""
+    r = _dlt((1, 2, 3, 4, 9), (6, 7), draw_date=date(2026, 1, 30))
+    assert r.is_win and r.tier == 4 and r.amount == 300000
+
+
+def test_dlt_version_boundary_new_draw_uses_2026_table():
+    """2026-01-31（第 26014 期开售）起 → 七档：4+2 = 三等 5000 元。"""
+    r = _dlt((1, 2, 3, 4, 9), (6, 7), draw_date=date(2026, 1, 31))
+    assert r.is_win and r.tier == 3 and r.amount == 500000
+
+
+def test_dlt_2019_tier8_tier9_exist():
+    """2019 表八等（3+1/2+2=15 元）与九等（3+0/1+2/2+1/0+2=5 元）。"""
+    r8 = _dlt((1, 2, 3, 9, 9), (6, 8), draw_date=date(2025, 6, 1))
+    assert r8.is_win and r8.tier == 8 and r8.amount == 1500
+    r9 = _dlt((9, 9, 9, 9, 9), (6, 7), draw_date=date(2025, 6, 1))
+    assert r9.is_win and r9.tier == 9 and r9.amount == 500
+
+
+def test_dlt_2019_five_plus_zero_is_tier3_10000():
+    """2019 表三等 5+0 = 10000 元（与 2026 合并三等 5000 区分）。"""
+    r = _dlt((1, 2, 3, 4, 5), (8, 9), draw_date=datetime(2026, 1, 15, 21, 30))
+    assert r.is_win and r.tier == 3 and r.amount == 1000000
 ```
+
+（最后一例故意传 `datetime`——`DrawResult.draw_date` 就是 datetime，版本门必须归一。）
+
+`tests/services/test_compare_service.py` 追加 draw_date 透传 spy 测试（版本门的接线护栏——domain 默认值是现行表，若 service 不传 draw_date，历史期重比会静默用新表）：
+
+```python
+def test_compare_one_passes_draw_date_to_domain(db_engine, monkeypatch):
+    """compare_service 必须把 dr.draw_date 透传给领域 compare（规则版本门接线）。
+
+    若该线断开，draw_date=None → 领域层默认现行表 → 2026-01-31 前的历史期
+    更正重比会按新规误判（eng-review Issue 3）。
+    """
+    import app.services.compare_service as cs_mod
+
+    captured = {}
+    real_compare = cs_mod.domain_compare
+
+    def _spy(spec, *, draw_front, draw_back, entry, draw_date=None):
+        captured['draw_date'] = draw_date
+        return real_compare(spec, draw_front=draw_front, draw_back=draw_back, entry=entry, draw_date=draw_date)
+
+    monkeypatch.setattr(cs_mod, 'domain_compare', _spy)
+    # …准备数据沿用本文件既有 fixture 模式建一期 verified DrawResult + 一张 enabled ticket…
+    # 触发 _compare_one 后：
+    assert captured['draw_date'] is not None
+```
+
+（该例的准备数据代码沿用 `test_compare_service.py` 既有 `_seed_*` 辅助函数的写法；实现时照本文件现有用例的 fixture 组合补齐，断言点固定为 `captured['draw_date']` 等于该期 `draw_date`。）
 
 - [ ] **Step 2: 跑测试确认失败**
 
 Run: `uv run pytest tests/domain/test_dlt_2026_rules.py tests/domain/test_prize_tables.py -v`
-Expected: FAIL（旧表条件/金额不符）
+Expected: FAIL（`draw_date` 未知关键字 / 旧表条件金额不符）
 
-- [ ] **Step 3: GREEN——重写 `prize_tables.py` 的 dlt 表**
+- [ ] **Step 3: GREEN——版本化 `prize_tables.py`**
+
+把 `PRIZE_TABLES` 直dict 改为「彩种常量 + 版本注册表」结构：
 
 ```python
-    # 大乐透（2026-02-01 新规，财综〔2025〕51 号，第 26014 期起；9 档并 7 档）：
-    # 一二等浮动（追加 1.8 = 基本 + 追加 80%）；三等 5000 / 四等 300 / 五等 150 / 六等 15 / 七等 5 元。
-    # 金额为奖池 <8 亿基础档；≥8 亿上浮（6666/380/200/18/7）需奖池数据，未实现（B2 roadmap，
-    # 核对报告 dlt 节）。1+1 / 2+0 / 0+1 不中奖（旧表曾误判，2026-08-14 修正）。
-    'dlt': [
-        PrizeTier(1, 'front_hit==5 and back_hit==2', None, _V, append_multiplier=1.8),
-        PrizeTier(2, 'front_hit==5 and back_hit==1', None, _V, append_multiplier=1.8),
-        PrizeTier(3, '(front_hit==5 and back_hit==0) or (front_hit==4 and back_hit==2)', 500000, _F),
-        PrizeTier(4, 'front_hit==4 and back_hit==1', 30000, _F),
-        PrizeTier(5, '(front_hit==4 and back_hit==0) or (front_hit==3 and back_hit==2)', 15000, _F),
-        PrizeTier(6, '(front_hit==3 and back_hit==1) or (front_hit==2 and back_hit==2)', 1500, _F),
-        PrizeTier(
-            7,
-            '(front_hit==3 and back_hit==0) or (front_hit==1 and back_hit==2) or (front_hit==2 and back_hit==1) or (front_hit==0 and back_hit==2)',
-            500,
-            _F,
-        ),
-    ],
+"""7 大彩种奖级表（可配置数据文件，按规则生效日版本化）。
+固定档金额对照 docs/reference/lottery-rules.md + 官方公告；政策调整改此文件不改代码。
+condition 用 front_hit/back_hit 表达式（partition/positional 通用变量）。
+七星彩(qxc) 用 front_hit=前区任意对位命中数、back_hit=后区命中（见 QxcHybridCompare）。
+
+版本门（2026-08-14，eng-review Issue 3）：规则变更只允许在 _VERSIONED_TABLES 追加新行，
+不得改历史行——官方更正触发的历史期重比按「当时生效」的规则表判定。"""
+
+from datetime import date, datetime
+
+from app.domain.prize import AmountType, PrizeTier
+
+# （_F/_V 与元/分纪律注释保持原样）
+
+_F = AmountType.FIXED
+_V = AmountType.FLOAT
+
+_SSQ = [
+    PrizeTier(1, 'front_hit==6 and back_hit==1', None, _V),
+    PrizeTier(2, 'front_hit==6 and back_hit==0', None, _V),
+    PrizeTier(3, 'front_hit==5 and back_hit==1', 300000, _F),
+    PrizeTier(4, '(front_hit==5 and back_hit==0) or (front_hit==4 and back_hit==1)', 20000, _F),
+    PrizeTier(5, '(front_hit==4 and back_hit==0) or (front_hit==3 and back_hit==1)', 1000, _F),
+    PrizeTier(
+        6,
+        '(front_hit==2 and back_hit==1) or (front_hit==1 and back_hit==1) or (front_hit==0 and back_hit==1)',
+        500,
+        _F,
+    ),
+]
+# ssq 2026-02-01 新规：固定档不变（2026093 期实测），仅新增福运奖（奖池 ≥15 亿时 3+0=5 元，
+# 依赖奖池数据，未实现 → B2）与一二等单期封顶（不影响比对，金额官方回填）。
+
+# 大乐透 2019 九档（2019-02-20 第 19019 期 — 2026-01-30 开奖期）：
+# 三等 5+0=10000 / 四等 4+2=3000 / 五等 4+1=300 / 六等 3+2=200 / 七等 4+0=100 /
+# 八等 3+1|2+2=15 / 九等 3+0|1+2|2+1|0+2=5 元。追加仅一二等 80%（1.8）。
+# ⚠️ 这是官方正确九档表——本仓库旧代码里的「合并条件贴 2019 金额」表是错误表，未作历史版本保留。
+_DLT_2019 = [
+    PrizeTier(1, 'front_hit==5 and back_hit==2', None, _V, append_multiplier=1.8),
+    PrizeTier(2, 'front_hit==5 and back_hit==1', None, _V, append_multiplier=1.8),
+    PrizeTier(3, 'front_hit==5 and back_hit==0', 1000000, _F),
+    PrizeTier(4, 'front_hit==4 and back_hit==2', 300000, _F),
+    PrizeTier(5, 'front_hit==4 and back_hit==1', 30000, _F),
+    PrizeTier(6, 'front_hit==3 and back_hit==2', 20000, _F),
+    PrizeTier(7, 'front_hit==4 and back_hit==0', 10000, _F),
+    PrizeTier(8, '(front_hit==3 and back_hit==1) or (front_hit==2 and back_hit==2)', 1500, _F),
+    PrizeTier(
+        9,
+        '(front_hit==3 and back_hit==0) or (front_hit==1 and back_hit==2) or (front_hit==2 and back_hit==1) or (front_hit==0 and back_hit==2)',
+        500,
+        _F,
+    ),
+]
+
+# 大乐透 2026 七档（财综〔2025〕51 号，2026-01-31 第 26014 期起；9 档并 7 档）：
+# 一二等浮动（追加 1.8 不变）；三等 5000 / 四等 300 / 五等 150 / 六等 15 / 七等 5 元。
+# 金额为奖池 <8 亿基础档；≥8 亿上浮（6666/380/200/18/7）需奖池数据，未实现（B2 roadmap）。
+# 1+1 / 2+0 / 0+1 不中奖。
+_DLT_2026 = [
+    PrizeTier(1, 'front_hit==5 and back_hit==2', None, _V, append_multiplier=1.8),
+    PrizeTier(2, 'front_hit==5 and back_hit==1', None, _V, append_multiplier=1.8),
+    PrizeTier(3, '(front_hit==5 and back_hit==0) or (front_hit==4 and back_hit==2)', 500000, _F),
+    PrizeTier(4, 'front_hit==4 and back_hit==1', 30000, _F),
+    PrizeTier(5, '(front_hit==4 and back_hit==0) or (front_hit==3 and back_hit==2)', 15000, _F),
+    PrizeTier(6, '(front_hit==3 and back_hit==1) or (front_hit==2 and back_hit==2)', 1500, _F),
+    PrizeTier(
+        7,
+        '(front_hit==3 and back_hit==0) or (front_hit==1 and back_hit==2) or (front_hit==2 and back_hit==1) or (front_hit==0 and back_hit==2)',
+        500,
+        _F,
+    ),
+]
+
+_QLC = [ ... ]   # 现状 qlc 表原样保留（T2 再改——本任务只动 dlt 与版本结构）
+_QXC = [ ... ]   # 现状 qxc 表原样保留（T3 再改）
+_FC3D = [PrizeTier(1, 'front_hit==3', 104000, _F)]
+_PL3 = [PrizeTier(1, 'front_hit==3', 104000, _F)]
+_PL5 = [PrizeTier(1, 'front_hit==5', 10000000, _F)]
+
+# 版本注册表：code -> [(生效日, 表)] 按生效日升序；最后一个 生效日<=draw_date 的生效。
+# date.min = 系统最早数据起生效。qxc 2020 改版前的纯 7 位旧规则早于系统任何数据（回填仅
+# 最近约 50 期），不建版本。
+_VERSIONED_TABLES: dict[str, list[tuple[date, list[PrizeTier]]]] = {
+    'ssq': [(date.min, _SSQ)],
+    'dlt': [(date.min, _DLT_2019), (date(2026, 1, 31), _DLT_2026)],
+    'qlc': [(date.min, _QLC)],
+    'qxc': [(date.min, _QXC)],
+    'fc3d': [(date.min, _FC3D)],
+    'pl3': [(date.min, _PL3)],
+    'pl5': [(date.min, _PL5)],
+}
+
+# 兼容别名：现行版本直查表（既有 PRIZE_TABLES 引用方不破坏）。
+PRIZE_TABLES: dict[str, list[PrizeTier]] = {code: versions[-1][1] for code, versions in _VERSIONED_TABLES.items()}
+
+
+def get_tiers(lottery_code: str, draw_date: date | datetime | None = None) -> list[PrizeTier]:
+    """按开奖日返回适用规则版本的奖级表（tier 1 最高升序）。
+
+    draw_date=None → 现行（最新）版本；传 date/datetime 则返回生效日 ≤ 该日期的最新版本。
+    datetime 自动归一为 date（DrawResult.draw_date 是 datetime）。
+    """
+    versions = _VERSIONED_TABLES[lottery_code]
+    if draw_date is None:
+        table = versions[-1][1]
+    else:
+        if isinstance(draw_date, datetime):
+            draw_date = draw_date.date()
+        table = max((v for v in versions if v[0] <= draw_date), key=lambda v: v[0])[1]
+    return sorted(table, key=lambda t: t.tier)
 ```
 
-（删除旧 dlt 表末尾「八/九等 Phase 2」注释——2026 新规已无八九等。）
+`app/domain/compare.py` 改动三处：
+
+```python
+def _match_tier(lottery: str, front_hit: int, back_hit: int, draw_date=None) -> PrizeTier | None:
+    """按奖级号升序匹配第一个 condition 命中的 tier（tier 1 最高，先试）。
+    draw_date 透传 get_tiers 做规则版本路由（None=现行表）。"""
+    for t in get_tiers(lottery, draw_date):
+        if _eval_condition(t.condition, front_hit, back_hit):
+            return t
+    return None
+```
+
+- `CompareStrategy.compare` 接口签名改 `(lottery, draw_front, draw_back, combo_front, combo_back, *, append, draw_date=None)`；
+- `PartitionCompare.compare` 加 `draw_date=None` 形参并 `_match_tier(lottery, front_hit, back_hit, draw_date)`；
+- `QxcHybridCompare.compare` 同样加形参透传；
+- `PositionalCompare.compare` 已有 `**_kw`——显式加 `draw_date=None` 并传给 `_match_tier`（显式优于埋进 _kw）；
+- 领域入口 `compare(spec, *, draw_front, draw_back, entry, draw_date=None)`：两个分支的 `strategy.compare(...)` 调用都加 `draw_date=draw_date`；docstring 加一行「draw_date：开奖日，用于奖级表规则版本路由（None=现行表；compare_service 恒传 dr.draw_date）」。
+
+`app/services/compare_service.py:148` 调用改为：
+
+```python
+                        results = domain_compare(
+                            spec,
+                            draw_front=draw_front,
+                            draw_back=draw_back,
+                            entry=entry,
+                            draw_date=dr.draw_date,  # 规则版本门：历史期更正重比按当时规则判定
+                        )
+```
+
+`app/services/refill_service.py`：`_find_tier` 签名改 `_find_tier(lottery_code: str, tier: int, draw_date=None)`，内部 `get_tiers(lottery_code, draw_date)`；调用点（:157）改 `self._find_tier(dr.lottery_code, cmp.prize_tier, dr.draw_date)`。
+
+**实现注记（eng-review Issue 1，写进 T1 commit message）**：dlt tier 重编号后，refill 对**新三等浮动行**会调 sporttery `lookup_amount(tier=3)`；sporttery JSON 的 `prizeLevel` 编号若仍按旧九档（旧 5+0 三等），与新规 tier 3（5+0/4+2 合并）语义不同——上线后首个 dlt 新三等中奖行回填时须人工核对一笔金额是否与官方公告一致；若 sporttery 未切新编号，在 `sporttery_prize._extract_tier_amount` 加 dlt 专用映射（那是新任务，不在本 plan）。
 
 - [ ] **Step 4: 跑新测试 + ssq 基线 + 全量回归**
 
 Run: `uv run pytest tests/domain/ -q && uv run pytest -q`
-Expected: 新测试全过、T0 基线绿、全量绿。若其他测试失败：逐条确认其编码的是旧错误规则（对照本任务 Step 1 注释的合并规则）后更新，断言注释注明「2026 新规，财综〔2025〕51 号」；不确定就停下人工核对。
+Expected: 新测试全过、T0 基线绿、全量绿。若其他测试失败：逐条确认其编码的是旧错误规则（对照本任务前置事实）后更新，断言注释注明新规则出处；不确定就停下人工核对。`test_refill_service.py` 若 mock 了 `_find_tier` 双参调用，按新签名补第三参。
 
 - [ ] **Step 5: 更新 `docs/reference/lottery-rules.md` 的 dlt 节**
 
-在「### 大乐透 dlt」节末尾追加：
+在「### 大乐透 dlt」节末尾追加（**双版本表**）：
 
 ```markdown
-#### 奖级表（2026-02-01 起，财综〔2025〕51 号，第 26014 期执行；9 档并 7 档）
+#### 奖级表·2019 版（2019-02-20 第 19019 期 — 2026-01-30 开奖期；历史期重比适用）
+
+| 奖级 | 条件（前区+后区） | 奖金 |
+|---|---|---|
+| 一等 | 5+2 | 浮动 |
+| 二等 | 5+1 | 浮动 |
+| 三等 | 5+0 | 10000 元 |
+| 四等 | 4+2 | 3000 元 |
+| 五等 | 4+1 | 300 元 |
+| 六等 | 3+2 | 200 元 |
+| 七等 | 4+0 | 100 元 |
+| 八等 | 3+1 或 2+2 | 15 元 |
+| 九等 | 3+0 / 1+2 / 2+1 / 0+2 | 5 元 |
+
+#### 奖级表·2026 版（财综〔2025〕51 号，2026-01-31 第 26014 期起；现行）
 
 | 奖级 | 条件（前区+后区） | 奖金 |
 |---|---|---|
@@ -357,8 +568,8 @@ Expected: 新测试全过、T0 基线绿、全量绿。若其他测试失败：�
 | 六等 | 3+1 或 2+2 | 15 元（≥8 亿时 18 元） |
 | 七等 | 3+0 / 1+2 / 2+1 / 0+2 | 5 元（≥8 亿时 7 元） |
 
-- 1+1 / 2+0 / 0+1 **不中奖**。追加仍仅参与一二等奖（80%）。
-- 实现注记：固定档按「奖池 <8 亿基础档」录入；≥8 亿上浮档需奖池数据 → B2 roadmap。
+- 1+1 / 2+0 / 0+1 两版均**不中奖**。追加仅一二等（80%）两版一致。
+- 实现注记：`prize_tables._VERSIONED_TABLES` 按开奖日路由双版本；固定档按「奖池 <8 亿基础档」录入，≥8 亿上浮档需奖池数据 → B2 roadmap。
 - 来源：财政部财综〔2025〕51 号 + 国家体育总局体彩中心公告（2026-01-16）；lottery.gov.cn 大乐透规则页（2026-08-14 核对）。
 ```
 
@@ -370,16 +581,16 @@ Expected: 新测试全过、T0 基线绿、全量绿。若其他测试失败：�
 ### dlt（T1 完成）
 - 号码结构 5/35+2/12、开奖日 [0,2,5]、追加标志（`append_multiplier=1.8` 仅一二等）——一致。
 - **发现**：代码旧表把 2019 金额贴在错误的合并条件上（如 4+2 判 10000 元），并把不中奖的 1+1/2+0/0+1 判成七等 100 元（错误的中奖通知！）。
-- **处置（B1代码修复，T1）**：重写为 2026 七档新规（条件+基础档金额），`test_dlt_2026_rules.py` 14 档条件 + 4 不中奖用例锁定。
-- **遗留（B2）**：奖池 ≥8 亿上浮档（需奖池数据）；复式/胆拖。
+- **处置（B1代码修复，T1）**：① 重写为 2026 七档新规（条件+基础档金额）；② **规则版本门**（eng-review Issue 3 用户裁决）：`get_tiers` 加 draw_date 路由，2019 官方九档表作为历史版本保留，历史期更正重比按当时规则判定；compare_service/refill 全线透传开奖日；③ `test_dlt_2026_rules.py` 14 档条件 + 4 不中奖 + 4 版本边界用例锁定。
+- **遗留**：奖池 ≥8 亿上浮档（B2，需奖池数据）；复式/胆拖（B2）；sporttery `prizeLevel` 新编号映射待首笔新三等回填时人工核对（T1 实现注记）。
 - 来源：财综〔2025〕51 号；lottery.gov.cn（2026-08-14 核对）。
 ```
 
 - [ ] **Step 7: 提交**
 
 ```bash
-git add app/domain/prize_tables.py tests/domain/test_prize_tables.py tests/domain/test_dlt_2026_rules.py docs/reference/lottery-rules.md docs/reference/lottery-verification-2026-08-14.md
-git commit -m "feat(plan-10/T1): dlt 奖级表修正为 2026 七档新规（修 1+1/2+0/0+1 误判中奖）"
+git add app/domain/prize_tables.py app/domain/compare.py app/services/compare_service.py app/services/refill_service.py tests/domain/test_prize_tables.py tests/domain/test_dlt_2026_rules.py tests/services/test_compare_service.py docs/reference/lottery-rules.md docs/reference/lottery-verification-2026-08-14.md
+git commit -m "feat(plan-10/T1): dlt 2026 七档新规 + 规则版本门（get_tiers 按开奖日路由 2019/2026 双表；修 1+1/2+0/0+1 误判中奖）"
 ```
 
 ---
@@ -387,15 +598,17 @@ git commit -m "feat(plan-10/T1): dlt 奖级表修正为 2026 七档新规（修 
 ### Task 2: qlc 修正（三等浮动 / 四等 200 / 七等仅 4+0）（TDD）
 
 **Files:**
-- Modify: `app/domain/prize_tables.py:58-68`（qlc 表）
+- Modify: `app/domain/prize_tables.py` 的 `_QLC` 常量（T1 版本化重构后的彩种常量，非 PRIZE_TABLES 直dict 条目）
+- Modify: `app/services/refill_service.py:79-93,200-210`（浮动 tier 过滤改为动态推导——eng-review 外部声音发现 2）
 - Modify: `tests/domain/test_prize_tables.py:54`（EXPECTED_FIXED_CENTS['qlc']）
+- Modify: `tests/services/test_refill_service.py`（增 qlc 三等浮动行被选中回填用例）
 - Create: `tests/domain/test_qlc_rules.py`
 - Modify: `docs/reference/lottery-rules.md`（qlc 节增奖级表）
 - Modify: `docs/reference/lottery-verification-2026-08-14.md`（qlc 明细节）
 
 **Interfaces:**
-- Consumes: 同 T1（`PartitionCompare`，qlc 后区=特别号，`back_hit` 0/1）。
-- Produces: 修正后 qlc 表。注意 qlc 三等改浮动后由 FloatRefillWorker 回填——`CwlPrizeSource` 已覆盖 qlc（`name=qlc` 直传 cwl API），无需适配器改动。
+- Consumes: 同 T1（`PartitionCompare`，qlc 后区=特别号，`back_hit` 0/1）；`PRIZE_TABLES`（T1 版本化后的现行表兼容别名）；`AmountType.FLOAT`。
+- Produces: 修正后 qlc 表；`refill_service._FLOAT_TIERS: frozenset[int]`——浮动 tier 集合的唯一事实源（两处查询复用）。qlc 三等改浮动后由 FloatRefillWorker 回填——`CwlPrizeSource` 已覆盖 qlc（`name=qlc` 直传 cwl API），适配器无改动。
 
 - [ ] **Step 1: RED**
 
@@ -454,31 +667,66 @@ def test_qlc_float_tiers_have_no_amount():
         assert tiers[n].amount is None and tiers[n].amount_type == 'float'
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
-
-Run: `uv run pytest tests/domain/test_qlc_rules.py tests/domain/test_prize_tables.py -v`
-Expected: FAIL（旧表不符）
-
-- [ ] **Step 3: GREEN——重写 qlc 表**
+`tests/services/test_refill_service.py` 追加（eng-review 外部声音发现 2：refill 硬过滤 `prize_tier IN (1,2)`，qlc 三等改浮动后永不回填——永久「待官方派奖」）：
 
 ```python
-    # 七乐彩（一二三等浮动=高等奖 70%/10%/20%；特别号 = back_hit；2026-08-14 核对福彩官方）：
-    # 四等 200 / 五等 50 / 六等 10 / 七等 5 元；七等仅 4+0（3+1 不中奖，旧表误含）。
-    'qlc': [
-        PrizeTier(1, 'front_hit==7', None, _V),
-        PrizeTier(2, 'front_hit==6 and back_hit==1', None, _V),
-        PrizeTier(3, 'front_hit==6 and back_hit==0', None, _V),
-        PrizeTier(4, 'front_hit==5 and back_hit==1', 20000, _F),
-        PrizeTier(5, 'front_hit==5 and back_hit==0', 5000, _F),
-        PrizeTier(6, 'front_hit==4 and back_hit==1', 1000, _F),
-        PrizeTier(7, 'front_hit==4 and back_hit==0', 500, _F),
-    ],
+def test_refill_selects_qlc_third_float_tier(db_engine, ...):
+    """qlc 三等（6+0，浮动）中奖行必须被 refill 选中——tier 过滤从奖级表动态推导，
+    不得硬编码 (1,2)。构造：verified qlc DrawResult + Comparison(is_win, prize_tier=3,
+    prize_amount=None) → refill 选中并对 cwl 发 lookup_amount('qlc', ..., tier=3)。"""
+    # 准备数据与断言风格沿用本文件既有用例（mock amount_lookup / MockTransport），
+    # 断言点：lookup_amount 被调用且 lottery_code='qlc'、tier=3；行被回填或保持待公布重试，
+    # 但绝不被过滤漏掉（worker 日志/返回计数可见该行被处理）。
 ```
+
+（该例的 fixture 组合照本文件现有 dlt 用例补齐；断言核心是「tier=3 的 qlc 浮动行进入处理集」。）
+
+- [ ] **Step 2: 跑测试确认失败**
+
+Run: `uv run pytest tests/domain/test_qlc_rules.py tests/domain/test_prize_tables.py tests/services/test_refill_service.py -v`
+Expected: FAIL（旧表不符；refill 新例中 tier=3 行被硬过滤漏掉）
+
+- [ ] **Step 3: GREEN——重写 `_QLC` 常量 + refill 浮动 tier 动态化**
+
+`_QLC` 常量：
+
+```python
+# 七乐彩（一二三等浮动=高等奖 70%/10%/20%；特别号 = back_hit；2026-08-14 核对福彩官方）：
+# 四等 200 / 五等 50 / 六等 10 / 七等 5 元；七等仅 4+0（3+1 不中奖，旧表误含）。
+_QLC = [
+    PrizeTier(1, 'front_hit==7', None, _V),
+    PrizeTier(2, 'front_hit==6 and back_hit==1', None, _V),
+    PrizeTier(3, 'front_hit==6 and back_hit==0', None, _V),
+    PrizeTier(4, 'front_hit==5 and back_hit==1', 20000, _F),
+    PrizeTier(5, 'front_hit==5 and back_hit==0', 5000, _F),
+    PrizeTier(6, 'front_hit==4 and back_hit==1', 1000, _F),
+    PrizeTier(7, 'front_hit==4 and back_hit==0', 500, _F),
+]
+```
+
+`app/services/refill_service.py`——两处 `Comparison.prize_tier.in_((1, 2))`（约 :89 主查询、:206 过期标记）改为动态推导（eng-review 外部声音发现 2：qlc 三等改浮动后硬编码 (1,2) 会让它永久「待官方派奖」——静默失败红线）。模块级加：
+
+```python
+from app.domain.prize import AmountType
+from app.domain.prize_tables import PRIZE_TABLES
+
+# 浮动奖级集合（单一事实源）：refill 主查询与过期标记共用的 tier 过滤。
+# 从奖级表现行版本动态推导——新增浮动档（如 qlc 三等）无需改本模块。
+# 注：跨规则版本的并集语义保守正确（多选行只会多回填尝试，不会漏）。
+_FLOAT_TIERS = frozenset(
+    t.tier
+    for tiers in PRIZE_TABLES.values()
+    for t in tiers
+    if t.amount_type == AmountType.FLOAT
+)
+```
+
+`:89` 与 `:206` 的 `Comparison.prize_tier.in_((1, 2))` 均改为 `Comparison.prize_tier.in_(_FLOAT_TIERS)`；`:79` 附近注释「显式限定 prize_tier IN (1,2) —— 仅浮动档」改为「显式限定 prize_tier IN _FLOAT_TIERS —— 仅浮动档（从奖级表动态推导；spec §7.1 的『一二等奖』是当时全部浮动档，qlc 三等自 plan-10/T2 起亦为浮动）」。
 
 - [ ] **Step 4: 回归（含 refill 路径）**
 
 Run: `uv run pytest tests/domain/ tests/services/test_refill_service.py tests/adapters/ -q && uv run pytest -q`
-Expected: 全绿（qlc 三等浮动后由 CwlPrizeSource `name=qlc` 回填，适配器无需改动；refill 相关测试应保持绿）。旧断言失败按 Global Constraints 断言更新纪律处理。
+Expected: 全绿（qlc 三等浮动由 CwlPrizeSource `name=qlc` 回填；refill worker 经 `_FLOAT_TIERS` 选中 tier=3 行）。旧断言失败按 Global Constraints 断言更新纪律处理。
 
 - [ ] **Step 5: 更新 lottery-rules.md qlc 节 + 核对报告**
 
@@ -505,8 +753,8 @@ qlc 节末尾追加：
 ```markdown
 ### qlc（T2 完成）
 - 号码结构 7/30+特别号（同池）、开奖日 [0,2,4]——一致。
-- **发现**：三等误录固定 3045 元（应浮动）；四等误录 300 元（应 200）；七等多判 3+1（不中奖）。
-- **处置（B1代码修复，T2）**：表重写 + `test_qlc_rules.py` 锁定；三等浮动走既有 CwlPrizeSource 回填（覆盖 qlc）。
+- **发现**：三等误录固定 3045 元（应浮动）；四等误录 300 元（应 200）；七等多判 3+1（不中奖）。**次生发现（eng-review）**：refill worker 硬编码 `prize_tier IN (1,2)`——三等改浮动后若不改，将永久「待官方派奖」。
+- **处置（B1代码修复，T2）**：表重写 + `test_qlc_rules.py` 锁定；refill 两处过滤改 `_FLOAT_TIERS`（从奖级表动态推导的浮动档集合）+ qlc tier=3 回填回归用例；三等浮动走既有 CwlPrizeSource 回填（覆盖 qlc）。
 ```
 
 - [ ] **Step 6: 提交**
@@ -522,7 +770,7 @@ git commit -m "feat(plan-10/T2): qlc 奖级修正——三等浮动/四等 200/�
 
 **Files:**
 - Modify: `app/domain/compare.py:94-123`（QxcHybridCompare）
-- Modify: `app/domain/prize_tables.py:69-78`（qxc 表）
+- Modify: `app/domain/prize_tables.py` 的 `_QXC` 常量
 - Modify: `tests/domain/test_qxc_compare.py`（按新语义重写）
 - Modify: `tests/domain/test_prize_tables.py:55`（EXPECTED_FIXED_CENTS['qxc']）
 - Modify: `docs/reference/lottery-rules.md`（qxc 节）
@@ -636,16 +884,19 @@ class QxcHybridCompare(CompareStrategy):
     三至六等为「投注号码中任意 N 个数字与开奖号码对应位置数字相同」——任意位、非连续。
     旧实现曾用「首位起前缀连续命中」近似并注释「Phase 2 校准」，本次按官方规则修正；
     同时补上了旧实现漏判的六等 2+1 / 1+1 / 0+1（静默漏中奖，违反「中奖永不静默漏通知」）。
+
+    draw_date 透传 _match_tier 做规则版本路由（qxc 现仅 2020 单版本，None=现行表；
+    签名与 PartitionCompare/PositionalCompare 保持一致——eng-review 外部声音发现 3）。
     """
 
     @staticmethod
-    def compare(lottery, draw_front, draw_back, combo_front, combo_back, *, append=False, **_kw) -> HitResult:
+    def compare(lottery, draw_front, draw_back, combo_front, combo_back, *, append=False, draw_date=None, **_kw) -> HitResult:
         # 前区：任意位置对位命中数（每位独立比较，位置敏感）
         front_hit = sum(1 for a, b in zip(draw_front, combo_front, strict=False) if a == b)
         # 后区：单值是否命中（draw_back/combo_back 均为单元素 tuple）
         back_hit = 1 if (combo_back and draw_back and combo_back[0] == draw_back[0]) else 0
 
-        tier = _match_tier(lottery, front_hit=front_hit, back_hit=back_hit)
+        tier = _match_tier(lottery, front_hit=front_hit, back_hit=back_hit, draw_date=draw_date)
         if tier is None:
             return HitResult(front_hit, back_hit, None, None, is_win=False)
         return HitResult(front_hit, back_hit, tier.tier, tier.amount, is_win=True)
@@ -653,24 +904,24 @@ class QxcHybridCompare(CompareStrategy):
 
 `compare.py` 文件头 docstring 中 `QxcHybridCompare: 七星彩（T8）` 一行改为 `QxcHybridCompare: 七星彩（前区任意对位计数，2020 新规）`。
 
-`prize_tables.py` 的 qxc 表替换为：
+`prize_tables.py` 的 `_QXC` 常量替换为：
 
 ```python
-    # 七星彩（2020-10-11 新规：任意 N 位对位计数，非连续；front_hit=前区对位数、back_hit=后区命中）：
-    # 三等 3000 / 四等 500 / 五等 30 / 六等 5 元（lottery.gov.cn 规则第二十二条，2026-08-14 核对）。
-    'qxc': [
-        PrizeTier(1, 'front_hit==6 and back_hit==1', None, _V),
-        PrizeTier(2, 'front_hit==6 and back_hit==0', None, _V),
-        PrizeTier(3, 'front_hit==5 and back_hit==1', 300000, _F),
-        PrizeTier(4, '(front_hit==5 and back_hit==0) or (front_hit==4 and back_hit==1)', 50000, _F),
-        PrizeTier(5, '(front_hit==4 and back_hit==0) or (front_hit==3 and back_hit==1)', 3000, _F),
-        PrizeTier(
-            6,
-            '(front_hit==3 and back_hit==0) or (front_hit==2 and back_hit==1) or (front_hit==1 and back_hit==1) or (front_hit==0 and back_hit==1)',
-            500,
-            _F,
-        ),
-    ],
+# 七星彩（2020-10-11 新规：任意 N 位对位计数，非连续；front_hit=前区对位数、back_hit=后区命中）：
+# 三等 3000 / 四等 500 / 五等 30 / 六等 5 元（lottery.gov.cn 规则第二十二条，2026-08-14 核对）。
+_QXC = [
+    PrizeTier(1, 'front_hit==6 and back_hit==1', None, _V),
+    PrizeTier(2, 'front_hit==6 and back_hit==0', None, _V),
+    PrizeTier(3, 'front_hit==5 and back_hit==1', 300000, _F),
+    PrizeTier(4, '(front_hit==5 and back_hit==0) or (front_hit==4 and back_hit==1)', 50000, _F),
+    PrizeTier(5, '(front_hit==4 and back_hit==0) or (front_hit==3 and back_hit==1)', 3000, _F),
+    PrizeTier(
+        6,
+        '(front_hit==3 and back_hit==0) or (front_hit==2 and back_hit==1) or (front_hit==1 and back_hit==1) or (front_hit==0 and back_hit==1)',
+        500,
+        _F,
+    ),
+]
 ```
 
 - [ ] **Step 4: 回归**
@@ -899,7 +1150,18 @@ Expected: 全绿。
 - pl5：直选 10 万/注一致；定位/组合复式未实现 → B2（play_types 本只声明 zhixuan，无需拦截）。
 ```
 
-- [ ] **Step 7: 提交**
+- [ ] **Step 7: 存量票核查（eng-review Issue 4——API 拦截只挡新票，存量坏票仍会静默跳过比对）**
+
+对生产库跑只读 SQL（NAS 上 `docker compose exec app uv run python -c "..."` 或本地开发库）：
+
+```sql
+SELECT lottery_code, play_type, COUNT(*) FROM tickets WHERE enabled = 1 GROUP BY 1, 2;
+```
+
+- 若结果只含 `single`/`zhixuan`/`danxuan` → 在核对报告 fc3d/pl3/pl5 节补一句「存量票已核查，无未实现玩法票」。
+- 若发现 `zuxuan3`/`zuxuan6`/`fushi`/`dantuo` 等 → 在报告记录彩种/玩法/数量，**逐张人工处置**（联系用户改玩法或删票），不得放任——这些票每期比对都被 per-ticket 隔离静默跳过，中奖永不通知。
+
+- [ ] **Step 8: 提交**
 
 ```bash
 git add app/domain/entry.py app/api/tickets.py web/src/lib/lotteries.ts web/src/lib/lotteries.test.ts tests/domain/test_entry_expand.py tests/api/test_tickets.py docs/reference/lottery-rules.md docs/reference/lottery-verification-2026-08-14.md
@@ -908,7 +1170,7 @@ git commit -m "feat(plan-10/T4): fc3d danxuan 打通比对 + 未实现玩法 API
 
 ---
 
-### Task 5: lottery-rules.md 结构化收尾（2026 新规章节 + 来源日期 + 已实现范围总注）
+### Task 5: lottery-rules.md 结构化收尾（2026 新规章节 + 来源日期 + 已实现范围总注）— 编号说明：原 T5/T6 顺移为 T5/T7，T6 为评审新增的 recompare CLI
 
 **Files:**
 - Modify: `docs/reference/lottery-rules.md`
@@ -968,10 +1230,212 @@ git commit -m "feat(plan-10/T5): lottery-rules.md 补 2026 新规章节 + 全量
 
 ---
 
-### Task 6: 全量回归 + 测试数更新 + 报告收尾
+### Task 6: `recompare` CLI——按新表重算存量 comparisons（eng-review 外部声音发现 1，用户裁决新增）
 
 **Files:**
-- Modify: `CLAUDE.md`（项目状态测试数）
+- Modify: `app/cli.py`（新增 `recompare` 子命令）
+- Modify: `app/services/compare_service.py`（新增模块级 `recompare_all(engine) -> dict` 重比入口）
+- Test: `tests/services/test_recompare.py`（新建）、`tests/test_cli_recompare.py`（新建）
+
+**Interfaces:**
+- Consumes: `CompareService._compare_one(draw_result_id)`（既有——幂等 upsert，`uq_cmp_draw_ticket` 原地更新 hits/tier/amount）；`DrawResult`（verified 过滤）；T1 的规则版本门（`draw_date` 路由——历史期重比自动用当时规则）；`PendingComparison` outbox（比对触发器）。
+- Produces: `app.cli` 子命令 `recompare [--dry-run] [--lottery CODE]`——重比存量比对行；`recompare_all(engine, lottery_code=None, dry_run=False) -> dict`（返回 `{'draws': N, 'rows': M, 'changed': K}`）。README CLI 表（plan-09 T5 已含该行）与核对报告引用。
+
+设计要点：`_compare_one` 已是「按 draw_result 全量重比该期所有追投票」的幂等入口（upsert 原地更新 + `corrected_at`），recompare 只需为**每个 verified DrawResult** 重入它。`--dry-run` 先统计会变更的行数（比对内存结果 vs 现存行，不写库），实跑才写。这同时服务两个场景：① 修表后清理旧错误行；② 未来任何规则修正的一键重算。
+
+- [ ] **Step 1: RED——`tests/services/test_recompare.py`**
+
+```python
+# tests/services/test_recompare.py
+"""recompare_all 测试（Plan 10 / T6；eng-review 外部声音发现 1——旧错误表写出的
+comparisons 行需要显式重算入口，否则永久错显示）。"""
+
+from sqlmodel import Session
+
+from app.models import Comparison, DrawResult, LotteryType, Ticket, User
+from app.services.compare_service import recompare_all
+
+
+def _seed_draw(s, lottery_code, draw_no, front, back, draw_date):
+    dr = DrawResult(
+        lottery_code=lottery_code, draw_no=draw_no, verified=True,
+        numbers_json=f'{{"front": {list(front)}, "back": {list(back)}}}',
+        draw_date=draw_date,
+    )
+    s.add(dr)
+    s.commit()
+    s.refresh(dr)
+    return dr
+
+
+def test_recompare_corrects_stale_dlt_false_win(db_engine):
+    """旧表误判的 dlt 1+1『中奖 100 元』行，recompare 后按新表判未中奖（is_win 翻 False，
+    tier/amount 清 None），同一行原地更新（uq_cmp_draw_ticket 不产生新行）。"""
+    with Session(db_engine) as s:
+        LotteryType(code='dlt', name='大乐透', category='sport',
+                    spec_json='{}', draw_schedule_json='{}')
+        s.add(LotteryType(code='dlt', name='大乐透', category='sport',
+                          spec_json='{}', draw_schedule_json='{}'))
+        u = User(username='alice', password_hash='x', role='user', invite_code='alice')
+        s.add(u); s.commit(); s.refresh(u)
+        dr = _seed_draw(s, 'dlt', '2026099', (1, 2, 3, 4, 5), (6, 7), __import__('datetime').datetime(2026, 8, 1))
+        t = Ticket(user_id=u.id, lottery_code='dlt', play_type='single',
+                   numbers_json='{"front":[1,9,9,9,9],"back":[6,8]}', cost=200)
+        s.add(t); s.commit(); s.refresh(t)
+        # 模拟旧错误表写出的行：1+1 被误判 tier=7 / 10000 分
+        s.add(Comparison(user_id=u.id, draw_result_id=dr.id, ticket_id=t.id,
+                         hits_json='{"front_hit":1,"back_hit":1}',
+                         prize_tier=7, prize_amount=10000, is_win=True))
+        s.commit()
+        dr_id, t_id = dr.id, t.id
+
+    stats = recompare_all(db_engine)
+
+    assert stats['draws'] >= 1 and stats['rows'] >= 1
+    with Session(db_engine) as s:
+        row = s.exec(
+            __import__('sqlmodel').select(Comparison).where(
+                Comparison.draw_result_id == dr_id, Comparison.ticket_id == t_id)
+        ).one()
+        assert row.is_win is False, '新表下 1+1 不中奖——旧行必须被纠正'
+        assert row.prize_tier is None and row.prize_amount is None
+
+
+def test_recompare_dry_run_writes_nothing(db_engine):
+    """--dry-run 只统计不写库（人工核对安全阀）。"""
+    # …同上准备一组数据…
+    before = recompare_all(db_engine, dry_run=True)
+    with Session(db_engine) as s:
+        # 行内容保持旧错误值
+        row = s.exec(select(Comparison)).first()
+        assert row is not None and row.prize_tier == 7  # 未被改写
+    assert before['changed'] >= 1  # 但统计到了会变更的行
+
+
+def test_recompare_honors_version_gate(db_engine):
+    """版本门接线：2026-01-30 的 dlt 期重比按 2019 表（4+2=四等 3000），
+    2026-01-31 起按七档（4+2=三等 5000）——recompute 复用 _compare_one 即自动获得。"""
+    # …种两期不同 draw_date 的 dlt + 同号 4+2 票，断言两行 tier 分别为 4 与 3…
+```
+
+（`...` 处沿用本仓库既有 seed 辅助模式补全；断言点已固定。）
+
+- [ ] **Step 2: RED——`tests/test_cli_recompare.py`**
+
+```python
+# tests/test_cli_recompare.py
+"""recompare CLI 冒烟（Plan 10 / T6）。模式沿用 tests/test_cli_reset_password.py：
+mock engine / 捕获 argparse 调用。"""
+
+def test_cli_recompare_invokes_service(monkeypatch):
+    """CLI 把 --lottery/--dry-run 正确传给 recompare_all 并打印统计。"""
+    from app import cli as cli_mod
+
+    captured = {}
+    monkeypatch.setattr(cli_mod, 'recompute_target', None, raising=False)
+    monkeypatch.setattr(
+        'app.services.compare_service.recompare_all',
+        lambda engine, lottery_code=None, dry_run=False:
+        captured.update(lottery_code=lottery_code, dry_run=dry_run) or {'draws': 1, 'rows': 2, 'changed': 1},
+    )
+    cli_mod.main(['recompare', '--lottery', 'dlt', '--dry-run'])
+    assert captured == {'lottery_code': 'dlt', 'dry_run': True}
+```
+
+- [ ] **Step 3: 跑测试确认失败**
+
+Run: `uv run pytest tests/services/test_recompare.py tests/test_cli_recompare.py -v`
+Expected: FAIL（`recompare_all` 不存在 / CLI 无 recompare 子命令）
+
+- [ ] **Step 4: GREEN——实现**
+
+`app/services/compare_service.py` 模块级函数（不进 CompareService 类——无 outbox 语义，是显式运维入口）：
+
+```python
+def recompare_all(engine: Engine, lottery_code: str | None = None, dry_run: bool = False) -> dict:
+    """按现行领域规则（含 T1 版本门）重算全部存量比对行（Plan 10 / T6）。
+
+    为每个 verified DrawResult 重入 CompareService._compare_one（幂等 upsert：
+    uq_cmp_draw_ticket 原地更新 hits/tier/amount/is_win + corrected_at）。
+    用途：奖级表修正后清理旧表写出的错误行（eng-review 外部声音发现 1）；
+    未来任何规则修正的一键重算。per-draw 失败隔离（try/except + log，不中断整批）。
+    dry_run=True：只统计会变更的行数，不写库。
+    """
+    from app.models import DrawResult
+
+    svc = CompareService(engine)
+    stats = {'draws': 0, 'rows': 0, 'changed': 0}
+    with Session(engine) as s:
+        q = select(DrawResult).where(DrawResult.verified == True)  # noqa: E712
+        if lottery_code:
+            q = q.where(DrawResult.lottery_code == lottery_code)
+        dr_ids = [dr.id for dr in s.exec(q).all()]
+    for dr_id in dr_ids:
+        if dry_run:
+            # 与实跑同一比对逻辑，仅比对内存结果统计差异（不 commit）
+            stats['draws'] += 1
+            stats['changed'] += _count_changed(engine, dr_id)
+        else:
+            before = _snapshot_rows(engine, dr_id)
+            try:
+                svc._compare_one(dr_id)
+            except Exception:
+                logger.warning('recompare_skip_draw draw_result_id=%s', dr_id, exc_info=True)
+                continue
+            stats['draws'] += 1
+            stats['rows'] += max(len(before), 1)
+            stats['changed'] += _diff_rows(before, _snapshot_rows(engine, dr_id))
+    return stats
+```
+
+（`_snapshot_rows`/`_diff_rows`/`_count_changed` 为同文件私有辅助：抽该期 comparisons 的 `(ticket_id, tier, amount, is_win)` 元组集做前后对比。实现时若发现 `_compare_one` 的 draw_cost 记账在重比路径会重复累加，须在该路径先删该期 `DrawCost` 行再让 `_compare_one` 重建——**实现前先读 `_compare_one` 尾部的 cost 记账段确认**，并把结论写进 commit message。）
+
+`app/cli.py` 注册子命令（沿用既有 `backfill-draw-costs` 模式）：
+
+```python
+def cmd_recompare(argparse_ns) -> None:
+    """按现行规则表重算存量比对行（运维：奖级表修正后清理旧错误行）。"""
+    engine = _engine_from_env()  # 沿用本文件既有 engine 构造方式
+    stats = recompare_all(engine, lottery_code=argparse_ns.lottery, dry_run=argparse_ns.dry_run)
+    print(f"recompare: draws={stats['draws']} rows={stats['rows']} changed={stats['changed']}")
+    if argparse_ns.dry_run:
+        print('（dry-run：未写库。去掉 --dry-run 执行重算。）')
+
+
+# main() 里：
+rc = sub.add_parser('recompare', help='按现行规则表重算存量比对行（奖级表修正后用）')
+rc.add_argument('--lottery', default=None, help='仅重算该彩种（默认全部）')
+rc.add_argument('--dry-run', action='store_true', help='只统计会变更的行数，不写库')
+rc.set_defaults(func=cmd_recompare)
+```
+
+（`_engine_from_env`/import 按本文件真实结构对齐——`cmd_backfill_draw_costs` 就地怎么拿 engine 就怎么拿。）
+
+- [ ] **Step 5: 回归 + 手动实跑（NAS）**
+
+Run: `uv run pytest tests/services/test_recompare.py tests/test_cli_recompare.py -q && uv run pytest -q`
+Expected: 全绿。
+
+生产实跑（T4 Step 7 核查有坏行时执行；无坏行也跑一次 dry-run 留档）：
+
+```bash
+docker compose exec app uv run python -m app.cli recompare --dry-run   # 先看会改多少
+docker compose exec app uv run python -m app.cli recompare             # 实跑
+```
+
+- [ ] **Step 6: 提交**
+
+```bash
+git add app/cli.py app/services/compare_service.py tests/services/test_recompare.py tests/test_cli_recompare.py
+git commit -m "feat(plan-10/T6): recompare CLI——奖级表修正后按新表重算存量比对行（含规则版本门与 dry-run）"
+```
+
+---
+
+### Task 7: 全量回归 + 测试数更新 + 报告收尾
+
+**Files:**
+- Modify: `CLAUDE.md`（项目状态测试数 + 文档导航补核对报告链接——plan-09 T7 留给本 plan 的那行）
 - Modify: `docs/reference/lottery-verification-2026-08-14.md`（收尾结论）
 
 - [ ] **Step 1: 全量回归（三道）**
@@ -982,9 +1446,13 @@ Expected: 全绿。记录 pytest 实际通过数。
 Run: `cd web && npm test && npm run build`
 Expected: 全绿。
 
-- [ ] **Step 2: CLAUDE.md 测试数更新**
+- [ ] **Step 2: CLAUDE.md 更新**
 
-「项目状态」行的测试数替换为 Step 1 实测值（如 `659+N tests green`）。
+「项目状态」行的测试数替换为 Step 1 实测值（如 `659+N tests green`）；「文档导航」节末尾追加（plan-09 T7 留给本 plan 的链接，避免死链窗口）：
+
+```markdown
+- `docs/reference/lottery-verification-2026-08-14.md` — **7 彩种「文档 vs 代码」核对报告（plan-10 产出）**
+```
 
 - [ ] **Step 3: 报告收尾**
 
@@ -993,18 +1461,18 @@ Expected: 全绿。
 ```markdown
 ## 结论（2026-08-14，B1 完成）
 
-- 4 项 B1 代码修复全部 TDD 落地：dlt 2026 七档新规（修 1+1/2+0/0+1 误判中奖）、qlc 浮动档/金额、qxc 任意对位语义 + 六等漏判档（静默漏中奖）、fc3d danxuan 打通 + 未实现玩法 API 拦截。
+- 5 项 B1 代码修复全部 TDD 落地：dlt 2026 七档新规 + 规则版本门（修 1+1/2+0/0+1 误判中奖）、qlc 浮动档/金额 + refill 浮动集动态化、qxc 任意对位语义 + 六等漏判档（静默漏中奖）、fc3d danxuan 打通 + 未实现玩法 API 拦截、recompare CLI（存量行重算入口）。
 - ssq 生产基线（2026093 期真实夹具）全程绿。
 - 已实现面单元测试补齐：每彩种每个已实现奖级 ≥1 命中用例 + 不中奖边界用例。
 - 未实现项全部文档降级声明（README 能力边界 + lottery-rules.md 注记）并列 B2 roadmap，无过度宣称。
-- 全量回归绿（后端 pytest + 前端 vitest + build）。
+- 全量回归绿（后端 pytest + 前端 vitest + build）；生产库存量票/比对行已核查并按需 recompare。
 ```
 
 - [ ] **Step 4: 提交**
 
 ```bash
 git add CLAUDE.md docs/reference/lottery-verification-2026-08-14.md
-git commit -m "feat(plan-10/T6): 全量回归绿 + 核对报告收尾（B1 完成）"
+git commit -m "feat(plan-10/T7): 全量回归绿 + 核对报告收尾（B1 完成）"
 ```
 
 - [ ] **Step 5: 回到 plan-09 执行 T11（首推 GitHub）与 T12（发布后验证）**
@@ -1016,3 +1484,20 @@ git commit -m "feat(plan-10/T6): 全量回归绿 + 核对报告收尾（B1 完�
 - **Spec 覆盖**：§4.1 核对五维度（结构/开奖日/玩法/特殊规则/奖金表）→ 报告汇总表五列 + T0–T4 逐彩种；§4.2 ssq 基线先行 → T0；TDD 修复 → T1–T4；文档降级 → 报告 + lottery-rules.md 注记 + README（plan-09/T5 已按此终态写）；补测 → 各任务新测试文件；全量回归 → T6；qxc 保守回退（E7）→ 被更强处置取代：官方规则已核实，直接修正语义而非保留近似（E7 的「近似+标注」是在未核实官方规则时的保守方案，现已拿到规则原文）。
 - **类型一致性**：`IMPLEMENTED_PLAY_TYPES`（frozenset，entry.py 定义）在 API/测试引用一致；`HitResult`/`PrizeTier` 字段名与现有代码一致；`get_tiers` 签名未动。
 - **Placeholder 扫描**：无 TBD/TODO；所有测试与实现代码均为完整可运行内容；夹具为真实官方数据（2026093 期，2026-08-14 抓取）。
+- **Eng review 修订（2026-08-14 FULL_REVIEW，13 项裁决全并入）**：T1 升级为「dlt 2026 新规 + 规则版本门」（`_VERSIONED_TABLES` 按开奖日路由 2019/2026 双表，compare_service/refill 全线透传 draw_date，+spy 接线测试）；T2 增 refill `_FLOAT_TIERS` 动态浮动集（修 qlc 三等永不回填静默失败）+ 回归用例；T3 QxcHybridCompare 显式 draw_date 形参（签名与 T1 契约一致）；T4 增 Step 7 存量票核查 SQL；新增 T6 recompare CLI（存量比对行重算，dry-run 安全阀）；原 T6 顺移 T7 并接管 CLAUDE.md 核对报告链接。
+
+## GSTACK REVIEW REPORT
+
+| Review | Skill | Scope | Runs | Status | Findings |
+|--------|-------|-------|------|--------|----------|
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 2 | issues_open (via /autoplan) | 6 proposals, 6 accepted, 1 critical gap |
+| Codex Review | `/codex review` | Independent 2nd opinion | 0 | N/A | Codex 未安装（外部声音经 Claude subagent + autoplan subagent-only） |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 7 | CLEAR | 13 issues, 0 critical gaps |
+| Design Review | `/plan-design-review` | UI/UX gaps | 0 | SKIPPED | 无 UI 视觉范围 |
+| DX Review | `/plan-devex-review` | Developer experience gaps | 1 | CLEAR (via /autoplan) | score: 4/10 → 8/10, TTHW: crash-loop → 15-25min |
+
+- **CODEX:** 未安装——外部声音由独立 Claude subagent 承担（8 项发现，逐项用户裁决后并入；其中 2 项 HIGH——refill 浮动集硬编码、存量 comparisons 无重算入口——均已物化为 plan 任务）。
+- **CROSS-MODEL:** 主评审与外部声音独立收敛于「旧表存量数据」风险；外部声音的 refill (1,2) 硬编码发现是主评审 T2 的漏网之鱼（主评审只看了表没看 worker）——交叉验证的价值实证。
+- **VERDICT:** ENG CLEARED — 13 项发现全部裁决并入（0 未决、0 critical gaps），可执行。
+
+NO UNRESOLVED DECISIONS
