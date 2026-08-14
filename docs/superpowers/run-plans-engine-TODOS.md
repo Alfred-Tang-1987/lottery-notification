@@ -4,7 +4,7 @@
 
 ### T1: 推远程 Gitea
 
-- **What**: 把 `run-plans-engine` 从本地仓库推送到 Gitea（`http://192.168.8.168:8418/gitea/run-plans-engine`），并把 `lottery-notification` 与 `OTC-Fund-SIP-Strategy` 的 `.gitmodules` URL 从 `file:///C:/Users/Alfred/Documents/projects/run-plans-engine` 切换为远程 URL。
+- **What**: 把 `run-plans-engine` 从本地仓库推送到 Gitea（`<GITEA_URL>`），并把 `lottery-notification` 与 `OTC-''Fund-SIP-Strategy` 的 `.gitmodules` URL 从 `file:///C:/''Users/Alfred/Documents/projects/run-plans-engine` 切换为远程 URL。
 - **Why**: 当前阶段用本地 `file://` 路径跑通，但 engine 必须上远程才能跨机器/新环境 clone，否则每次新环境都要先在本机建 engine 仓库。
 - **Pros**: 跨机器可用；与 NAS 部署风格一致；为 CI 自动 PR 铺路。
 - **Cons**: 需要创建 Gitea repo、配置权限、批量改消费项目的 `.gitmodules`。
@@ -15,7 +15,7 @@
 
 ### T2: CI 自动 PR
 
-- **What**: 当 `run-plans-engine` 仓库 push 后，Gitea Actions workflow 自动向 `lottery-notification` 和 `OTC-Fund-SIP-Strategy` 提 PR：更新 submodule 到最新 commit，并重新 sync 派生 `run-plans.js`。
+- **What**: 当 `run-plans-engine` 仓库 push 后，Gitea Actions workflow 自动向 `lottery-notification` 和 `OTC-''Fund-SIP-Strategy` 提 PR：更新 submodule 到最新 commit，并重新 sync 派生 `run-plans.js`。
 - **Why**: 消费项目数量 ≥3 或 engine 迭代频繁后，手动 `git submodule update --remote` + sync + commit 会成为负担。自动 PR 把升级变成可 review 的流程。
 - **Pros**: engine 改进主动、可见地分发到所有消费项目；升级可被 review；减少遗忘。
 - **Cons**: 需要配置 Gitea Actions、跨仓库 token、webhook，维护成本随消费项目数量线性增长。

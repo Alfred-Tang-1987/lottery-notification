@@ -10,7 +10,7 @@
 
 ### 1.1 现状
 
-`FloatRefillWorker` 负责回填一二等奖浮动奖金（`prize_amount`），其依赖的 `amount_lookup` 回调当前是 `_amount_lookup_stub`（[app/main.py](file:///Users/alfred/Documents/Projects/lottery-notification/app/main.py)），永久返回 `None`。这意味着生产环境中所有浮动奖金额永远为 `null`，用户中一等奖/二等奖后无法看到实际金额。
+`FloatRefillWorker` 负责回填一二等奖浮动奖金（`prize_amount`），其依赖的 `amount_lookup` 回调当前是 `_amount_lookup_stub`（[app/main.py](../../app/main.py)），永久返回 `None`。这意味着生产环境中所有浮动奖金额永远为 `null`，用户中一等奖/二等奖后无法看到实际金额。
 
 ### 1.2 浮动奖范围
 

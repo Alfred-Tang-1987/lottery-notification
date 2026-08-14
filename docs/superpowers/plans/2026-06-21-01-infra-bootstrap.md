@@ -146,7 +146,7 @@ packages = ["app"]
 
 ```bash
 # 必填
-JWT_SECRET=change-me-to-a-long-random-string
+JWT_SECRET=                    # 必填，≥32 字符随机串（勿用示例值）
 CRYPTO_KEY_V1=        # python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 # 数据源
 MXNZP_API_KEY=

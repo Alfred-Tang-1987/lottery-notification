@@ -8,11 +8,11 @@
 
 ```bash
 ssh <NAS>
-mkdir -p /vol1/1000/Docker/lottery-notification
-cd /vol1/1000/Docker/lottery-notification
+mkdir -p <NAS_DOCKER_DIR>
+cd <NAS_DOCKER_DIR>
 
 # 主仓库（用 NAS 本地 gitea 或任一远端）
-git clone http://192.168.8.168:8418/gitea/lottery-notification.git .
+git clone <GITEA_URL> .
 # 子模块必须初始化（workflow-engine 等）
 git submodule update --init
 ```
@@ -24,7 +24,7 @@ git submodule update --init
 
 ```bash
 # .env 在 .gitignore 中，git 不会传输，需单独 scp
-scp .env <NAS>:/vol1/1000/Docker/lottery-notification/.env
+scp .env <NAS>:<NAS_DOCKER_DIR>/.env
 ```
 
 参考 `.env.example` 填写，关键字段：
@@ -44,7 +44,7 @@ scp .env <NAS>:/vol1/1000/Docker/lottery-notification/.env
 
 | 访问方式 | `COOKIE_SECURE` | `CORS_ORIGINS` 示例 |
 |---|---|---|
-| HTTP + 局域网 IP | `false` | `["http://192.168.8.168:8280"]` |
+| HTTP + 局域网 IP | `false` | `["http://<NAS_IP>:8280"]` |
 | HTTPS + 域名 | `true` | `["https://lottery.example.com"]` |
 
 > 反向代理上线后，需同步改 `COOKIE_SECURE=true` 并把域名加入 `CORS_ORIGINS`，否则 cookie 不回传或跨域 403。

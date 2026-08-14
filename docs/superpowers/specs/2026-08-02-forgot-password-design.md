@@ -1,4 +1,4 @@
-<!-- /autoplan restore point: /Users/alfred/.gstack/projects/gitea-lottery-notification/main-autoplan-restore-20260802-203436.md -->
+<!-- /autoplan restore point: <LOCAL_PATH> -->
 # 忘记密码（验证码自助重置）设计 spec
 
 > 日期： 2026-08-02 | 状态： 已确认（brainstorming 三节设计逐节通过；autoplan 评审 2026-08-02 已合入决议，见文末 GSTACK REVIEW REPORT）

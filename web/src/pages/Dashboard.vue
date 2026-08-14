@@ -118,7 +118,7 @@ async function requestGeolocation(): Promise<void> {
   // 仅在首次加载时请求定位（后续刷新复用结果，避免重复弹窗）
   if (geoStatus.value !== 'idle') return;
   // 安全上下文检查：geolocation API 仅在 HTTPS 或 localhost 下可用。
-  // HTTP 局域网访问（如 http://192.168.8.168:8280）时浏览器直接禁用 geolocation，
+  // HTTP 局域网访问（如 http://<NAS_IP>:8280）时浏览器直接禁用 geolocation，
   // getCurrentPosition 会立即触发 error 回调（code=1），误报为「用户拒绝」。
   // 检测 isSecureContext 给出准确提示「需 HTTPS」而非误导性的「未授权」。
   if (!window.isSecureContext) {

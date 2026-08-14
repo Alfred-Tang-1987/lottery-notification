@@ -5,7 +5,7 @@
 > **状态**：设计已确认，待实现
 > **日期**：2026-07-09
 > **源仓库**：lottery-notification（提炼源头，迁移后变为消费项目）
-> **首批消费项目**：lottery-notification、OTC-Fund-SIP-Strategy
+> **首批消费项目**：lottery-notification、OTC-''Fund-SIP-Strategy
 
 ## 1. 背景与动机
 
@@ -21,7 +21,7 @@
 - `docs/superpowers/workflow-plans/`（engine 自身历史 implementation plan）
 - `docs/superpowers/workflows/research/`（loop engineering 研究报告）
 
-`OTC-Fund-SIP-Strategy` 仓库已通过**手动复制**方式接入 run-plans，存在完整副本（`.claude/workflows/run-plans.js` + `docs/superpowers/workflows/lib.js` + tests + design + USAGE）。两仓库的副本之间无版本锁定，手动同步负担已成确认痛点。
+`OTC-''Fund-SIP-Strategy` 仓库已通过**手动复制**方式接入 run-plans，存在完整副本（`.claude/workflows/run-plans.js` + `docs/superpowers/workflows/lib.js` + tests + design + USAGE）。两仓库的副本之间无版本锁定，手动同步负担已成确认痛点。
 
 ### 1.2 动机
 
@@ -59,7 +59,7 @@
 ### 2.4 引用拓扑
 
 ```
-消费项目 (lottery-notification / OTC-Fund-SIP-Strategy)
+消费项目 (lottery-notification / OTC-''Fund-SIP-Strategy)
 ├── .claude/
 │   ├── workflows/
 │   │   └── run-plans.js          ← sync 脚本复制（派生物，commit 但禁手改）
@@ -112,17 +112,17 @@ named-workflow 按 `.claude/workflows/*.js` 枚举（非递归扫 `.claude/`）�
 
 ### 3.3 其他仓库可用性
 
-`OTC-Fund-SIP-Strategy` 已有完整副本（`.claude/workflows/run-plans.js` + `docs/superpowers/workflows/lib.js` + tests 全在），迁移就是把"复制的源"换成"submodule + sync 产物"，运行时行为等价。新项目接入见 §4.1。
+`OTC-''Fund-SIP-Strategy` 已有完整副本（`.claude/workflows/run-plans.js` + `docs/superpowers/workflows/lib.js` + tests 全在），迁移就是把"复制的源"换成"submodule + sync 产物"，运行时行为等价。新项目接入见 §4.1。
 
 ## 4. 使用方法
 
 ### 4.1 一次性初始化（新项目接入）
 
-> 本地阶段 `<engine-repo-url>` = `file:///C:/Users/Alfred/Documents/projects/run-plans-engine`（Windows 格式），后续推远程后替换为 Gitea URL。
+> 本地阶段 `<engine-repo-url>` = `file:///C:/''Users/Alfred/Documents/projects/run-plans-engine`（Windows 格式），后续推远程后替换为 Gitea URL。
 
 ```bash
 # 1. 添加 engine submodule
-git submodule add file:///C:/Users/Alfred/Documents/projects/run-plans-engine .claude/workflow-engine
+git submodule add file:///C:/''Users/Alfred/Documents/projects/run-plans-engine .claude/workflow-engine
 git commit -m "chore(workflow): add run-plans-engine submodule"
 
 # 2-5. 使用 init-consumer 脚手架一键完成 sync、拷贝 examples、安装 hooks
@@ -148,7 +148,7 @@ git commit -m "chore(workflow): init run-plans-engine consumer"
 
 必须编辑的字段（example 中留占位）：
 
-| 字段 | 含义 | lottery-notification 示例 | OTC-Fund-SIP-Strategy 示例 |
+| 字段 | 含义 | lottery-notification 示例 | OTC-''Fund-SIP-Strategy 示例 |
 |---|---|---|---|
 | `test_command` | 单文件测试命令 | `python -m pytest {file} -x` | `python -m pytest {file} -x` |
 | `full_test_command` | 全量测试命令 | `python -m pytest` | `python -m pytest` |
@@ -393,12 +393,12 @@ console.log(`✓ synced run-plans.js → ${path.relative(CONSUMER_ROOT, DEST)} (
 
 阶段二：lottery-notification 迁移为消费项目
   6. 删除 engine 源文件（.claude/workflows/run-plans.js + docs/superpowers/workflows/ + workflow-design.md + workflow-plans/）
-  7. git submodule add file:///C:/Users/Alfred/Documents/projects/run-plans-engine .claude/workflow-engine
+  7. git submodule add file:///C:/''Users/Alfred/Documents/projects/run-plans-engine .claude/workflow-engine
   8. node .claude/workflow-engine/scripts/init-consumer.mjs → 生成 run-plans.js + 拷贝 examples + 安装 hook
   9. 验证：Workflow({scriptPath: '.claude/workflows/run-plans.js', args: {...}}) 跑一个轻量 task
  10. git commit
 
-阶段三：OTC-Fund-SIP-Strategy 迁移（重复 6-10，删除其旧副本）
+阶段三：OTC-''Fund-SIP-Strategy 迁移（重复 6-10，删除其旧副本）
 
 阶段四：（后续）推 Gitea + 更新 submodule URL 为远程（已记入 [`run-plans-engine-TODOS.md`](../run-plans-engine-TODOS.md) T1）
 ```
@@ -436,7 +436,7 @@ console.log(`✓ synced run-plans.js → ${path.relative(CONSUMER_ROOT, DEST)} (
 | 更新分发 | B（pre-commit 自愈）+ C（SessionStart 提醒） | 零额外步骤 + 防遗忘；当前规模不上 CI 自动 PR |
 | 仓库位置 | 先本地（file://）后推 Gitea | 两阶段，本地走通再上远程 |
 | 迁移范围 | 完整（含历史 plan + research） | 完整迁移，lottery-notification 的 engine 相关文件清空 |
-| 首批消费项目 | lottery-notification + OTC-Fund-SIP-Strategy | 一次性解决两个项目的同步问题 |
+| 首批消费项目 | lottery-notification + OTC-''Fund-SIP-Strategy | 一次性解决两个项目的同步问题 |
 | pre-commit 自动 sync 后行为 | 自动 sync + stage，退出非零，要求重新提交 | 符合 git hook 约定，不自动 commit |
 | lessons.md 处理 | 消费项目保留（含项目特定 + 通用） | 通用部分已在 engine 的 lessons.seed.md，不强拆消费项目 lessons |
 | workflow.config.json 守护 | pre-commit 字节比对 workflow.config.json 与 example；字节一致则拒绝 commit | JSON 不支持注释，不能用 TODO 标记；字节比对零污染且语义清晰（已编辑=不等于 example）；防止拷贝 example 就直接 commit 的静默失败 |
@@ -456,7 +456,7 @@ console.log(`✓ synced run-plans.js → ${path.relative(CONSUMER_ROOT, DEST)} (
 | 跨平台 test_command 差异（python vs python3） | example 注释提示；建议消费项目用平台无关命令或 scripts/ 包装 |
 | engine 演进破坏旧消费项目（breaking change） | engine 仓库的 CHANGELOG 标注 breaking（[TODOS](../run-plans-engine-TODOS.md) T3）；消费项目可锁定 submodule SHA 不升级 |
 | engine 仓库为可信源 | README.md 与 USAGE.md 显式声明：消费项目只应使用授权/审核过的 submodule URL，更新前 review 变更 |
-| 本地 `file://` submodule URL 格式不标准 | 使用 `file:///C:/Users/...` 格式，并在 Windows 11 本机验证 |
+| 本地 `file://` submodule URL 格式不标准 | 使用 `file:///C:/''Users/...` 格式，并在 Windows 11 本机验证 |
 | init-consumer 重复运行导致嵌套 hook | 安装前检查 hook 是否已包含 `pre-commit-sync-check` 调用；已包含则跳过 |
 | 260+ tests 中存在硬编码消费项目路径 | 迁移后运行全量测试，检查并修复所有路径相关断言 |
 
@@ -465,7 +465,7 @@ console.log(`✓ synced run-plans.js → ${path.relative(CONSUMER_ROOT, DEST)} (
 - 迁移前备份旧 `.claude/workflows/run-plans.js` 到系统临时目录（`os.tmpdir()/run-plans-backup-<timestamp>.js`），避免备份文件留在 `.claude/` 下被 git 跟踪或干扰 named-workflow 枚举。
 - 如果 submodule 无法工作，执行 `git rm -f .claude/workflow-engine` 和 `git submodule deinit -f .claude/workflow-engine`，从临时目录备份恢复旧文件。
 - 保留旧 engine 文件删除的 commit，可通过 `git revert` 回滚。
-- 先在 `lottery-notification` 验证通过后再迁移 `OTC-Fund-SIP-Strategy`（分阶段，降低 blast radius）。
+- 先在 `lottery-notification` 验证通过后再迁移 `OTC-''Fund-SIP-Strategy`（分阶段，降低 blast radius）。
 
 ## 11. Review 报告
 

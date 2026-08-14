@@ -3,7 +3,7 @@
 > **日期**: 2026-06-16
 > **状态**: Draft（待用户审阅）
 > **技术栈**: Python 3.12 + FastAPI + SQLite + Vue3/ECharts + APScheduler
-> **部署**: NAS Docker（FnOS, 192.168.8.168），端口 8280
+> **部署**: NAS Docker（FnOS, <NAS_IP>），端口 8280
 
 ---
 
@@ -409,7 +409,7 @@ PrizeTier(lottery="dlt", tier=1, condition="front_hit==5 and back_hit==2",
 ## 12. 前端设计（Prototype 先行 via Open Design）
 
 ### 12.1 流程
-1. 用 NAS 上的 **Open Design**（`http://192.168.8.168:7457`）先设计 prototype；
+1. 用 NAS 上的 **Open Design**（`http://<NAS_IP>:7457`）先设计 prototype；
 2. 选 Skill（仪表盘/号码/统计用 `dashboard`，移动端用 `mobile-app`）+ 选 Design System（用户在 OD 内预览自选）；
 3. 逐屏生成 HTML 原型，迭代定稿；
 4. prototype 定稿后，实现阶段照原型写 Vue3 + ECharts。
