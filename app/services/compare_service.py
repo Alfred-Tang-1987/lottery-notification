@@ -112,6 +112,14 @@ class CompareService:
             draw_back = tuple(dn['back']) if dn.get('back') else None
             spec = _spec_for(dr.lottery_code)
 
+            # 票存在性边界（naive-UTC 表达，CLAUDE.md datetime 时区对齐纪律）：
+            # created_at 是 naive UTC（TimestampMixin），draw_date 是 naive CST 墙钟零点
+            # （SQLite 剥 tzinfo）——跨时区直比错 8 小时，须归一到同一表示后再比。
+            dd = dr.draw_date
+            if dd.tzinfo is None:
+                dd = dd.replace(tzinfo=_CST)
+            end_naive_utc = (dd + timedelta(days=1)).astimezone(ZoneInfo('UTC')).replace(tzinfo=None)
+
             # 仅追投该彩种的启用注（spec §4 line99：比对范围由号码池决定，没追的不比对）
             tickets = list(
                 s.exec(
@@ -121,6 +129,13 @@ class CompareService:
                     )
                 ).all()
             )
+            # 只比对开奖日当天及之前创建的票：边界取「开奖日当天结束」而非零点——draw_date
+            # 是开奖日零点非开奖时刻，开奖当天上午买的票也晚于零点，按零点截断会误杀。
+            # 无此过滤时 recompare 全量回放会为「票创建之前的历史期」补 phantom 比对行
+            # （含虚假中奖 → 虚假 PrizeClaim；plan-10 生产探针 250 行全 phantom）。
+            # Python 侧过滤而非 SQL：规避 SQLAlchemy/SQLite 对 naive/aware datetime 的
+            # 隐式行为，票集本就不大。
+            tickets = [t for t in tickets if t.created_at <= end_naive_utc]
 
             for t in tickets:
                 # per-ticket 隔离（spec §10 line375：坏注单/格式异常 → 隔离该注，不影响

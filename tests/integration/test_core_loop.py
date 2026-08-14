@@ -9,7 +9,7 @@ SQLite engine + 真实 domain.compare，不 mock 领域层（spec §4：领域�
 """
 
 import json
-from datetime import date
+from datetime import date, datetime
 from unittest.mock import MagicMock
 
 from sqlmodel import Session, select
@@ -47,6 +47,8 @@ def _make_user_and_ticket(engine, ticket_front, ticket_back):
             append=False,
             cost=200,
             enabled=True,
+            # 开奖日 2026-06-21 为过去：票须早于该日才被比对（_compare_one 票存在性过滤）
+            created_at=datetime(2026, 6, 1),
         )
         s.add(t)
         s.commit()
