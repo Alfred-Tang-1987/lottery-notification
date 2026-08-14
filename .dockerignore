@@ -5,6 +5,9 @@
 .git
 .gitignore
 
+# 开发工具与代理配置（E8-F17：与运行时无关，不进构建上下文）
+.claude/
+
 # 前端依赖与构建缓存（由 Dockerfile 内 npm ci + build 重新生成）
 web/node_modules
 web/dist

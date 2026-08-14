@@ -119,3 +119,10 @@ def test_grep_error_fails_closed(tmp_path):
     out_text = out.decode('utf-8', errors='replace')
     assert r.returncode == 1, f'grep 出错必须 fail-closed（exit 1）：{out_text}'
     assert 'WARN' in out_text, '应输出扫描出错的 WARN 提示'
+
+
+def test_submodule_reappearance_fails(tmp_path):
+    """F20：.gitmodules 再现必须 FAIL（子模块已永久移除，不得回归）。"""
+    (tmp_path / '.gitmodules').write_text('[submodule "x"]\n\tpath = x\n')
+    r = _run(tmp_path)
+    assert r.returncode == 1
