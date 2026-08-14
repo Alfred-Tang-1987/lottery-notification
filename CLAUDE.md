@@ -125,8 +125,6 @@ Workflow({ scriptPath: '.claude/workflows/run-plans.js', args: { plan: '03' } })
 
 **§2.4 模型策略**：开发用指定 opus/sonnet/haiku；一旦不可用（含 429、router stderr、不在 `Error.message` 的情形）→ halt + 保存进度 → **等用户发指令才 resume**。**绝不降级到可用 model**。
 
-**本机 model 现状**（`~/.claude/settings.json`，无 Claude 订阅）：`opus`→`glm-5.2[1M]`、`sonnet`→`kimi-k2.7`、`haiku`→`deepseek-v4-pro`（router `192.168.8.167:4010`）。`haiku` 槽不支持 ultracode `effort=xhigh`，跑 workflow 前须 `/effort` 降到 high/medium。
-
 ## 关键约定
 
 - 彩种代码：`ssq`(双色球)/`dlt`(大乐透)/`qlc`(七乐彩)/`fc3d`(福彩3D)/`qxc`(七星彩)/`pl3`(排列3)/`pl5`(排列5)
@@ -155,5 +153,5 @@ Workflow({ scriptPath: '.claude/workflows/run-plans.js', args: { plan: '03' } })
 
 - 端口 **8280**（已核实空闲）
 - **`restart: always`**（FnOS 关机会 `docker stop`，`unless-stopped` 不会自启）
-- 部署目录：`/vol1/1000/Docker/lottery-notification/`
+- 部署目录：`<NAS_DOCKER_DIR>`
 - 密钥从 `.env` 注入，不进库不进日志

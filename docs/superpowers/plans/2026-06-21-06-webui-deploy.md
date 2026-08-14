@@ -823,7 +823,7 @@ if __name__ == "__main__":
 # 部署运维
 
 ## 首次部署
-1. NAS 创建目录 `/vol1/1000/Docker/lottery-notification/`
+1. NAS 创建目录 `<NAS_DOCKER_DIR>`
 2. 复制项目 + `.env`（填 JWT_SECRET/CRYPTO_KEY_V1/数据源 key/SMTP）
 3. `docker compose up -d --build`
 4. 创建首个 admin：`docker compose exec app uv run python -m app.cli create-admin --username admin --password <p>`

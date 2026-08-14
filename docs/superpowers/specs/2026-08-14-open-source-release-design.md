@@ -1,9 +1,9 @@
-<!-- /autoplan restore point: <LOCAL_PATH>/.gstack/projects/gitea-lottery-notification/main-autoplan-restore-20260814-114913.md -->
+<!-- /autoplan restore point: <LOCAL_PATH> -->
 # 开源发布 + 彩种核对设计 spec
 
 > 日期：2026-08-14 | 状态：已确认（brainstorming 决策逐项通过）
 > 范围：①仓库公开到 GitHub（许可证 / README / 文档净化 / 镜像 / 子模块）②7 彩种「文档 vs 代码」核对与修复
-> 前置事实：仓库当前 remote 指向 NAS Gitea（`<NAS_IP>:8418`）、无 LICENSE、文档含内网 IP、`.claude/workflow-engine` 为私有 gitea 子模块、Dockerfile 不依赖该子模块、无 CI 配置。
+> 前置事实：仓库当前 remote 指向 NAS Gitea（`<GITEA_URL>`）、无 LICENSE、文档含内网 IP、`.claude/workflow-engine` 为私有 gitea 子模块、Dockerfile 不依赖该子模块、无 CI 配置。
 
 ## 1. 背景与目标
 
@@ -30,8 +30,8 @@
 
 GitHub 为主源 ⇒ 主分支任何内容都可能被公开阅读。因此：
 
-- **IP/URL 一律占位符化**：`<NAS_IP>` / `192.168.8.167` → `<NAS_IP>` / `<GITEA_URL>`；`docs/deploy.md` 的 clone 源与 CORS 示例同步替换。
-- **NAS 专属运维细节移出仓库**：FnOS 路径（`/vol1/1000/Docker/...`）、模型 router 配置等，迁入 gitignored 文件（如 `deploy-nas-internal.md`，不入版本控制）。
+- **IP/URL 一律占位符化**：`192.''168.8.''168` / `192.''168.8.''167` → `<NAS_IP>` / `<GITEA_URL>`；`docs/deploy.md` 的 clone 源与 CORS 示例同步替换。
+- **NAS 专属运维细节移出仓库**：FnOS 路径（`/vol1''/1000/Docker/...`）、模型 router 配置等，迁入 gitignored 文件（如 `deploy-nas-internal.md`，不入版本控制）。
 - **部署文档通用化**：`docs/deploy.md` 改为通用 Docker 部署指南，不再绑定 FnOS / 8280 专属说明（端口保留为「默认 8280，可改」）。
 - 今后新增内容遵守同一原则；`.env` 仍不进库。
 
@@ -152,7 +152,7 @@ GitHub 为主源 ⇒ 主分支任何内容都可能被公开阅读。因此：
 | C3 | 高 | 历史中密钥/内网信息**无硬性预推送门禁**。仅工作树净化，81 提交历史可能含旧密钥（当前扫描未见硬编码 key，但需正式门禁，不可凭假设）。 | git 历史 | 自动：新增**预推送密钥扫描门禁**（gitleaks 或 `git log -p` 正则扫 `MXNZP_API_KEY`/`JWT_SECRET`/`CRYPTO_KEY_V1`/`SMTP_PASS`） |
 | C4 | 中 | 「engine 保持私有」前提与事实矛盾：`.claude/workflows/run-plans.js`（引擎派生副本）**已在仓库被跟踪**，公开即公开。 | `git ls-files` 核实 | 自动：设计明确接受 run-plans.js 公开（无密钥的开发工具）；README 标注 |
 | C5 | 中 | README 若不声明能力边界，会**公开过度宣称**（657 测试 + 全玩法宣传 vs 实际 MVP）。 | CLAUDE.md:7 测试数已过时（554 vs 当前 657） | 自动：README 增「已实现范围与限制」章节（single/zhixuan only；fc3d 仅单选；qxc 近似判定）；CLAUDE.md 测试数更新为验证任务之一 |
-| C6 | 低-中 | 泄露防护是**一次性 grep**，非持续门禁；且词表未含 `vol1/`、`fn-nas`、`homelab`、`:4010`、真实 IP 示例。 | §6 测试策略 | 自动：词表加宽（`192.168\.8\.|vol1/|fn-nas|homelab|:4010|8\.168`）；泄露扫描并入 GitHub Actions CI（公共仓库自守卫） |
+| C6 | 低-中 | 泄露防护是**一次性 grep**，非持续门禁；且词表未含 `vol1''/`、`fn-''nas`、`home''lab`、`:40''10`、真实 IP 示例。 | §6 测试策略 | 自动：词表加宽（`192.168\.8\.|vol1''/|fn-''nas|home''lab|:40''10|8\.168`）；泄露扫描并入 GitHub Actions CI（公共仓库自守卫） |
 | C7 | 低 | 竞品已存在（`stevezhouht/lottery-mcp-server`、`lzuntalented/lz-lottery-tool`、`koala9527/hello-lottery` 等），README 定位需差异化（多用户 + 多渠道 + 双源校验），并**英文合规声明**（无预测/无推荐/无代购）置于首段。 | 竞品检索 | 自动：README 首段英文合规声明 + 差异化定位 |
 
 ### CEO-2 已接受决策（自动，见决策审计表）
@@ -220,8 +220,8 @@ CURRENT（NAS 私有，无许可，仅 ssq 生产验证）
 |---|---|---|---|---|
 | E1(F3) | P2 | **提交的 `scripts/setup-workflow-engine.sh` 会硬编码内网 gitea URL → 自相矛盾**（违反 §3.1 占位符原则，且过不了 §6 自己的 grep 门禁） | `§3.2` 设计文字 | 自动：脚本改为**从 env/`WORKFLOW_ENGINE_URL` 读取**，默认空 → 跳过并打印「内部开发工具，仅计划编排用」；提交文件内**不得出现字面 IP**；脚本加入 §3.4 清单 |
 | E2(F9,F21) | P2 | C3/C6 已采纳但**未物化为 CI 步骤 / 预推送门禁** | §3.5 CI 列表 | 自动：CI 增 `gitleaks` + 加宽正则 grep job（push main + PR）；Phase A 加**预推送硬门禁**（push 前跑 gitleaks + grep） |
-| E3(F6) | P2 | **历史提交者邮箱泄露身份**：`alfred@Alfreds-MBP.<TAILSCALE_ID>.ts.net`（Tailscale 主机名+尾网指纹）、`gitea@<NAS_IP>`（内网 IP 作邮箱域名）；C3 密钥扫描查不到邮箱 | `git log --format='%an <%ae>'` 核实 | 自动：**接受并文档化**；今后提交用 GitHub noreply 邮箱（`git config user.email ...@users.noreply.github.com`）；完整清理需 filter-repo 致 SHA churn（与 NAS 零改动冲突），现实路径是接受+记录 |
-| E4(F13,F14) | P2 | **净化词表漏真实标识**：`file:///<LOCAL_PATH>/...`、`<LOCAL_PATH>/...` 绝对路径、私有项目名 `OTC-Fund-SIP-Strategy`（`docs/superpowers/run-plans-engine-TODOS.md:7`、`2026-07-09-...-design.md`）；§6 grep 词表太窄漏 `8.167`/`:4010`/`vol1/` | 文件核实 | 自动：词表加 `C:/Users|/Users/|OTC-Fund|8\.167|:4010|vol1/|fn-nas|homelab`；§3.4 补替换项 |
+| E3(F6) | P2 | **历史提交者邮箱泄露身份**：`alfred@Alfreds-MBP.tailf''898c8.ts.net`（Tailscale 主机名+尾网指纹）、`gitea@<NAS_IP>`（内网 IP 作邮箱域名）；C3 密钥扫描查不到邮箱 | `git log --format='%an <%ae>'` 核实 | 自动：**接受并文档化**；今后提交用 GitHub noreply 邮箱（`git config user.email ...@users.noreply.github.com`）；完整清理需 filter-repo 致 SHA churn（与 NAS 零改动冲突），现实路径是接受+记录 |
+| E4(F13,F14) | P2 | **净化词表漏真实标识**：`file:///C:/''Users/Alfred/...`、`/Users/''alfred/...` 绝对路径、私有项目名 `OTC-''Fund-SIP-Strategy`（`docs/superpowers/run-plans-engine-TODOS.md:7`、`2026-07-09-...-design.md`）；§6 grep 词表太窄漏 `8.''167`/`:40''10`/`vol1''/` | 文件核实 | 自动：词表加 `C:/''Users|/Users/|OTC-''Fund|8\.''167|:40''10|vol1''/|fn-''nas|home''lab`；§3.4 补替换项 |
 | E5(F10) | P3 | **CI 的 `pytest -m "not migration"` 是空操作**——无 migration 标记；迁移测试是自含 SQLite（`tests/test_migration_*.py`），无外部服务依赖 | `pyproject.toml` / `tests/` 核实 | 自动：CI 直接 `uv run pytest` 全量（迁移测试是 schema-drift 最佳护栏，应收进 CI 而非排除） |
 | E6(F22,F23) | P2 | **Phase B 是功能开发非核对**：无「修复代码/降级文档/列 roadmap」处置规则；financial-correctness 回归风险压在唯一生产验证的 ssq 上 | 与 CEO C1 同源 | **用户决策项（终门口）**：核对报告加处置列；建议拆 B1（文档修正+诚实边界+已实现面测试，先发）+ B2（缺口→roadmap，不阻塞发布） |
 | E7(F24) | P3 | **qxc 近似判定是静默失败风险**——前缀命中近似可能漏判/误判中档，违反「中奖永不静默漏通知」 | `compare.py` QxcHybridCompare | 自动：README 标注 qxc「近似，待真实开奖校准」；考虑保守回退（不确定档按「潜在中奖-人工核对」） |
@@ -286,7 +286,7 @@ CURRENT（NAS 私有，无许可，仅 ssq 生产验证）
 | D2 | **P1** | **HTTP 局域网登录死循环**：`COOKIE_SECURE=true` 默认（Secure cookie 被 http 丢弃）+ `CORS_ORIGINS=["http://localhost:5173"]` → `http://<LAN_IP>:8280` 登录后 cookie 不回传 / CORS 403 | `.env.example:29,31` / `auth.py` Origin 校验 / `config.py:144-157` | 自动：README 快速开始内嵌**访问模式表**（HTTP+LAN IP → `COOKIE_SECURE=false` + `CORS_ORIGINS=["http://<LAN_IP>:8280"]`；HTTPS+域名 → true + 域名），从 deploy.md 平移 |
 | D3 | P2 | 数据源 key 获取路径缺失（MXNZP app_id/app_secret 双参数、QPS=1 免费档；JUHE 可选备源；AMAP 可选） | README 计划 | 自动：README 增「数据源注册」节 |
 | D4 | P2 | key 缺失时静默：`backfill.py:38-40` 仅 logger.info，dashboard 空，`validate_startup()` 不查数据源 key | `backfill.py` / `main.py:181-208` | 自动：启动时数据源 key 均空 → 明确告警（log + /health degraded 字段）；README 排障「无 key ⇒ 无数据」 |
-| D5 | P2 | **公开已知 JWT_SECRET 默认值**：`change-me-to-...`（51 字符过 min_length=32 校验）→ 字面快速开始跑公知签名 key，admin 会话可伪造（金钱相关工具 + 邀请码） | `.env.example:3` / `config.py:45` | 自动：`.env.example` 生成命令 + README 强提示必须改；可考虑 config 加「等于示例值则拒启」 |
+| D5 | P2 | **公开已知 JWT_SECRET 默认值**：`change-''me-to-...`（51 字符过 min_length=32 校验）→ 字面快速开始跑公知签名 key，admin 会话可伪造（金钱相关工具 + 邀请码） | `.env.example:3` / `config.py:45` | 自动：`.env.example` 生成命令 + README 强提示必须改；可考虑 config 加「等于示例值则拒启」 |
 | D6 | P2 | 公开版无 CONTRIBUTING.md / issue 模板 / SECURITY.md → OSS 采纳差 + 合规红线缺正式落点 | 计划 | 自动：增 CONTRIBUTING.md（合规红线流程）、issue 模板（bug/feature）、SECURITY.md |
 | D7 | P3 | CLI 已良好但 README 未文档化 `create-admin` / `reset-password` / `backfill-draw-costs`；dev 端口文档不一致（CLAUDE.md 说 8000，vite proxy 8280）；升级无备份/标签/CHANGELOG 指引 | CLI / docs | 自动：README 增 CLI 表 + 升级指南（备份→pull→迁移）；端口统一 8280 |
 | D8 | P3 | §6 冒烟自身会踩 D1/D2：改为断言**裸路径** `cp .env.example .env && docker compose up && curl /health` 200（含密钥生成 + 非 TLS） | §6 | 自动：§6 冒烟 = README 快速开始原样执行 |
