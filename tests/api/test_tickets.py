@@ -223,3 +223,62 @@ def test_update_ticket_requires_csrf(db_engine):
     tid = _auth_csrf_client(db_engine, uid).post('/tickets', json=_VALID_TICKET).json()['id']
     r = client.patch(f'/tickets/{tid}', json={'label': 'x'})
     assert r.status_code == 403
+
+
+# ──────────────────────────────────────────────
+# Plan 10 / T4：fc3d 单选（danxuan）建票 + 未实现玩法 API 400 拦截
+# 未实现玩法（zuxuan3/zuxuan6/fushi/dantuo...）建/改票被 400 明确拒绝——
+# 否则允许建票却在比对层抛 NotImplementedError，被 per-ticket 隔离静默跳过
+# （中奖永不通知，silent-failure 红线）。
+# ──────────────────────────────────────────────
+
+
+def _seed_fc3d(db_engine):
+    with Session(db_engine) as s:
+        s.add(
+            LotteryType(
+                code='fc3d',
+                name='福彩3D',
+                category='welfare',
+                spec_json='{}',
+                draw_schedule_json='{}',
+            )
+        )
+        s.commit()
+
+
+_FC3D_TICKET = {
+    'lottery_code': 'fc3d',
+    'play_type': 'danxuan',
+    'numbers_json': '{"front":[1,2,3]}',
+    'cost': 200,
+}
+
+
+def test_create_fc3d_danxuan_accepted(db_engine):
+    """fc3d 单选（danxuan）是已实现玩法——建票 201（Plan 10 / T4）。"""
+    _seed_fc3d(db_engine)
+    uid = _make_user(db_engine, 'bob')
+    client = _auth_csrf_client(db_engine, uid)
+    r = client.post('/tickets', json=_FC3D_TICKET)
+    assert r.status_code == 201, r.text
+
+
+def test_create_unimplemented_play_type_rejected_400(db_engine):
+    """未实现玩法（组选三）建票 → 400 明确拒绝，不得入库后比对静默跳过。"""
+    _seed_fc3d(db_engine)
+    uid = _make_user(db_engine, 'carol')
+    client = _auth_csrf_client(db_engine, uid)
+    r = client.post('/tickets', json={**_FC3D_TICKET, 'play_type': 'zuxuan3'})
+    assert r.status_code == 400, r.text
+    assert '尚未实现' in r.json()['detail']
+
+
+def test_update_to_unimplemented_play_type_rejected_400(db_engine):
+    """改票改成未实现玩法同样 400。"""
+    _seed_fc3d(db_engine)
+    uid = _make_user(db_engine, 'dave')
+    client = _auth_csrf_client(db_engine, uid)
+    tid = client.post('/tickets', json=_FC3D_TICKET).json()['id']
+    r = client.patch(f'/tickets/{tid}', json={'play_type': 'zuxuan6'})
+    assert r.status_code == 400, r.text

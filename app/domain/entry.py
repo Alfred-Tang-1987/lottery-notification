@@ -41,22 +41,29 @@ class Entry:
         return n_combos * per * self.multiplier
 
 
+# 已实现玩法（B1 边界）：每注一组号码、展开 1 注即可比对的玩法。
+# 分区型 single（单式）；按位型 zhixuan（直选，pl3/pl5）/ danxuan（单选，fc3d）。
+# 未实现玩法（fushi/dantuo/zuxuan3/zuxuan6/...）在 API 层被 400 拒绝（plan-10/T4），
+# 领域层 _count_combos 显式 NotImplementedError 兜底——两层都不允许「建了票却静默不比对」。
+IMPLEMENTED_PLAY_TYPES = frozenset({'single', 'zhixuan', 'danxuan'})
+
+
 def _count_combos(e: Entry) -> int:
     """展开后的单式注数（用于 cost/上限校验）。
-    MVP：single/zhixuan=1（准确）。fushi/dantuo 需 spec.front.count/back.count 精确组合，
-    Phase 2 实现——硬编码 6 会算错大乐透(5)/七乐彩(7)，故 MVP 直接拒绝而非估错。"""
-    if e.play_type in ('single', 'zhixuan'):
+    已实现玩法（single/zhixuan/danxuan）=1（准确）。fushi/dantuo/zuxuan 等需组合展开，
+    B2 实现——拒绝估算（硬编码会算错），显式抛错而非静默。"""
+    if e.play_type in IMPLEMENTED_PLAY_TYPES:
         return 1
-    raise NotImplementedError(f'{e.play_type} 展开注数需 spec 精确（Phase 2）；MVP 仅 single/zhixuan')
+    raise NotImplementedError(f'{e.play_type} 展开注数需组合展开（B2 roadmap）；已实现玩法仅 {sorted(IMPLEMENTED_PLAY_TYPES)}')
 
 
 def expand(e: Entry) -> list[SingleCombo]:
-    """展开注单为单式组合。MVP：single/zhixuan 返回自身一注（准确）。
+    """展开注单为单式组合。已实现玩法（single/zhixuan/danxuan）返回自身一注（准确）。
     fushi/dantuo 组合展开需 spec（前区/后区 count 因彩种而异），Phase 2 实现。
     带按 entry 内容 hash 的内存缓存，注单变更则失效。"""
-    # Check MAX_COMBINATIONS limit (trivially satisfiable for single/zhixuan, but must exist).
-    # _count_combos raises NotImplementedError for fushi/dantuo (Phase 2), so only
-    # single/zhixuan reach the construction below.
+    # Check MAX_COMBINATIONS limit (trivially satisfiable for implemented play types, but must exist).
+    # _count_combos raises NotImplementedError for fushi/dantuo/zuxuan etc. (B2), so only
+    # implemented play types reach the construction below.
     n_combos = _count_combos(e)
     if n_combos > MAX_COMBINATIONS:
         raise ValueError(f'展开注数 {n_combos} 超过上限 {MAX_COMBINATIONS}')
