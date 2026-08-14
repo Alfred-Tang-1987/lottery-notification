@@ -94,12 +94,12 @@ describe("lotteries.ts — getPlayTypes", () => {
     }
   });
 
-  it("returns danxuan/zuxuan3/zuxuan6 for fc3d", () => {
-    expect(getPlayTypes("fc3d")).toEqual(["danxuan", "zuxuan3", "zuxuan6"]);
+  it("returns danxuan only for fc3d (B1 boundary)", () => {
+    expect(getPlayTypes("fc3d")).toEqual(["danxuan"]);
   });
 
-  it("returns zhixuan/zuxuan3/zuxuan6 for pl3", () => {
-    expect(getPlayTypes("pl3")).toEqual(["zhixuan", "zuxuan3", "zuxuan6"]);
+  it("returns zhixuan only for pl3 (B1 boundary)", () => {
+    expect(getPlayTypes("pl3")).toEqual(["zhixuan"]);
   });
 
   it("returns zhixuan only for pl5", () => {

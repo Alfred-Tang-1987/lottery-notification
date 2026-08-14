@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from sqlmodel import Session
 
 from app.api.deps import current_user, get_session_dep, verify_csrf
+from app.domain.entry import IMPLEMENTED_PLAY_TYPES
 from app.infrastructure.repositories import TicketRepo
 from app.models import Ticket, User
 
@@ -83,6 +84,18 @@ def _to_out(t: Ticket) -> TicketOut:
     )
 
 
+def _validate_play_type_implemented(play_type: str) -> None:
+    """未实现玩法 400 拒绝（plan-10/T4）：允许建票却在比对层抛 NotImplementedError
+    会被 per-ticket 隔离静默跳过——票永不比对、中奖永不通知（silent-failure 红线）。
+    宁可在建票时明确拒绝。"""
+    if play_type not in IMPLEMENTED_PLAY_TYPES:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f'玩法 {play_type} 尚未实现（当前支持：{"、".join(sorted(IMPLEMENTED_PLAY_TYPES))}）；'
+            f'复式/胆拖/组选等见 README Roadmap',
+        )
+
+
 @router.post('', response_model=TicketOut, status_code=status.HTTP_201_CREATED)
 def create_ticket(
     body: TicketIn,
@@ -91,6 +104,7 @@ def create_ticket(
     _csrf_ok: None = Depends(verify_csrf),
 ) -> TicketOut:
     """新增号码：经 TicketRepo 建票（IDOR-safe，归属当前 user）。"""
+    _validate_play_type_implemented(body.play_type)
     t = TicketRepo(session, user_id=user.id).create(
         lottery_code=body.lottery_code,
         play_type=body.play_type,
@@ -129,6 +143,8 @@ def update_ticket(
     控制。cost 由前端 calculateCost 重新计算后提交（号码/倍投/追加变化都影响 cost）。
     """
     fields = body.model_dump(exclude_none=True)
+    if 'play_type' in fields:
+        _validate_play_type_implemented(fields['play_type'])
     if not fields:
         # 空更新：仅校验归属并返回当前状态（幂等）
         t = TicketRepo(session, user_id=user.id).get(ticket_id)

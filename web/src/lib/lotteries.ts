@@ -92,13 +92,15 @@ export function isPositional(code: string): boolean {
 //    ⚠️ play_type 词汇必须与后端一致：partition 复式 = 'fushi'（非 'compound'）
 // ──────────────────────────────────────────────
 
+// B1 已实现玩法（对齐后端 IMPLEMENTED_PLAY_TYPES + API 400 拦截）：fc3d 仅单选、
+// pl3 仅直选（组选三/六等 B2 恢复时在 PLAY_TYPE_LABELS 复用标签）。
 const PLAY_TYPES: Record<string, string[]> = {
   ssq: ["single", "fushi", "dantuo"],
   dlt: ["single", "fushi", "dantuo"],
   qlc: ["single", "fushi", "dantuo"],
   qxc: ["single", "fushi", "dantuo"],
-  fc3d: ["danxuan", "zuxuan3", "zuxuan6"],
-  pl3: ["zhixuan", "zuxuan3", "zuxuan6"],
+  fc3d: ["danxuan"],
+  pl3: ["zhixuan"],
   pl5: ["zhixuan"],
 };
 

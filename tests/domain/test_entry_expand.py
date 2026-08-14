@@ -42,11 +42,11 @@ def test_expand_rejects_invalid_multiplier():
         Entry('ssq', 'single', (1, 2, 3, 4, 5, 6), (7,), multiplier=100)
 
 
-def test_expand_fushi_phase2_not_implemented():
-    """MVP 仅 single；fushi 展开需 spec 精确（Phase 2），当前 raise NotImplementedError
-    （硬编码 6 会算错大乐透5/七乐彩7，故 MVP 诚实拒绝而非估错 cost）。"""
+def test_expand_fushi_b2_not_implemented():
+    """已实现玩法仅 single/zhixuan/danxuan；fushi 组合展开在 B2 roadmap，当前 raise
+    NotImplementedError（硬编码 6 会算错大乐透5/七乐彩7，故诚实拒绝而非估错 cost）。"""
     e = Entry('ssq', 'fushi', tuple(range(1, 34)), (7,), multiplier=1, append=False)
-    with pytest.raises(NotImplementedError, match='Phase 2'):
+    with pytest.raises(NotImplementedError, match='B2'):
         expand(e)
 
 
@@ -145,3 +145,38 @@ def test_compare_strategy_base_raises():
             combo_back=(7,),
             append=False,
         )
+
+
+# ===== Plan 10 / T4: fc3d 单选（danxuan）打通 =====
+
+
+def test_danxuan_expands_as_single():
+    """fc3d 单选（danxuan）= 每注一组 3 位号码，展开 1 注（Plan 10 / T4）。
+
+    旧实现 _count_combos 只接受 single/zhixuan → danxuan 抛 NotImplementedError，
+    比对层 per-ticket 隔离静默跳过——fc3d 票永不比对（静默漏中奖）。
+    """
+    from app.domain.entry import Entry, expand
+
+    e = Entry(lottery_code='fc3d', play_type='danxuan', front=(1, 2, 3), back=None)
+    combos = expand(e)
+    assert len(combos) == 1
+    assert combos[0].front == (1, 2, 3)
+
+
+def test_implemented_play_types_exported():
+    from app.domain.entry import IMPLEMENTED_PLAY_TYPES
+
+    # SIM300 规避：对 frozenset 字面量不写 Yoda 条件（左侧转 set 再比）
+    assert set(IMPLEMENTED_PLAY_TYPES) == {'single', 'zhixuan', 'danxuan'}
+
+
+def test_unimplemented_play_type_still_raises():
+    """组选/复式等未实现玩法在领域层仍显式拒绝（不估算、不静默）。"""
+    import pytest
+
+    from app.domain.entry import Entry, expand
+
+    e = Entry(lottery_code='pl3', play_type='zuxuan3', front=(1, 1, 2), back=None)
+    with pytest.raises(NotImplementedError):
+        expand(e)
