@@ -1071,7 +1071,13 @@ def test_path_b_summary_does_not_deadlock_with_real_notifier(db_engine):
     _fetch_and_compare_yesterday_ssq(db_engine, yesterday_iso)
 
     notifier, bark = _real_notifier_with_mock_channel(db_engine)
-    notifier.is_dnd_active = lambda: False  # 白天跑，走真实推送路径
+    # 白天跑，走真实推送路径。注意：is_dnd_active() 只是 _in_dnd() 的薄包装；notify_path_b
+    # 内部校验的是 self._in_dnd()（真实时钟）。只置 is_dnd_active 在夜间跑测试时 _in_dnd()
+    # 仍返回 True → notify_path_b 提前 return 0 → bark.send 永不调用（2026-08-14 22:33
+    # CST 实测：0.003s 返回 0、无 NotificationLog）。须一并置假，使测试与运行时刻解耦、
+    # 确定性地走真实推送路径（否则夜间 CI 假红/白天假绿，且夜间根本不测死锁路径）。
+    notifier.is_dnd_active = lambda: False
+    notifier._in_dnd = lambda: False
 
     sched = build_scheduler(db_engine)
     register_all_jobs(
