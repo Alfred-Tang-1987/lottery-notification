@@ -71,15 +71,16 @@ _DLT_2026 = [
     ),
 ]
 
-# 现状 qlc 表原样保留（T2 再改——本任务只动 dlt 与版本结构）
+# 七乐彩（一二三等浮动=高等奖 70%/10%/20%；特别号 = back_hit；2026-08-14 核对福彩官方）：
+# 四等 200 / 五等 50 / 六等 10 / 七等 5 元；七等仅 4+0（3+1 不中奖，旧表误含）。
 _QLC = [
     PrizeTier(1, 'front_hit==7', None, _V),
     PrizeTier(2, 'front_hit==6 and back_hit==1', None, _V),
-    PrizeTier(3, 'front_hit==6 and back_hit==0', 304500, _F),  # 以官方为准
-    PrizeTier(4, 'front_hit==5 and back_hit==1', 30000, _F),
+    PrizeTier(3, 'front_hit==6 and back_hit==0', None, _V),
+    PrizeTier(4, 'front_hit==5 and back_hit==1', 20000, _F),
     PrizeTier(5, 'front_hit==5 and back_hit==0', 5000, _F),
     PrizeTier(6, 'front_hit==4 and back_hit==1', 1000, _F),
-    PrizeTier(7, '(front_hit==4 and back_hit==0) or (front_hit==3 and back_hit==1)', 500, _F),
+    PrizeTier(7, 'front_hit==4 and back_hit==0', 500, _F),
 ]
 
 # 现状 qxc 表原样保留（T3 再改）

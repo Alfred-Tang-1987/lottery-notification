@@ -16,13 +16,24 @@ from sqlalchemy.engine import Engine
 from sqlmodel import Session, select
 
 from app.adapters.base import PermanentLookupError
-from app.domain.prize_tables import get_tiers
+from app.domain.prize import AmountType
+from app.domain.prize_tables import PRIZE_TABLES, get_tiers
 from app.models import Comparison, DrawResult, Ticket
 
 logger = logging.getLogger(__name__)
 
 # 同彩种（同源 host）连续 lookup 间隔——OV2 per-host 限流，防被官方接口 ban
 _LOOKUP_INTERVAL_SECONDS = 0.5
+
+# 浮动奖级集合（单一事实源）：refill 主查询与过期标记共用的 tier 过滤。
+# 从奖级表现行版本动态推导——新增浮动档（如 qlc 三等）无需改本模块。
+# 注：跨规则版本的并集语义保守正确（多选行只会多回填尝试，不会漏）。
+_FLOAT_TIERS = frozenset(
+    t.tier
+    for tiers in PRIZE_TABLES.values()
+    for t in tiers
+    if t.amount_type == AmountType.FLOAT
+)
 
 
 def _cutoff_naive_utc(days: int) -> datetime:
@@ -76,7 +87,8 @@ class FloatRefillWorker:
         cutoff = _cutoff_naive_utc(self._max_age)
         refilled = 0
         with Session(self._engine) as s:
-            # 显式限定 prize_tier IN (1,2) —— 仅浮动档（spec §7.1 明文「一二等奖」）
+            # 显式限定 prize_tier IN _FLOAT_TIERS —— 仅浮动档（从奖级表动态推导；spec §7.1 的
+            # 「一二等奖」是当时全部浮动档，qlc 三等自 plan-10/T2 起亦为浮动）
             # OV4 (Plan 07 T4): join DrawResult 过滤 verified=True——只回填已交叉校验
             # 入库的开奖结果，verified=False（双源不一致拒入库）的 comparison 不回填，
             # 避免基于错误号码计算奖金（准确性优先于及时性，spec §7.2）。
@@ -86,7 +98,7 @@ class FloatRefillWorker:
                     .join(DrawResult, Comparison.draw_result_id == DrawResult.id)
                     .where(
                         Comparison.is_win == True,  # noqa: E712
-                        Comparison.prize_tier.in_((1, 2)),
+                        Comparison.prize_tier.in_(_FLOAT_TIERS),
                         Comparison.prize_amount.is_(None),
                         Comparison.unresolved == False,  # noqa: E712
                         Comparison.created_at >= cutoff,
@@ -205,7 +217,7 @@ class FloatRefillWorker:
                 s.exec(
                     select(Comparison).where(
                         Comparison.is_win == True,  # noqa: E712
-                        Comparison.prize_tier.in_((1, 2)),
+                        Comparison.prize_tier.in_(_FLOAT_TIERS),
                         Comparison.prize_amount.is_(None),
                         Comparison.unresolved == False,  # noqa: E712
                         Comparison.created_at < cutoff,
