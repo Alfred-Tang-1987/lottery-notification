@@ -8,7 +8,6 @@ import os
 import subprocess
 from pathlib import Path
 
-import pytest
 from cryptography.fernet import Fernet
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -55,8 +54,8 @@ def test_init_env_generates_bootable_env(tmp_path):
     r = _run_init(tmp_path)
     assert r.returncode == 0, f'{r.stdout}{r.stderr}'
     env_text = (tmp_path / '.env').read_text()
-    jwt = next(l for l in env_text.splitlines() if l.startswith('JWT_SECRET='))
-    crypto = next(l for l in env_text.splitlines() if l.startswith('CRYPTO_KEY_V1='))
+    jwt = next(line for line in env_text.splitlines() if line.startswith('JWT_SECRET='))
+    crypto = next(line for line in env_text.splitlines() if line.startswith('CRYPTO_KEY_V1='))
     assert len(jwt.split('=', 1)[1]) >= 32, 'JWT_SECRET 须 ≥32 字符'
     key = crypto.split('=', 1)[1]
     assert len(key) == 44, 'CRYPTO_KEY_V1 须 44 字符'
