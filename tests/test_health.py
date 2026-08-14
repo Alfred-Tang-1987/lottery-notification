@@ -147,6 +147,20 @@ def test_health_data_sources_single_source(monkeypatch, db_engine):
         app.dependency_overrides.clear()
 
 
+def test_health_data_sources_single_source_juhe_only(monkeypatch, db_engine):
+    """mirror of single_source：仅 juhe 配置（mxnzp 全空）→ data_sources 仍 single_source。
+
+    与 mxnzp-only 对称，覆盖 _data_source_state 的另一半单源分支（review-fix [minor]）。
+    """
+    _set_source_keys(monkeypatch, mxnzp_id='', mxnzp_secret='', juhe='key')
+    app.dependency_overrides[get_db_for_health] = lambda: db_engine
+    try:
+        r = TestClient(app).get('/health')
+        assert r.json()['data_sources'] == 'single_source'
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_health_data_sources_dual(monkeypatch, db_engine):
     _set_source_keys(monkeypatch, mxnzp_id='id', mxnzp_secret='secret', juhe='key')
     app.dependency_overrides[get_db_for_health] = lambda: db_engine

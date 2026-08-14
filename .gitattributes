@@ -44,3 +44,8 @@
 # Plan 09：*.sh 与 .env.example 被 * binary 兜底致 diff 不可读，开 text diff（不加 eol=crlf，防 CRLF 破坏 shell）
 *.sh  text diff
 .env.example text diff
+# Plan 09 final: 无后缀文件被 * binary 兜底致 diff 不可读，开 text diff（不加 eol=crlf，保持 LF）
+LICENSE        text diff
+Dockerfile     text diff
+.gitignore     text diff
+.dockerignore  text diff
