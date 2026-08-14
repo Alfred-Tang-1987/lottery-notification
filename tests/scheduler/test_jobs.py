@@ -204,6 +204,84 @@ def test_path_a_tick_fetches_compares_and_schedules_big_win_push(db_engine):
     assert notifier.notify_path_a.call_args.kwargs['comparison_id'] == comparison_id
 
 
+def test_path_a_tick_pushes_qlc_third_float_tier_same_night(db_engine):
+    """路径A当晚简讯须覆盖 qlc 三等（plan-10/T2 起为浮动高等奖，∈ _FLOAT_TIERS）。
+
+    path-A 大奖查询此前硬编码 prize_tier.in_((1, 2))——全 app 唯一残留的硬编码站点，
+    qlc 三等当晚不被即时简讯命中，只能等次日 07:00 path-B 汇总 + refill 回填（时序
+    延迟，且违反「浮动档单一事实源」原则）。切到 _FLOAT_TIERS（与 refill worker 共用
+    refill_service 的浮动档集合）后当晚即推。fixture 照抄
+    test_path_a_tick_fetches_compares_and_schedules_big_win_push，差异点：
+    lottery_code=qlc、prize_tier=3、prize_amount=None（浮动档待回填）。
+    """
+    from sqlmodel import Session
+
+    from app.models import Comparison, DrawResult, Ticket, User
+    from app.scheduler.jobs import _push_big_win, register_all_jobs
+
+    sched = build_scheduler(db_engine)
+    with Session(db_engine) as s:
+        user = User(username='path_a_qlc3', password_hash='x', role='user', invite_code='Q3')
+        s.add(user)
+        s.commit()
+        s.refresh(user)
+        dr = DrawResult(
+            lottery_code='qlc',
+            draw_no='062',
+            draw_date=_today_cst(),
+            numbers_json='{}',
+            source='mxnzp',
+            verified=True,
+            version=1,
+        )
+        s.add(dr)
+        s.commit()
+        s.refresh(dr)
+        ticket = Ticket(
+            user_id=user.id,
+            lottery_code='qlc',
+            play_type='single',
+            numbers_json='{}',
+            multiplier=1,
+            cost=200,
+        )
+        s.add(ticket)
+        s.commit()
+        s.refresh(ticket)
+        cmp = Comparison(
+            user_id=user.id,
+            draw_result_id=dr.id,
+            ticket_id=ticket.id,
+            hits_json='{}',
+            prize_tier=3,
+            prize_amount=None,
+            is_win=True,
+        )
+        s.add(cmp)
+        s.commit()
+        s.refresh(cmp)
+        comparison_id = cmp.id
+
+    notifier = MagicMock()
+    register_all_jobs(
+        sched,
+        {
+            'engine': db_engine,
+            'fetch_service': MagicMock(),
+            'compare_service': MagicMock(),
+            'refill_worker': MagicMock(),
+            'notifier': notifier,
+        },
+    )
+    _invoke_job(sched, 'path_a_poll_evening')
+
+    push_jobs = [j for j in sched.get_jobs() if j.func is _push_big_win]
+    assert len(push_jobs) == 1, 'qlc 三等（浮动档）当晚应命中 path-A 即时简讯'
+    _invoke_job(sched, push_jobs[0].id)
+    notifier.notify_path_a.assert_called_once()
+    assert notifier.notify_path_a.call_args.kwargs['comparison_id'] == comparison_id
+
+
 def test_path_a_tick_does_not_repush_historical_big_wins(db_engine):
     """路径A只推送当前开奖夜的最新大奖，不得重复推送历史大奖。"""
     from datetime import timedelta

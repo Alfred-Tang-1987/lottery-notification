@@ -14,7 +14,7 @@ from app.notifications.notifier import Notifier
 from app.scheduler import _JobDeps
 from app.services.compare_service import CompareService
 from app.services.fetch_service import FetchService
-from app.services.refill_service import FloatRefillWorker
+from app.services.refill_service import _FLOAT_TIERS, FloatRefillWorker
 
 _CST = ZoneInfo('Asia/Shanghai')
 
@@ -209,7 +209,8 @@ def _path_a_tick(db_url: str) -> None:
                 .join(DrawResult, Comparison.draw_result_id == DrawResult.id)
                 .where(
                     Comparison.is_win == True,  # noqa: E712
-                    Comparison.prize_tier.in_((1, 2)),
+                    # 浮动档单一事实源（_FLOAT_TIERS 从奖级表动态推导，见 refill_service；plan-10/T2 起 qlc 三等亦为浮动，硬编码 (1,2) 会漏它当晚即时简讯）
+                    Comparison.prize_tier.in_(_FLOAT_TIERS),
                     DrawResult.draw_date >= day_start,
                     DrawResult.draw_date < day_end,
                 )
