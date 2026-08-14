@@ -35,6 +35,16 @@
 - Consumes: 无（首个任务）。
 - Produces: `scripts/publish-check.sh [--grep-only]`——退出码 0=干净 / 1=有泄露或 gitleaks 缺失；`PUBLISH_CHECK_ROOT` env 可覆盖扫描根（测试用）。T3 会追加子模块缺席检查；T9 CI 与 T11 首推前都会调用。
 
+- [ ] **Step 0: 提交身份切 GitHub noreply（eng-review 外部声音发现 5——必须在首个 plan commit 前完成）**
+
+```bash
+gh auth status || gh auth login   # 查 noreply 地址需要认证；也可从 GitHub 网页 Settings → Emails 复制
+git config user.email "$(gh api user --jq '"\(.id)+\(.login)@users.noreply.github.com"')"
+git config user.name '<你的 GitHub 用户名或公开显示名>'
+```
+
+验证：`git config user.email` 输出 `...@users.noreply.github.com`。此后 plan-09/plan-10 全部 commit 都带公开身份（否则 17+ 个新 commit 带本机主机名邮箱进公开历史，且 SECURITY.md 的 noreply 声明为假）。T11 Step 3 因此降级为「验证已配置」。
+
 - [ ] **Step 1: 写失败测试**
 
 ```python
@@ -97,6 +107,54 @@ def test_placeholder_nas_ip_passes(tmp_path):
     (tmp_path / 'ok.md').write_text('clone 源写成 <GITEA_URL>，端口 8280\n')
     r = _run(tmp_path)
     assert r.returncode == 0, f'占位符不应误报：{r.stdout}{r.stderr}'
+
+
+def test_weak_default_secret_fails(tmp_path):
+    """代码内嵌弱默认密钥（eng-review 外部声音发现 6）必须拦。"""
+    weak = 'change-' + 'me-to-anything'  # 拆分书写防自匹配
+    (tmp_path / 'config.py').write_text(f"import os\nJWT = os.getenv('JWT_SECRET', '{weak}')\n")
+    r = _run(tmp_path)
+    assert r.returncode == 1, '代码内嵌弱默认密钥必须 exit 1'
+
+
+def test_every_wordlist_pattern_has_teeth(tmp_path):
+    """词表衰退回归（eng-review 外部声音发现 7）：PATTERNS 每条模式都必须能拦住
+    对应样本——模式被误删/误改时本测试变红。
+
+    测试持有独立的样本清单（与脚本词表互抄没意义；样本匹配不上=脚本词表衰退）。
+    样本字面值一律拆分书写，防本文件命中门禁。
+    """
+    import re
+
+    src = SCRIPT.read_text()
+    block = src.split('PATTERNS=(')[1].split(')')[0]
+    patterns = []
+    for line in block.splitlines():
+        line = line.strip()
+        if line.startswith("'"):
+            patterns.append(line.strip("',").replace("''", ''))
+    assert len(patterns) >= 10, f'词表条目异常缩减：{patterns}'
+
+    samples = {
+        '192\\.168\\.8\\.': '192' + '.168.8.1',
+        '8\\.167': '10.0.' + '8.' + '167',
+        ':40' + '10': 'router :' + '4010',
+        'vol1' + '/': '/vol1' + '/1000/Docker',
+        'fn-' + 'nas': 'ssh fn' + '-nas',
+        'home' + 'lab': 'home' + 'lab.local',
+        'C:/' + 'Users': 'C:/' + 'Users/Alfred',
+        '/Users/' + 'alfred': '/Users/' + 'alfred/x',
+        'OTC-' + 'Fund': 'OTC-' + 'Fund-Project',
+        'tailf' + '898c8': 'tailf' + '898c8.ts.net',
+        '[Cc]hange[-_]me': 'change' + '-me-default',
+    }
+    for pat in patterns:
+        sample = samples.get(pat)
+        assert sample is not None, f'词表新增模式 {pat!r} 缺少对应衰退样本——在 samples 补上'
+        (tmp_path / 'probe.md').write_text(f'{sample}\n')
+        r = _run(tmp_path)
+        assert r.returncode == 1, f'模式 {pat!r} 未能拦截样本 {sample!r}（词表衰退）'
+    assert set(samples) <= set(patterns), 'samples 有脚本中已不存在的模式（词表被删）'
 ```
 
 - [ ] **Step 2: 跑测试确认失败**
@@ -142,6 +200,8 @@ PATTERNS=(
   '/Users/''alfred'
   'OTC-''Fund'
   'tailf''898c8'
+  # 弱默认密钥占位串（eng-review 外部声音发现 6：代码内嵌默认密钥也要拦）
+  '[Cc]hange[-_]''me'
 )
 
 # 密钥赋值形（行首 KEY=非空值——env 文件形态；行中出现的代码片段如 startswith('KEY=')
@@ -158,7 +218,7 @@ SECRET_PATTERNS=(
 
 EXCLUDE_DIRS=(
   --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=.venv
-  --exclude-dir=dist --exclude-dir=static --exclude-dir=.claude
+  --exclude-dir=dist --exclude-dir=static --exclude-dir=workflow-engine
   --exclude-dir=runs --exclude-dir=.gstack --exclude-dir=.superpowers
   --exclude-dir=.audit --exclude-dir=.workflow --exclude-dir=data
   --exclude-dir=backups --exclude-dir=htmlcov --exclude-dir=.playwright-mcp
@@ -183,7 +243,9 @@ if [ "$GREP_ONLY" -eq 0 ]; then
     echo 'FAIL: 未安装 gitleaks。安装：brew install gitleaks；CI 场景用 --grep-only' >&2
     exit 1
   fi
-  # 全历史扫描（首推前必须跑）；发现即非零退出
+  # 全历史「密钥形态」扫描（eng-review 外部声音发现 4：gitleaks 不匹配 IP/路径类
+  # 内网标识——历史含内网 IP 属 spec §7/E3 已接受风险，本工具只担保「工作树无内网
+  # 标识 + 全历史无密钥」，不宣称历史无内网标识）；发现即非零退出
   gitleaks git --redact "$ROOT" || FAIL=1
 fi
 
@@ -194,14 +256,14 @@ fi
 echo '发布门禁：通过'
 ```
 
-注意：`.claude` 整体排除（含将被移除的 workflow-engine 与公开可留的 run-plans.js——run-plans.js 已确认无密钥，C4；若有疑虑可改为仅排除 `.claude/workflow-engine`，但 run-plans.js 内含引擎实现细节，排除整目录更稳）。
+注意：`.claude` **不**整体排除——已跟踪的 `.claude/workflows/run-plans.js` 是公开内容（C4），必须被门禁扫描保护；仅按基名排除 `workflow-engine` 目录（私有内部引擎，T3 后仅为 gitignored 本地目录）。`--exclude-dir` 按目录基名匹配。
 
 写完后 `chmod +x scripts/publish-check.sh`。
 
 - [ ] **Step 4: 跑测试确认通过**
 
 Run: `uv run pytest tests/test_publish_check.py -v`
-Expected: 5 passed
+Expected: 7 passed
 
 - [ ] **Step 5: 全仓跑门禁确认 RED（证明门禁有牙）**
 
@@ -228,7 +290,7 @@ git commit -m "feat(plan-09/T0): 发布泄露门禁 publish-check.sh（内网标
 - Consumes: `app/config.py` 的校验事实——`jwt_secret: str = Field(min_length=32)`、`crypto_key_v1: str = Field(alias='CRYPTO_KEY_V1', min_length=44)` + Fernet 构造校验（空值/默认值会在启动时以明确 ValidationError 拒启，不静默）。
 - Produces: `scripts/init-env.sh`——由 `.env.example` 生成 `.env` 并填入随机密钥；`INIT_ENV_ROOT` env 覆盖目标根（测试用）。README（T5）与冒烟（T12）依赖此脚本。
 
-背景（spec D1/D5）：现 `.env.example` 有三个发布阻断问题：① `CRYPTO_KEY_V1` 空值 → `cp .env.example .env && docker compose up` 启动即 ValidationError crash-loop；② `TLS_CERT_FILE`/`TLS_KEY_FILE` 已置值 → Dockerfile CMD 走 SSL → 证书缺失 FileNotFoundError crash-loop；③ `JWT_SECRET` 带**公开已知默认值**（change-me-to-...，51 字符过校验）→ 照抄即公知签名 key，admin 会话可伪造；④ 注释含真实内网 IP（C2）。
+背景（spec D1/D5）：现 `.env.example` 有三个发布阻断问题：① `CRYPTO_KEY_V1` 空值 → `cp .env.example .env && docker compose up` 启动即 ValidationError crash-loop；② `TLS_CERT_FILE`/`TLS_KEY_FILE` 已置值 → Dockerfile CMD 走 SSL → 证书缺失 FileNotFoundError crash-loop；③ `JWT_SECRET` 带**公开已知默认值**（弱占位示例串，51 字符过校验）→ 照抄即公知签名 key，admin 会话可伪造；④ 注释含真实内网 IP（C2）。
 
 - [ ] **Step 1: 写失败测试**
 
@@ -319,6 +381,16 @@ def test_init_env_missing_tools_fails_loudly(tmp_path):
     )
     assert r.returncode != 0
     assert '缺少' in r.stderr
+
+
+def test_init_env_missing_example_fails_loudly(tmp_path):
+    """.env.example 缺失（非仓库根目录误跑）→ 报错退出，防呆提示不静默（eng-review Issue 6）。"""
+    env = {**os.environ, 'INIT_ENV_ROOT': str(tmp_path)}  # tmp_path 里不放 .env.example
+    r = subprocess.run(
+        ['/bin/sh', str(SCRIPT)], capture_output=True, text=True, env=env, timeout=60,
+    )
+    assert r.returncode != 0
+    assert '仓库根目录' in r.stderr
 ```
 
 - [ ] **Step 2: 跑测试确认失败**
@@ -418,7 +490,7 @@ echo '下一步：按需编辑数据源 key（MXNZP/JUHE/AMAP）与 SMTP；HTTP+
 - [ ] **Step 5: 跑测试确认通过**
 
 Run: `uv run pytest tests/test_init_env.py -v`
-Expected: 6 passed
+Expected: 7 passed
 
 - [ ] **Step 6: 提交**
 
@@ -879,6 +951,7 @@ HTTPS（自签证书）配置步骤见 `.env.example` 末尾注释。
 | `docker compose exec app uv run python -m app.cli ssq` | 手动跑一期 ssq 端到端冒烟（抓取→校验→比对） |
 | `docker compose exec app uv run python -m app.cli backfill-history` | 回填各彩种最近 50 期历史开奖 |
 | `docker compose exec app uv run python -m app.cli backfill-draw-costs` | 回填历史期次成本（DrawCost） |
+| `docker compose exec app uv run python -m app.cli recompare --dry-run` | 奖级表修正后重算存量比对行（先 dry-run 看影响面；实现见 plan-10/T6） |
 
 ## 升级
 
@@ -1169,8 +1242,7 @@ git commit -m "feat(plan-09/T6): deploy.md 通用化——去 FnOS/内网绑定�
    - 密钥从 `.env` 注入，不进库不进日志
    ```
 
-5. 「文档导航」节末尾追加一行：
-   `- `docs/reference/lottery-verification-2026-08-14.md` — **7 彩种「文档 vs 代码」核对报告（plan-10 产出）**`
+（文档导航的核对报告链接由 plan-10 T7 添加——该文件由 plan-10 T0 创建，plan-09 阶段加入会产生死链窗口。）
 
 - [ ] **Step 2: 门禁 + 回归**
 
@@ -1267,36 +1339,51 @@ Expected: FAIL（`data_sources` 键不存在 / 无 WARNING）
 
 - [ ] **Step 3: 实现**
 
-`app/main.py` 的 `validate_startup()` 在 `settings.validate_email_bark_fallback()` 调用后追加：
+`app/main.py` 新增模块级辅助函数（eng-review Issue 5：三态判定单一事实源，防启动告警与 /health 口径漂移——与 config.py 注释记载的 CORS 双源事故同型）：
 
 ```python
-    # 数据源 key 检查（spec D4）：全空 → WARNING（服务能跑但永远抓不到开奖，
-    # dashboard 空；静默等于「系统正常」假象）。仅 JUHE 空 → INFO（合法单源模式，
-    # deploy.md 已文档化）。注意：不 raise——key 缺失不是启动错误，用户可能先起服务再配 key。
+def _data_source_state(settings: Settings) -> str:
+    """数据源配置三态：dual=双源交叉校验 / single_source=单源降级 / missing=全空。
+
+    validate_startup 的告警口径与 /health 的 data_sources 字段共用本函数——
+    判定逻辑只许有这一处，未来调整（如 MXNZP 半配警告）不会出现两处口径漂移。
+    """
     has_mxnzp = bool(settings.mxnzp_api_key and settings.mxnzp_app_secret)
-    if not has_mxnzp and not settings.juhe_api_key:
+    has_juhe = bool(settings.juhe_api_key)
+    if has_mxnzp and has_juhe:
+        return 'dual'
+    if has_mxnzp or has_juhe:
+        return 'single_source'
+    return 'missing'
+```
+
+`validate_startup()` 在 `settings.validate_email_bark_fallback()` 调用后追加：
+
+```python
+    # 数据源 key 检查（spec D4）：missing → WARNING（服务能跑但永远抓不到开奖，
+    # dashboard 空；静默等于「系统正常」假象）。single_source → INFO（合法单源模式，
+    # deploy.md 已文档化）。注意：不 raise——key 缺失不是启动错误，用户可能先起服务再配 key。
+    _ds_state = _data_source_state(settings)
+    if _ds_state == 'missing':
         log.warning(
             '数据源 key 全部为空（MXNZP_API_KEY/MXNZP_APP_SECRET/JUHE_API_KEY）'
             '——开奖抓取不可用，dashboard 将无数据。配置见 README「数据源注册」。'
         )
-    elif not settings.juhe_api_key:
-        log.info('JUHE_API_KEY 未配置——单源模式运行（MXNZP 故障时无备源交叉校验，建议补齐）。')
+    elif _ds_state == 'single_source':
+        log.info('单源模式运行（MXNZP 故障时无备源交叉校验，建议补齐 JUHE_API_KEY）。')
 ```
 
 `health()` 的 `body` 改为：
 
 ```python
     settings = get_settings()
-    has_mxnzp = bool(settings.mxnzp_api_key and settings.mxnzp_app_secret)
-    has_juhe = bool(settings.juhe_api_key)
-    data_sources = 'dual' if (has_mxnzp and has_juhe) else ('single_source' if has_mxnzp or has_juhe else 'missing')
     body = {
         'status': 'ok' if db_ok else 'degraded',
         'tz': settings.tz,
         'db': 'ok' if db_ok else 'down',
         # key 缺失不打 503：缺 key ≠ 容器不健康（首次安装未配 key 属正常中间态），
         # 否则 HEALTHCHECK 会把全新安装误判 unhealthy 重启循环。字段供人类/运维判读（D4）。
-        'data_sources': data_sources,
+        'data_sources': _data_source_state(settings),
     }
 ```
 
@@ -1590,8 +1677,11 @@ git commit -m "feat(plan-09/T10): 社区文件——CONTRIBUTING（合规红线�
 - [ ] **Step 1: 预推送门禁（全量，含 gitleaks 历史扫描）**
 
 ```bash
+gh auth status || gh auth login               # 前置：T11 全程依赖 gh（本会话实测未登录会 401）
 command -v gitleaks || brew install gitleaks   # 本机首次需安装
-bash scripts/publish-check.sh                  # 不带 --grep-only：全历史扫描
+bash scripts/publish-check.sh                  # 不带 --grep-only：全历史密钥扫描
+# 知情确认（不门禁）：历史内网标识命中数为 spec §7 已接受风险，打印留个记录
+git log -p | grep -cE '192\.168\.8\.' || true
 ```
 
 Expected: exit 0。gitleaks 若报 finding，停下来逐条核对（预期无真实密钥，spec F8 已核实历史仅含变量名；新发现按 security.md 流程处理，不强行推）。
@@ -1601,11 +1691,10 @@ Expected: exit 0。gitleaks 若报 finding，停下来逐条核对（预期无�
 Run: `uv run ruff check . && uv run lint-imports && uv run pytest -q && (cd web && npm test && npm run build) && (cd docs/superpowers/workflows && node --test 'tests/*.test.js')`
 Expected: 全绿。
 
-- [ ] **Step 3: 提交身份切 GitHub noreply（E3）**
+- [ ] **Step 3: 提交身份验证（eng-review 外部声音发现 5：配置已前移至 T0 Step 0，此处仅验证）**
 
 ```bash
-gh api user --jq '.id,.login'   # 记下 id 与 login
-git config user.email "<id>+<login>@users.noreply.github.com"
+git config user.email   # 期望输出 ...@users.noreply.github.com；若不是，回到 T0 Step 0 配置
 ```
 
 - [ ] **Step 4: remote 重组 + 建库 + 首推**
@@ -1713,3 +1802,20 @@ git push origin main
 - **Spec 覆盖**：LICENSE（§5→T4）、README（§5/C4/C5/C7/D2/D3/D7→T5）、净化清单（§3.4/C2/E4→T1/T2）、子模块（§3.2/E1/F4→T3）、gitea 镜像 + remote（§3.3/F1/F2/F19→T11/T12）、CI（§3.5/E2/E5/F11→T9）、发布门禁（§5/C3/C6/E2/F20→T0/T3/T11）、.env.example（§5/D1/D5→T1）、社区文件（§5/D6→T10）、启动告警（D4→T8）、历史邮箱（E3→T10 SECURITY + T11 Step 3）、冒烟（§6/D8/F18→T12）、.dockerignore（F17→T3）、端口统一（D7→T7）。
 - **类型一致性**：`data_sources` 三态在 T8 实现 / T5 README / T6 deploy.md / T12 冒烟断言一致；`IMPLEMENTED_PLAY_TYPES` 属 plan-10，本 plan 不引用。
 - **门禁自匹配**：本 plan 正文未含任何词表字面值（全部拆分或占位符书写）。
+- **Eng review 修订（2026-08-14 FULL_REVIEW，13 项裁决全并入）**：T0 增 Step 0（git noreply 身份前移）+ 词表加弱默认值模式 + 词表衰退测试 + init-env 缺 .env.example 分支测试；T0/T1 测试计数更新（7/7）；T8 三态判定抽 `_data_source_state` 单一事实源；T11 gitleaks 文案改「密钥形态」+ 历史 IP 知情命令；EXCLUDE_DIRS 不再整体排除 `.claude`（run-plans.js 受门禁保护）；README CLI 表补 recompare 行；T7 的核对报告链接移交 plan-10 T7。
+
+## GSTACK REVIEW REPORT
+
+| Review | Skill | Scope | Runs | Status | Findings |
+|--------|-------|-------|------|--------|----------|
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 2 | issues_open (via /autoplan) | 6 proposals, 6 accepted, 1 critical gap |
+| Codex Review | `/codex review` | Independent 2nd opinion | 0 | N/A | Codex 未安装（外部声音经 Claude subagent + autoplan subagent-only） |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 7 | CLEAR | 13 issues, 0 critical gaps |
+| Design Review | `/plan-design-review` | UI/UX gaps | 0 | SKIPPED | 无 UI 视觉范围 |
+| DX Review | `/plan-devex-review` | Developer experience gaps | 1 | CLEAR (via /autoplan) | score: 4/10 → 8/10, TTHW: crash-loop → 15-25min |
+
+- **CODEX:** 未安装——外部声音由独立 Claude subagent 承担（8 项发现，逐项用户裁决后并入）。
+- **CROSS-MODEL:** 主评审与外部声音独立收敛于同一风险类（旧错误表写出的存量 comparisons 行无人重算）；外部声音另抓到 refill 硬编码 (1,2) 会吞掉 qlc 三等浮动——两处均为静默失败家族，交叉验证强信号。
+- **VERDICT:** ENG CLEARED — 13 项发现全部裁决并入（0 未决、0 critical gaps），可执行。
+
+NO UNRESOLVED DECISIONS
