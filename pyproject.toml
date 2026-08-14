@@ -2,6 +2,7 @@
 name = "lottery-notification"
 version = "0.1.0"
 description = "兑奖了吗？— 彩票开奖自动核对与通知"
+license = "AGPL-3.0-only"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",
