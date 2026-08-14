@@ -1,0 +1,12 @@
+{
+  "issue": "2026093",
+  "lottery_code": "ssq",
+  "draw_date": "2026-08-13",
+  "draw_front": [5, 8, 15, 20, 21, 24],
+  "draw_back": [9],
+  "pool_money_yuan": 566415284,
+  "prizegrades_yuan": {"1": 6581443, "2": 145086, "3": 3000, "4": 200, "5": 10, "6": 5},
+  "note": "2026-02-01 新规后真实开奖。奖池 5.66 亿 < 15 亿 → 福运奖（3+0=5 元）本期未激活，3+0 不中奖。",
+  "source": "https://www.cwl.gov.cn/cwl_admin/front/cwlkj/search/kjxx/findDrawNotice?name=ssq&code=2026093",
+  "fetched_at": "2026-08-14"
+}
