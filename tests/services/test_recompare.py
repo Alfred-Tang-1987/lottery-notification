@@ -162,6 +162,24 @@ def test_recompare_dry_run_writes_nothing(db_engine):
     assert before['changed'] >= 1  # 但统计到了会变更的行
 
 
+def test_recompare_dry_run_excludes_ticket_created_after_draw(db_engine):
+    """dry-run 计数路径（_count_changed）与实跑同源——晚创建的票不得计入 changed。
+
+    plan-10 phantom 修复（_compare_one 票存在性过滤）只补了实跑侧；_count_changed
+    独立重实现比对逻辑，没带 created_at ≤ 开奖日过滤 → dry-run 过估（生产探针：
+    dry-run 报 changed=250，实跑实际 ~0）。本测试锁死两路径同源。
+    """
+    with Session(db_engine) as s:
+        _seed_lottery(s)
+        u = _seed_user(s)
+        _seed_draw(s, 'dlt', '2026054', (1, 2, 3, 4, 5), (6, 7), datetime(2026, 5, 1))
+        # 票创建晚于开奖日近两个月 → 对该期不存在（phantom，实跑侧已不比对）
+        _seed_ticket(s, u.id, (1, 2, 3, 4, 5), (6, 7), created_at=datetime(2026, 7, 25))
+
+    stats = recompare_all(db_engine, dry_run=True)
+    assert stats['changed'] == 0, 'dry-run 不得把晚创建的 phantom 票计入 changed'
+
+
 def test_recompare_honors_version_gate(db_engine):
     """版本门接线：2026-01-30 的 dlt 期重比按 2019 表（4+2=四等 300000 分），
     2026-01-31 起按七档（4+2=三等 500000 分）——recompute 复用 _compare_one 即自动获得。"""
