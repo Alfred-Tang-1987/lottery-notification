@@ -36,6 +36,8 @@ RUN uv sync --frozen --no-dev
 # 应用代码
 COPY app/ ./app/
 COPY alembic ./alembic
+# 备份脚本（docs/deploy.md 备份/升级引用 /app/backup.sh；源文件 755 可执行位随 COPY 保留）
+COPY backup.sh /app/backup.sh
 COPY alembic.ini ./
 # 前端构建产物（spec §12.3 / T8：main.py 在 STATIC_DIR 存在时挂载 SPA）
 COPY --from=web /static ./static
