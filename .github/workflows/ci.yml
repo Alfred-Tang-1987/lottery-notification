@@ -1,0 +1,49 @@
+# CI（Plan 09 / T9；spec §3.5 + autoplan E2/E5/F11）
+# 公开质量门禁：lint + 架构守护 + 全量测试 + 前端构建 + 泄露扫描。
+# NAS 部署走 gitea 镜像 + 本地 docker build，不依赖本 CI（GitHub 不可用不影响部署）。
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: '3.12'
+      - run: uv sync --extra dev
+      - run: uv run ruff check .
+      - run: uv run lint-imports
+      # E5：全量 pytest——迁移测试自含 SQLite（无外部服务依赖），是 schema-drift 最佳护栏
+      - run: uv run pytest -q
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+
+  leak-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # gitleaks 扫全历史（C3）
+      - uses: gitleaks/gitleaks-action@v2
+      - name: 内网标识 + 子模块回归门禁
+        run: bash scripts/publish-check.sh --grep-only
