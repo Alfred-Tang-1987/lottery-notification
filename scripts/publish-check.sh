@@ -65,9 +65,16 @@ EXCLUDE_DIRS=(
 FAIL=0
 for pat in "${PATTERNS[@]}" "${SECRET_PATTERNS[@]}"; do
   # -I 忽略二进制；-E 扩展正则；命中即列出文件:行
-  if grep -RnIE "${EXCLUDE_DIRS[@]}" -- "$pat" . ; then
+  # fail-closed：match (rc=0) 与 error (rc≠1) 都置 FAIL；仅 no-match (rc=1) 放行
+  if grep -RnIE "${EXCLUDE_DIRS[@]}" -- "$pat" .; then
     echo "FAIL: 命中泄露模式 /$pat/（见上方文件清单）" >&2
     FAIL=1
+  else
+    rc=$?
+    if [ "$rc" -ne 1 ]; then
+      echo "WARN: 门禁扫描出错（rc=${rc}，模式 /$pat/）——fail-closed" >&2
+      FAIL=1
+    fi
   fi
 done
 
