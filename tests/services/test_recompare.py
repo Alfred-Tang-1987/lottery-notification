@@ -5,7 +5,7 @@ from datetime import datetime
 
 from sqlmodel import Session, select
 
-from app.models import Comparison, DrawResult, LotteryType, Ticket, User
+from app.models import Comparison, DrawResult, LotteryType, PrizeClaim, Ticket, User
 from app.services.compare_service import recompare_all
 
 
@@ -37,10 +37,13 @@ def _seed_draw(s, lottery_code, draw_no, front, back, draw_date):
     return dr
 
 
-def _seed_ticket(s, user_id, front, back, lottery_code='dlt'):
+def _seed_ticket(s, user_id, front, back, lottery_code='dlt', created_at=None):
+    """created_at：显式指定时用之（naive UTC，与 TimestampMixin 同表示）——
+    recompare 票存在性过滤的夹具需要控制票/开奖日时序。"""
     t = Ticket(
         user_id=user_id, lottery_code=lottery_code, play_type='single',
         numbers_json=f'{{"front": {list(front)}, "back": {list(back)}}}', cost=200,
+        **({'created_at': created_at} if created_at is not None else {}),
     )
     s.add(t)
     s.commit()
@@ -54,13 +57,76 @@ def _seed_stale_dlt_false_win(db_engine):
         _seed_lottery(s)
         u = _seed_user(s)
         dr = _seed_draw(s, 'dlt', '2026099', (1, 2, 3, 4, 5), (6, 7), datetime(2026, 8, 1))
-        t = _seed_ticket(s, u.id, (1, 9, 9, 9, 9), (6, 8))
+        # 票 created_at 须早于开奖日（_compare_one 票存在性过滤），只改时序不改断言
+        t = _seed_ticket(s, u.id, (1, 9, 9, 9, 9), (6, 8), created_at=datetime(2026, 7, 1))
         # 模拟旧错误表写出的行：1+1 被误判 tier=7 / 10000 分
         s.add(Comparison(user_id=u.id, draw_result_id=dr.id, ticket_id=t.id,
                          hits_json='{"front_hit":1,"back_hit":1}',
                          prize_tier=7, prize_amount=10000, is_win=True))
         s.commit()
         return dr.id, t.id
+
+
+def test_recompare_does_not_backfill_phantom_for_ticket_created_after_draw(db_engine, monkeypatch):
+    """plan-10 设计缺口回归：票创建晚于开奖日 → recompare 不得为「票创建前的历史期」
+    补 phantom 比对行（含虚假中奖 → 虚假 PrizeClaim）。
+
+    _compare_one 按 lottery_code+enabled 选票、无票存在性过滤：正常流程只在开奖时点
+    比对当时的票，天然不产生「历史期 × 后来创建的票」；recompare 全量回放会为历史期
+    补出行（生产 DB 副本探针：250 行全 phantom，17 行虚假中奖）。
+
+    票中 5+2（dlt 一等，浮动档）：保护② stub 掉避免单测真实网络（同 qlc 用例模式）。"""
+    import app.services.refill_service as refill_mod
+
+    class _StubFloatRefillWorker:
+        def __init__(self, engine, amount_lookup, max_age_days):
+            pass
+
+        def refill(self):
+            return 0
+
+    monkeypatch.setattr(refill_mod, 'FloatRefillWorker', _StubFloatRefillWorker)
+
+    with Session(db_engine) as s:
+        _seed_lottery(s)
+        u = _seed_user(s)
+        dr = _seed_draw(s, 'dlt', '2026050', (1, 2, 3, 4, 5), (6, 7), datetime(2026, 5, 1))
+        # 票创建于 2026-07-25（晚于 2026-05-01 开奖日近两个月）→ 对该期不存在
+        t = _seed_ticket(s, u.id, (1, 2, 3, 4, 5), (6, 7), created_at=datetime(2026, 7, 25))
+        dr_id, t_id = dr.id, t.id
+
+    recompare_all(db_engine)
+
+    with Session(db_engine) as s:
+        row = s.exec(
+            select(Comparison).where(
+                Comparison.draw_result_id == dr_id, Comparison.ticket_id == t_id)
+        ).first()
+        assert row is None, '票创建晚于开奖日 → recompare 不得补 phantom 比对行'
+        assert s.exec(select(PrizeClaim)).first() is None, '更不得产生虚假 PrizeClaim'
+
+
+def test_recompare_still_compares_ticket_created_before_draw(db_engine):
+    """正向护栏：票创建早于开奖日 → recompare 照常创建该行比对（过滤不得误杀正常路径）。
+
+    4+2 在 2026-05-01（2026-01-31 后）按七档表 = 三等 500000 分（固定档，
+    不触发保护②浮动回填 → 无网络）。"""
+    with Session(db_engine) as s:
+        _seed_lottery(s)
+        u = _seed_user(s)
+        dr = _seed_draw(s, 'dlt', '2026051', (1, 2, 3, 4, 5), (6, 7), datetime(2026, 5, 1))
+        t = _seed_ticket(s, u.id, (1, 2, 3, 4, 8), (6, 7), created_at=datetime(2026, 4, 15))
+        dr_id, t_id = dr.id, t.id
+
+    recompare_all(db_engine)
+
+    with Session(db_engine) as s:
+        row = s.exec(
+            select(Comparison).where(
+                Comparison.draw_result_id == dr_id, Comparison.ticket_id == t_id)
+        ).one()
+        assert row.is_win is True and row.prize_tier == 3
+        assert row.prize_amount == 500000
 
 
 def test_recompare_corrects_stale_dlt_false_win(db_engine):
@@ -103,7 +169,8 @@ def test_recompare_honors_version_gate(db_engine):
         _seed_lottery(s)
         u = _seed_user(s)
         # 同号 4+2 票：front(1,2,3,4,8) vs draw front(1,2,3,4,9)=4 红；back(5,6)=2 蓝
-        t = _seed_ticket(s, u.id, (1, 2, 3, 4, 8), (5, 6))
+        # created_at=2026-01-01 早于两期开奖日（票存在性过滤）
+        t = _seed_ticket(s, u.id, (1, 2, 3, 4, 8), (5, 6), created_at=datetime(2026, 1, 1))
         dr_old = _seed_draw(s, 'dlt', '0001', (1, 2, 3, 4, 9), (5, 6), datetime(2026, 1, 30))
         dr_new = _seed_draw(s, 'dlt', '0002', (1, 2, 3, 4, 9), (5, 6), datetime(2026, 1, 31))
         # 在 session 内取 id（commit 后实例 detached，退出 with 再访问 .id 会
@@ -157,7 +224,9 @@ def test_recompare_qlc_third_tier_misrecord_not_preserved(db_engine, monkeypatch
         u = _seed_user(s)
         # qlc 三等 = 6+0：draw 前区 7 码 + 特别号 1；票 6 前区全中、特别号不中
         dr = _seed_draw(s, 'qlc', '2026101', (1, 2, 3, 4, 5, 6, 7), (8,), datetime(2026, 8, 1))
-        t = _seed_ticket(s, u.id, (1, 2, 3, 4, 5, 6), (9,), lottery_code='qlc')
+        # created_at 早于开奖日（票存在性过滤），只改时序不改断言
+        t = _seed_ticket(s, u.id, (1, 2, 3, 4, 5, 6), (9,), lottery_code='qlc',
+                         created_at=datetime(2026, 7, 1))
         # 模拟旧固定表写出的误录行：tier=3 / 304500 分（3045 元）
         s.add(Comparison(user_id=u.id, draw_result_id=dr.id, ticket_id=t.id,
                          hits_json='{"front_hit":6,"back_hit":0}',
@@ -186,7 +255,8 @@ def test_recompare_preserves_refilled_float_amount(db_engine):
         _seed_lottery(s)
         u = _seed_user(s)
         dr = _seed_draw(s, 'dlt', '26001', (1, 2, 3, 4, 5), (6, 7), datetime(2026, 8, 1))
-        t = _seed_ticket(s, u.id, (1, 2, 3, 4, 5), (6, 7))
+        # created_at 早于开奖日（票存在性过滤）：重比须真正触碰该票，保护①才被行使
+        t = _seed_ticket(s, u.id, (1, 2, 3, 4, 5), (6, 7), created_at=datetime(2026, 7, 1))
         s.add(Comparison(user_id=u.id, draw_result_id=dr.id, ticket_id=t.id,
                          hits_json='{"front_hit":5,"back_hit":2}',
                          prize_tier=1, prize_amount=50000000, is_win=True))

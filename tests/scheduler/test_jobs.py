@@ -1067,7 +1067,7 @@ def _seed_yesterday_ssq_with_ticket(db_engine):
     返回 (user_id, yesterday_iso)。
     """
     import json
-    from datetime import date, timedelta
+    from datetime import date, datetime, timedelta
 
     from sqlmodel import Session
 
@@ -1098,6 +1098,10 @@ def _seed_yesterday_ssq_with_ticket(db_engine):
                 multiplier=1,
                 cost=200,
                 enabled=True,
+                # 开奖日=昨天：票须早于「昨天 24:00 CST」（= 昨天 16:00 UTC）才被比对
+                # （_compare_one 票存在性过滤）。取 now-2d（naive UTC，与 created_at 同表示），
+                # 任何时刻跑测试都严格早于该边界。
+                created_at=datetime.utcnow() - timedelta(days=2),
             )
         )
         s.commit()
