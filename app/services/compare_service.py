@@ -49,6 +49,34 @@ def _spec_for(code: str) -> LotterySpec:
     return _SPEC_CACHE[code]
 
 
+def _select_active_tickets(s: Session, dr: DrawResult) -> list[Ticket]:
+    """票选择 + 存在性边界过滤（_compare_one 实跑 与 _count_changed dry-run 共用单一事实源）。
+
+    created_at 是 naive UTC（TimestampMixin），draw_date 是 naive CST 墙钟零点（SQLite
+    剥 tzinfo）——跨时区直比错 8 小时，须归一到同一表示（naive UTC）后再比。边界取
+    「开奖日当天结束」而非零点：draw_date 是开奖日零点非开奖时刻，开奖当天上午买的票
+    也晚于零点，按零点截断会误杀。
+
+    无此过滤时 recompare 全量回放会为「票创建之前的历史期」补 phantom 比对行（含虚假
+    中奖 → 虚假 PrizeClaim；plan-10 生产探针 250 行全 phantom）。_count_changed 若不复用
+    本 helper 会过估（dry-run 报 changed=250，实跑实际 ~0）。Python 侧过滤而非 SQL：
+    规避 SQLAlchemy/SQLite 对 naive/aware datetime 的隐式行为，票集本就不大。
+    """
+    dd = dr.draw_date
+    if dd.tzinfo is None:
+        dd = dd.replace(tzinfo=_CST)
+    end_naive_utc = (dd + timedelta(days=1)).astimezone(ZoneInfo('UTC')).replace(tzinfo=None)
+    tickets = list(
+        s.exec(
+            select(Ticket).where(
+                Ticket.lottery_code == dr.lottery_code,
+                Ticket.enabled == True,  # noqa: E712
+            )
+        ).all()
+    )
+    return [t for t in tickets if t.created_at <= end_naive_utc]
+
+
 class CompareService:
     """outbox 原子认领 → domain.compare → 写 comparisons + prize_claims（spec §7.1）。"""
 
@@ -112,30 +140,9 @@ class CompareService:
             draw_back = tuple(dn['back']) if dn.get('back') else None
             spec = _spec_for(dr.lottery_code)
 
-            # 票存在性边界（naive-UTC 表达，CLAUDE.md datetime 时区对齐纪律）：
-            # created_at 是 naive UTC（TimestampMixin），draw_date 是 naive CST 墙钟零点
-            # （SQLite 剥 tzinfo）——跨时区直比错 8 小时，须归一到同一表示后再比。
-            dd = dr.draw_date
-            if dd.tzinfo is None:
-                dd = dd.replace(tzinfo=_CST)
-            end_naive_utc = (dd + timedelta(days=1)).astimezone(ZoneInfo('UTC')).replace(tzinfo=None)
-
-            # 仅追投该彩种的启用注（spec §4 line99：比对范围由号码池决定，没追的不比对）
-            tickets = list(
-                s.exec(
-                    select(Ticket).where(
-                        Ticket.lottery_code == dr.lottery_code,
-                        Ticket.enabled == True,  # noqa: E712
-                    )
-                ).all()
-            )
-            # 只比对开奖日当天及之前创建的票：边界取「开奖日当天结束」而非零点——draw_date
-            # 是开奖日零点非开奖时刻，开奖当天上午买的票也晚于零点，按零点截断会误杀。
-            # 无此过滤时 recompare 全量回放会为「票创建之前的历史期」补 phantom 比对行
-            # （含虚假中奖 → 虚假 PrizeClaim；plan-10 生产探针 250 行全 phantom）。
-            # Python 侧过滤而非 SQL：规避 SQLAlchemy/SQLite 对 naive/aware datetime 的
-            # 隐式行为，票集本就不大。
-            tickets = [t for t in tickets if t.created_at <= end_naive_utc]
+            # 票选择 + 存在性边界过滤（_select_active_tickets 单一事实源；dry-run 计数
+            # 路径同源复用——否则 phantom 修复只补实跑侧，_count_changed 过估）
+            tickets = _select_active_tickets(s, dr)
 
             for t in tickets:
                 # per-ticket 隔离（spec §10 line375：坏注单/格式异常 → 隔离该注，不影响
@@ -449,14 +456,9 @@ def _count_changed(engine: Engine, dr_id: int) -> int:
         except Exception:
             logger.warning('recompare_dry_run_skip_draw draw_result_id=%s', dr_id, exc_info=True)
             return 0
-        tickets = list(
-            s.exec(
-                select(Ticket).where(
-                    Ticket.lottery_code == dr.lottery_code,
-                    Ticket.enabled == True,  # noqa: E712
-                )
-            ).all()
-        )
+        # 与实跑 _compare_one 同源：票选择 + 存在性过滤（晚创建的 phantom 票不计入
+        # changed——否则 dry-run 过估，报 changed=250 实跑实际 ~0）
+        tickets = _select_active_tickets(s, dr)
     changed = 0
     for t in tickets:
         try:
