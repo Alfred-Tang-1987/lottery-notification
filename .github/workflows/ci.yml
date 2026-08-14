@@ -18,6 +18,10 @@ concurrency:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    env:
+      # 与应用部署时区一致（.env TZ=Asia/Shanghai）：date.today() 在 UTC runner 上与
+      # 应用的 CST 逻辑错位会致时区边界测试失败（T11 CI 自验发现 3 例）
+      TZ: Asia/Shanghai
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
       - uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081  # v5
