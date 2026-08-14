@@ -89,7 +89,7 @@ def test_every_wordlist_pattern_has_teeth(tmp_path):
         'vol1' + '/': '/vol1' + '/1000/Docker',
         'fn-' + 'nas': 'ssh fn' + '-nas',
         'home' + 'lab': 'home' + 'lab.local',
-        'C:/' + 'Users': 'C:/' + 'Users/Alfred',
+        '[cC]:/Users': 'c:/' + 'Users/Alfred',
         '/Users/' + 'alfred': '/Users/' + 'alfred/x',
         'OTC-' + 'Fund': 'OTC-' + 'Fund-Project',
         'tailf' + '898c8': 'tailf' + '898c8.ts.net',

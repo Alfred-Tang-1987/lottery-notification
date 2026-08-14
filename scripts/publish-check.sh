@@ -29,7 +29,7 @@ PATTERNS=(
   'vol1''/'
   'fn-''nas'
   'home''lab'
-  'C:/''Users'
+  '[cC]:/''Users'
   '/Users/''alfred'
   'OTC-''Fund'
   'tailf''898c8'
