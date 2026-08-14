@@ -80,6 +80,8 @@ def test_full_loop_fetch_compare_then_push(db_engine):
                 multiplier=1,
                 cost=200,
                 enabled=True,
+                # 开奖日 2026-06-21 为过去：票须早于该日才被比对（_compare_one 票存在性过滤）
+                created_at=datetime(2026, 6, 1),
             )
         )
         s.commit()

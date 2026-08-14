@@ -25,7 +25,8 @@
 - 已实现面单元测试补齐：每彩种每个已实现奖级 ≥1 命中用例 + 不中奖边界用例。
 - 未实现项全部文档降级声明（README 能力边界 + lottery-rules.md 注记）并列 B2 roadmap，无过度宣称。
 - 全量回归绿（后端 pytest + 前端 vitest + build）。
-- **生产发布与 recompare（2026-08-15）**：plan-10 已部署 NAS（容器重建，751→752 全绿代码上线）。存量票核查干净（仅 ssq single ×5）。recompare 经 dry-run + **DB 副本探针**评估后**未实跑**：本库 0 行旧错误需修正（仅 ssq 单式票、ssq 规则未变，UPDATED=0），实跑唯一效果是补 250 行「票创建之前的历史期」phantom comparison（含 17 行 phantom 中奖 → 虚假 PrizeClaim）与 phantom DrawCost——纯伤害，判定不执行。**设计缺口**：`recompare_all` 重入 `_compare_one` 时无「票创建时间 ≤ 开奖日」过滤，全量回放会为晚创建的票补出它不存在的期的比对行；已记入 follow-up（待修：按 `Ticket.created_at ≤ DrawResult.draw_date` 过滤，或只重比已有比对行的期）。
+- **生产发布与 recompare（2026-08-15）**：plan-10 已部署 NAS（容器重建，751→752 全绿代码上线）。存量票核查干净（仅 ssq single ×5）。recompare 经 dry-run + **DB 副本探针**评估后**未实跑**：本库 0 行旧错误需修正（仅 ssq 单式票、ssq 规则未变，UPDATED=0），实跑唯一效果是补 250 行「票创建之前的历史期」phantom comparison（含 17 行 phantom 中奖 → 虚假 PrizeClaim）与 phantom DrawCost——纯伤害，判定不执行。
+- **设计缺口已修复（2026-08-15，commit `085e8fe`）**：`_compare_one` 增加「票存在性过滤」——只比对 `Ticket.created_at ≤ 开奖日当天结束`（`draw_date` 为 naive-CST 零点，归一到 naive-UTC 后与 naive-UTC 的 `created_at` 比较；取「当天结束」而非零点以免误杀开奖当天上午的票）。三路（普通流程/更正重比/recompare）共用且更正确；`test_recompare_does_not_backfill_phantom_for_ticket_created_after_draw` 锁死 phantom 场景（含无虚假 PrizeClaim），正向护栏用例保正常路径。修复后 recompare 可安全用于生产。
 
 ## B2 roadmap（发布后，不进本 plan）
 
