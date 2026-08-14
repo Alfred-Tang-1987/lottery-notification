@@ -333,6 +333,18 @@ def _sync_claim(
 
 # ────────── recompare_all（Plan 10 / T6：奖级表修正后按新表重算存量比对行）──────────
 
+# 本 plan 中从「固定档」重分类为「浮动档」的奖级（T2/T6 规则修正）：这些档位的存量
+# 非空金额是「旧固定表误录」，不是「已回填的浮动金额」——保护①不得写回。
+#
+# qlc 三等（6+0）：官方历来是浮动（高等奖 20%），3045 元是代码误录（旧表把三等写成
+# 固定 304500 分）；旧 FloatRefillWorker 硬编码回填 (1,2)，三等从未被合法回填过。
+# 若保护①把它当「已回填浮动金额」写回：_restore 把 304500 钉死，且保护②因
+# prize_amount 非 None 跳过该行 → qlc 三等修复（T2+T6 的交付物）永不到达。
+# 故排除：其存量行重比后金额清 None，交给保护②按真实浮动金额回填。
+_RECLASSIFIED_FLOAT_TIERS: dict[str, frozenset[int]] = {
+    'qlc': frozenset({3}),
+}
+
 
 def recompare_all(engine: Engine, lottery_code: str | None = None, dry_run: bool = False) -> dict:
     """按现行领域规则（含 T1 版本门）重算全部存量比对行（Plan 10 / T6）。
@@ -463,7 +475,11 @@ def _snapshot_refilled_float_amounts(engine: Engine, dr_id: int) -> dict[int, tu
     的行 → {ticket_id: (tier, prize_amount)}。
 
     旧规则经 T1 版本门 get_tiers(code, dr.draw_date) 判定——历史期按当时生效的奖级表
-    判断是否浮动档（dlt/ssq/qxc 一二等 + qlc 一二三等）。重比后写回防已回填金额被抹。"""
+    判断是否浮动档（dlt/ssq/qxc 一二等 + qlc 一二等）。重比后写回防已回填金额被抹。
+
+    排除本 plan 重分类为浮动档的奖级（_RECLASSIFIED_FLOAT_TIERS）：这些档位的存量
+    非空金额是旧固定表误录，不是合法回填值——写回会把 qlc 三等钉死在错误金额，且
+    让保护②（prize_amount.is_(None)）跳过它，修复永不到达（final-review Important 1）。"""
     from app.domain.prize_tables import get_tiers
 
     with Session(engine) as s:
@@ -474,6 +490,9 @@ def _snapshot_refilled_float_amounts(engine: Engine, dr_id: int) -> dict[int, tu
             t.tier for t in get_tiers(dr.lottery_code, dr.draw_date)
             if t.amount_type == AmountType.FLOAT
         }
+        preserved_float_tiers = float_tiers - _RECLASSIFIED_FLOAT_TIERS.get(
+            dr.lottery_code, frozenset()
+        )
         rows = s.exec(
             select(Comparison).where(
                 Comparison.draw_result_id == dr_id,
@@ -484,7 +503,7 @@ def _snapshot_refilled_float_amounts(engine: Engine, dr_id: int) -> dict[int, tu
         return {
             c.ticket_id: (c.prize_tier, c.prize_amount)
             for c in rows
-            if c.prize_tier in float_tiers and c.prize_amount is not None
+            if c.prize_tier in preserved_float_tiers and c.prize_amount is not None
         }
 
 

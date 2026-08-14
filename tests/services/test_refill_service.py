@@ -81,6 +81,25 @@ def test_refill_skips_after_max_age_and_marks_unresolved(db_engine):
         assert cmp.unresolved is True  # 必须标记 unresolved
 
 
+def test_refill_max_age_none_unlimited_window(db_engine):
+    """recompare 保护②（final-review Important 2）：max_age_days=None = 不限窗口，
+    30 天前超期老行仍被回填，且不标 unresolved（_mark_expired_unresolved(None) 早退）。
+
+    对比 test_refill_skips_after_max_age_and_marks_unresolved（默认 7 天窗口跳过同场景）——
+    这是 plan 自标 HIGH 的「绕过 created_at 窗口强制回填」增量，必须直接覆盖。"""
+    cmp_id, _ = _seed_float_win(db_engine, days_ago=30)
+    from unittest.mock import MagicMock
+
+    worker = FloatRefillWorker(
+        db_engine, amount_lookup=MagicMock(return_value=5_000_000), max_age_days=None
+    )
+    assert worker.refill() == 1, 'max_age_days=None 应绕过 7 天窗口回填 30 天前的老行'
+    with Session(db_engine) as s:
+        cmp = s.get(Comparison, cmp_id)
+        assert cmp.prize_amount == 5_000_000, '超期老行在 None 窗口下应被回填'
+        assert cmp.unresolved is not True, '不限窗口无超期概念，不得标 unresolved'
+
+
 def test_refill_filters_fixed_tiers_derived_from_tables(db_engine):
     """仅浮动档进入回填——tier 过滤从奖级表动态推导（_FLOAT_TIERS），非硬编码 (1,2)。
 
