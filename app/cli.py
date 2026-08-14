@@ -25,6 +25,7 @@ import logging
 import os
 import sys
 
+from sqlalchemy.engine import Engine
 from sqlmodel import Session
 
 from app.adapters.juhe import JuheAdapter
@@ -33,7 +34,7 @@ from app.api.security import hash_password
 from app.config import get_settings
 from app.db.session import get_engine
 from app.models import User
-from app.services.compare_service import CompareService
+from app.services.compare_service import CompareService, recompare_all
 from app.services.fetch_service import FetchService
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,11 @@ logger = logging.getLogger(__name__)
 # 模块级 engine 引用：lifespan/main.py 与 CLI 共享同一 engine；测试通过 monkeypatch
 # 替换 cli.engine 指向隔离 engine（db_engine fixture）。
 engine = get_engine()
+
+
+def _engine_from_env() -> Engine:
+    """CLI 使用的 engine（与 lifespan/API 共用 get_engine() 单例；测试可 monkeypatch）。"""
+    return engine
 
 
 def resolve_password(argparse_ns) -> str:
@@ -190,6 +196,23 @@ def cmd_backfill_draw_costs(argparse_ns) -> None:
     print(f'回填 DrawCost 完成：处理 {count} 期 DrawResult')
 
 
+def cmd_recompare(argparse_ns) -> None:
+    """按现行规则表重算存量比对行（运维：奖级表修正后清理旧错误行）。
+
+    recompare_all 为每个 verified DrawResult 重入 CompareService._compare_one（幂等
+    upsert 原地更新 + corrected_at）。--dry-run 只统计会变更的行数不写库（人工核对安全阀）。
+    无网络调用，纯本地 DB（浮动档强制回填除外——收尾阶段对金额 None 浮动行绕过
+    7 天窗口调官方奖金接口，失败只记日志不阻断主流程）。
+    """
+    engine = _engine_from_env()  # 沿用本文件既有 engine 构造方式（测试可 monkeypatch）
+    stats = recompare_all(
+        engine, lottery_code=argparse_ns.lottery, dry_run=argparse_ns.dry_run
+    )
+    print(f"recompare: draws={stats['draws']} rows={stats['rows']} changed={stats['changed']}")
+    if argparse_ns.dry_run:
+        print('（dry-run：未写库。去掉 --dry-run 执行重算。）')
+
+
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(prog='app.cli', description='运维 CLI（spec §13）')
     sub = p.add_subparsers(dest='cmd', required=True)
@@ -221,6 +244,10 @@ def main(argv=None) -> None:
     bh.set_defaults(func=cmd_backfill_history)
     bdc = sub.add_parser('backfill-draw-costs', help='回填历史期次成本（DrawCost，spec §4）')
     bdc.set_defaults(func=cmd_backfill_draw_costs)
+    rc = sub.add_parser('recompare', help='按现行规则表重算存量比对行（奖级表修正后用）')
+    rc.add_argument('--lottery', default=None, help='仅重算该彩种（默认全部）')
+    rc.add_argument('--dry-run', action='store_true', help='只统计会变更的行数，不写库')
+    rc.set_defaults(func=cmd_recompare)
 
     args = p.parse_args(argv)
     args.func(args)

@@ -59,7 +59,7 @@ class FloatRefillWorker:
         self,
         engine: Engine,
         amount_lookup: Callable[[str, str, datetime, int], int | None],
-        max_age_days: int = 7,
+        max_age_days: int | None = 7,
     ):
         self._engine = engine
         # amount_lookup(lottery_code, draw_no, draw_date, tier) -> 分 | None
@@ -84,7 +84,8 @@ class FloatRefillWorker:
         )
 
     def refill(self) -> int:
-        cutoff = _cutoff_naive_utc(self._max_age)
+        # max_age_days=None（recompare 强制回填用）= 不限窗口，无 created_at 下界
+        cutoff = _cutoff_naive_utc(self._max_age) if self._max_age is not None else None
         refilled = 0
         with Session(self._engine) as s:
             # 显式限定 prize_tier IN _FLOAT_TIERS —— 仅浮动档（从奖级表动态推导；spec §7.1 的
@@ -92,20 +93,20 @@ class FloatRefillWorker:
             # OV4 (Plan 07 T4): join DrawResult 过滤 verified=True——只回填已交叉校验
             # 入库的开奖结果，verified=False（双源不一致拒入库）的 comparison 不回填，
             # 避免基于错误号码计算奖金（准确性优先于及时性，spec §7.2）。
-            pending = list(
-                s.exec(
-                    select(Comparison)
-                    .join(DrawResult, Comparison.draw_result_id == DrawResult.id)
-                    .where(
-                        Comparison.is_win == True,  # noqa: E712
-                        Comparison.prize_tier.in_(_FLOAT_TIERS),
-                        Comparison.prize_amount.is_(None),
-                        Comparison.unresolved == False,  # noqa: E712
-                        Comparison.created_at >= cutoff,
-                        DrawResult.verified == True,  # noqa: E712  # OV4
-                    )
-                ).all()
+            q = (
+                select(Comparison)
+                .join(DrawResult, Comparison.draw_result_id == DrawResult.id)
+                .where(
+                    Comparison.is_win == True,  # noqa: E712
+                    Comparison.prize_tier.in_(_FLOAT_TIERS),
+                    Comparison.prize_amount.is_(None),
+                    Comparison.unresolved == False,  # noqa: E712
+                    DrawResult.verified == True,  # noqa: E712  # OV4
+                )
             )
+            if cutoff is not None:
+                q = q.where(Comparison.created_at >= cutoff)
+            pending = list(s.exec(q).all())
             # 预载 draw_result 映射（拿 lottery_code/draw_no/draw_date 查官方奖金）
             dr_ids = {c.draw_result_id for c in pending}
             drs = {dr.id: dr for dr in s.exec(select(DrawResult).where(DrawResult.id.in_(dr_ids))).all()}
@@ -209,9 +210,14 @@ class FloatRefillWorker:
             pass
         return None
 
-    def _mark_expired_unresolved(self, cutoff: datetime) -> None:
+    def _mark_expired_unresolved(self, cutoff: datetime | None) -> None:
         """超期未回填的浮动奖标 unresolved=True（spec §7.1 line 276）。独立事务，refill 主循环
-        异常不影响本标记（独立方法 + 独立 session，process_pending 调用方也可单独兜底）。"""
+        异常不影响本标记（独立方法 + 独立 session，process_pending 调用方也可单独兜底）。
+
+        cutoff=None（max_age_days=None，recompare 强制回填）：不限窗口 → 无超期概念，
+        直接返回不标任何行（避免把历史老行误判超期标 unresolved 后永久排除回填）。"""
+        if cutoff is None:
+            return
         with Session(self._engine) as s:
             expired = list(
                 s.exec(
