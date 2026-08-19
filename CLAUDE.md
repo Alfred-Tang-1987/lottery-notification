@@ -122,8 +122,6 @@ export WORKFLOW_ENGINE_URL=<内网引擎仓库地址>   # 本机 shell 配置，
 
 - `docs/superpowers/specs/2026-06-16-lottery-notification-design.md` — **设计 spec（15 节，需求/架构/数据/合规的单一事实源）**
 - `docs/reference/lottery-rules.md` — **7 大彩种规则权威参考**
-- `docs/superpowers/workflows/USAGE.md` — 旧版 workflow 使用指南
-- `docs/superpowers/workflow-design.md` — 旧版 workflow 设计文档
 - `docs/superpowers/plans/` — implementation plan（7 份业务 plan：01-07 全部完成）
 - `docs/reference/lottery-verification-2026-08-14.md` — **7 彩种「文档 vs 代码」核对报告（plan-10 产出）**
 
