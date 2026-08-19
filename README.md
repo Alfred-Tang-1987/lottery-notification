@@ -142,13 +142,13 @@ docs/                  # deploy.md / 设计 spec / 彩种规则权威参考
 scripts/               # init-env.sh / publish-check.sh / setup-workflow-engine.sh
 ```
 
-## 关于 `.claude/workflows/run-plans.js`
+## 关于 `.claude/`（内部开发工具，已从仓库移除）
 
-仓库内带有作者自用的 plan 编排器派生副本（纯开发工具，无密钥，与运行/部署/测试无关）。其上游引擎为私有仓库；内部开发者可用 `WORKFLOW_ENGINE_URL=<地址> ./scripts/setup-workflow-engine.sh` 恢复。**不需要它的用户可直接忽略 `.claude/` 目录。**
+仓库曾带有作者自用的 plan 编排器派生副本（`.claude/workflows/run-plans.js`），**已从公共仓库移除**——它是纯开发工具，无密钥，与运行/部署/测试无关，其上游引擎为私有仓库。内部开发者可用 `WORKFLOW_ENGINE_URL=<地址> ./scripts/setup-workflow-engine.sh` 按需恢复（clone 产物经 `.gitignore` 隔离，不入库）。外部贡献者无需安装，`.claude/` 目录可忽略。
 
 ## 许可证与第三方声明
 
-- 本项目以 **AGPL-3.0-only** 开源（见 `LICENSE`）。**任何人修改本项目后以网络服务（含 SaaS、内部平台）形式提供使用，必须按 AGPL-3.0-only 开源其全部衍生代码**（§13 网络交互条款）。第三方仅调用未改造的本项目 API 不触发传染。
+- 本项目以 **MIT** 许可开源（见 `LICENSE`）。MIT 为宽松许可，**允许商用、闭源、修改与再分发**，仅要求保留版权与许可声明。
 - 本项目仅调用第三方数据 API，不附带其数据。使用者需自行遵守 [MXNZP](https://www.mxnzp.com)、[聚合数据](https://www.juhe.cn)、[高德开放平台](https://lbs.amap.com) 的服务条款；彩票规则与开奖数据的最终解释权属中国福彩 / 体彩官方。
 
 ## 免责声明

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目状态
 
-**Plan 01–07 全部完成（基础设施 / 领域层 / 仓储核心闭环 / 调度推送 / 认证用户管理 / Web UI 部署 / 浮动奖金查询），694 passed, 1 skipped；Plan 10（7 彩种文档 vs 代码核对 + B1 修复）已合入，749 passed, 1 skipped。** Plan 06 9 页 UI + Docker 部署 + CLI 全部落地；Plan 07 浮动奖金查询（CwlPrizeSource + SportteryPrizeSource JSON+PDF 降级 + FloatRefillWorker 金额公式 + 22:00 回填 cron）已合入；Plan 10 落地 5 项 B1 代码修复（dlt 2026 七档新规 + 规则版本门 / qlc 浮动档 + refill 浮动集动态化 / qxc 任意对位 + 六等漏判档 / fc3d danxuan + API 玩法校验 / recompare CLI）。plan 在 `docs/superpowers/plans/`。改代码前先读 spec + 对应 plan；实现通过 **workflow orchestrator**（见下）自动跑 plan。
+**Plan 01–07 全部完成（基础设施 / 领域层 / 仓储核心闭环 / 调度推送 / 认证用户管理 / Web UI 部署 / 浮动奖金查询），694 passed, 1 skipped；Plan 10（7 彩种文档 vs 代码核对 + B1 修复）已合入，749 passed, 1 skipped。** Plan 06 9 页 UI + Docker 部署 + CLI 全部落地；Plan 07 浮动奖金查询（CwlPrizeSource + SportteryPrizeSource JSON+PDF 降级 + FloatRefillWorker 金额公式 + 22:00 回填 cron）已合入；Plan 10 落地 5 项 B1 代码修复（dlt 2026 七档新规 + 规则版本门 / qlc 浮动档 + refill 浮动集动态化 / qxc 任意对位 + 六等漏判档 / fc3d danxuan + API 玩法校验 / recompare CLI）。plan 在 `docs/superpowers/plans/`。改代码前先读 spec + 对应 plan；实现通过内部 workflow orchestrator 自动跑 plan（引擎为私有内部工具，已从公共仓库移除，见「更新 run-plans-engine」节）。
 
 ## 项目是什么
 
@@ -94,36 +94,20 @@ cd web && npm install && npm run dev                         # 开发（代理 /
 cd web && npm test                                           # vitest 组件/逻辑测试（不进 Python gate）
 cd web && npm run build                                      # 产物到 ../static
 
-# workflow orchestrator 测试
-cd docs/superpowers/workflows && node --test 'tests/*.test.js'
-
 # 部署（NAS Docker，端口 8280）
 docker compose up -d --build
 docker compose build                                         # 仅构建
 
-# 更新 run-plans-engine（内部开发工具，gitignored，不入库）
+# 恢复/更新内部 workflow 引擎（私有工具，已从公共仓库移除；产物经 .gitignore 隔离，不入库不提交）
 export WORKFLOW_ENGINE_URL=<内网引擎仓库地址>   # 本机 shell 配置，勿写入仓库
-./scripts/setup-workflow-engine.sh             # clone/更新引擎 + 同步派生副本
-git add .claude/workflows/run-plans.js
-git commit -m "chore(workflow): bump run-plans-engine"
+./scripts/setup-workflow-engine.sh             # clone/更新引擎 + 同步派生副本 .claude/workflows/run-plans.js
 ```
 
 **密钥**（`.env`，不进库不进日志；模板 `.env.example`）：`JWT_SECRET`（≥32 字符）、`CRYPTO_KEY_V1`（44 字符 Fernet key）、`MXNZP_API_KEY`/`JUHE_API_KEY`（数据源）、`SMTP_*`（email 渠道）、`ADMIN_BARK_KEY`。启动时 `validate_startup()` 端到端冒烟验证 crypto key。
 
-## workflow orchestrator（执行 plan）
+## workflow orchestrator（内部开发工具，已从公共仓库移除）
 
-`.claude/workflows/run-plans.js` 自动执行 `docs/superpowers/plans/*.md`：每 task implementor(TDD RED→GREEN→REFACTOR) → review 三链并行(spec 逐行 ‖ quality 架构 ‖ silent-failure-hunter) → simplify → commit `feat(plan-X/T-Y)`。
-
-**进度以 git 为单一事实源**——bootstrap 读 git log 的 `feat(plan-X/T-Y)` convention 跳过已完成 task。跨机器/跨 session 续跑无需 manifest：clone + 跑全新 workflow 即从未完成的 task 继续。
-
-触发（Claude 调 Workflow 工具）：
-```
-Workflow({ scriptPath: '.claude/workflows/run-plans.js', args: { plan: '03' } })  # 单 plan
-```
-
-**⚠️ 续跑用「全新跑」，不要用 `resumeFromRunId`**：resume 回放缓存的 bootstrap agent，看不到 halt 后手动提交的 task。halt/限额/断 session 后一律全新跑。
-
-**§2.4 模型策略**：开发用指定 opus/sonnet/haiku；一旦不可用（含 429、router stderr、不在 `Error.message` 的情形）→ halt + 保存进度 → **等用户发指令才 resume**。**绝不降级到可用 model**。
+`.claude/workflows/run-plans.js` 自动执行 `docs/superpowers/plans/*.md`（每 task implementor(TDD RED→GREEN→REFACTOR) → review 三链并行(spec 逐行 ‖ quality 架构 ‖ silent-failure-hunter) → simplify → commit `feat(plan-X/T-Y)`）。**引擎已从公共仓库移除**（上游为私有仓库），运行/部署/测试均不依赖；内部开发者用 `WORKFLOW_ENGINE_URL=<地址> ./scripts/setup-workflow-engine.sh` 恢复后，产物经 `.gitignore` 隔离不入库。外部贡献者可完全忽略本节。
 
 ## 关键约定
 

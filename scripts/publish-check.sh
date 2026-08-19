@@ -78,9 +78,11 @@ for pat in "${PATTERNS[@]}" "${SECRET_PATTERNS[@]}"; do
   fi
 done
 
-# F20：子模块机制已永久移除（plan-09/T3），不得回归
-if [ -f .gitmodules ] || git -C "$ROOT" ls-files --error-unmatch .claude/workflow-engine >/dev/null 2>&1; then
-  echo 'FAIL: 检测到 .gitmodules 或已跟踪的 .claude/workflow-engine（子模块已移除，不得回归）' >&2
+# F20：子模块机制已永久移除（plan-09/T3）+ 工作流引擎派生副本不入库（2026-08-19），不得回归
+if [ -f .gitmodules ] \
+   || git -C "$ROOT" ls-files --error-unmatch .claude/workflow-engine >/dev/null 2>&1 \
+   || git -C "$ROOT" ls-files --error-unmatch .claude/workflows/run-plans.js >/dev/null 2>&1; then
+  echo 'FAIL: 检测到 .gitmodules / 已跟踪的 .claude/workflow-engine / .claude/workflows/run-plans.js（内部工具已移除，不得回归）' >&2
   FAIL=1
 fi
 

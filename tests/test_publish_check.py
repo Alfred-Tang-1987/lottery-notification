@@ -126,3 +126,20 @@ def test_submodule_reappearance_fails(tmp_path):
     (tmp_path / '.gitmodules').write_text('[submodule "x"]\n\tpath = x\n')
     r = _run(tmp_path)
     assert r.returncode == 1
+
+
+def test_workflow_engine_derivative_tracked_fails(tmp_path):
+    """F20：引擎派生副本 .claude/workflows/run-plans.js 被 git 跟踪必须 FAIL。
+
+    （2026-08-19：公共仓库已移除引擎，F20 从「子模块不得回归」扩展为
+    「引擎本体与派生副本均不得回归」——用 git ls-files 判定须在真实 repo 中构造。"""
+    subprocess.run(['git', 'init', '-q', str(tmp_path)], check=True)
+    f = tmp_path / '.claude' / 'workflows' / 'run-plans.js'
+    f.parent.mkdir(parents=True)
+    f.write_text('// run-plans-engine 派生副本', encoding='utf-8')
+    subprocess.run(
+        ['git', '-C', str(tmp_path), 'add', '.claude/workflows/run-plans.js'],
+        check=True,
+    )
+    r = _run(tmp_path)
+    assert r.returncode == 1, f'跟踪 run-plans.js 必须 FAIL：{r.stdout}{r.stderr}'

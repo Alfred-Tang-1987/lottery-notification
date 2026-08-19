@@ -35,11 +35,18 @@ def test_gitmodules_removed_and_engine_untracked():
         capture_output=True, text=True, cwd=ROOT, timeout=30,
     )
     assert r.stdout.strip() == '', '.claude/workflow-engine 不得被 git 跟踪'
+    # 2026-08-19：公共仓库已移除引擎，派生副本同样不得入库（内部工具回归兜底）
+    r2 = subprocess.run(
+        ['git', 'ls-files', '.claude/workflows/run-plans.js'],
+        capture_output=True, text=True, cwd=ROOT, timeout=30,
+    )
+    assert r2.stdout.strip() == '', '.claude/workflows/run-plans.js 不得被 git 跟踪'
 
 
 def test_gitignore_covers_engine_and_local_deploy_doc():
     text = (ROOT / '.gitignore').read_text()
     assert '.claude/workflow-engine/' in text
+    assert '.claude/workflows/run-plans.js' in text
     assert 'deploy-nas-internal.md' in text
 
 
