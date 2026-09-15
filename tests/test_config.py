@@ -148,3 +148,16 @@ def test_get_settings_thread_safe(monkeypatch):
         t.join()
     first = instances[0]
     assert all(inst is first for inst in instances), 'get_settings returned distinct instances'
+
+
+def test_source_health_alert_settings_defaults(monkeypatch):
+    """plan-11 健康告警逃生舱默认值（F18/F19/F20）。"""
+    monkeypatch.setenv('JWT_SECRET', 'x' * 32)
+    from cryptography.fernet import Fernet
+    monkeypatch.setenv('CRYPTO_KEY_V1', Fernet.generate_key().decode())
+    from app.config import get_settings, reset_settings_cache
+    reset_settings_cache()
+    s = get_settings()
+    assert s.source_health_alerts_enabled is True
+    assert s.source_health_alert_after_minutes == 30
+    assert s.admin_bark_url == 'https://api.day.app'

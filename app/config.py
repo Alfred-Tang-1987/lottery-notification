@@ -60,6 +60,14 @@ class Settings(BaseSettings):
     smtp_pass: str | None = None
     smtp_from: str | None = None
     admin_bark_key: str | None = None
+    # Bark 服务端 URL（dx-voice F20：自建 Bark 是 NAS 真实场景）；默认官方域名，
+    # build_admin_alert 与 main.py admin_bark_config 同源（单一真源，此前两处硬编码）。
+    admin_bark_url: str = 'https://api.day.app'
+    # 数据源健康告警独立开关（dx-voice F18：与密码重置告警解耦——运维被健康告警
+    # 吵到时能只关它，不误伤密码重置 admin 通知）。
+    source_health_alerts_enabled: bool = True
+    # 告警阈值（分钟）（dx-voice F19：面向人的告警阈值必须可调，无需改代码重建镜像）。
+    source_health_alert_after_minutes: int = 30
 
     database_url: str = 'sqlite:///./data/lottery.db'
     tz: str = 'Asia/Shanghai'

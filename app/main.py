@@ -142,7 +142,7 @@ def _build_scheduler_and_deps(engine: Engine, settings: Settings):
     # ADMIN_BARK_KEY 存在；未配 email 时 admin_bark_key 可选。
     admin_bark_config = None
     if settings.admin_bark_key:
-        admin_bark_config = {'key': settings.admin_bark_key, 'url': 'https://api.day.app'}
+        admin_bark_config = {'key': settings.admin_bark_key, 'url': settings.admin_bark_url}
 
     notifier = Notifier(
         engine,
