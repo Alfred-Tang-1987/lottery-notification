@@ -4,6 +4,8 @@
 所有端点要求 admin 角色；state-changing 端点强制 CSRF double-submit。
 """
 
+from datetime import UTC
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
@@ -76,10 +78,39 @@ def force_verify(
     return {'id': draw_id, 'verified': True}
 
 
+def _iso_utc(dt) -> str | None:
+    """naive UTC 落库值 → 显式 UTC ISO（追加 'Z'）。
+
+    裸 isoformat() 无时区标记，前端 new Date() 会按浏览器本地时区解析，
+    面板时间显示偏差 8 小时（autoplan D-3；全程 Asia/Shanghai 纪律）。
+    eng-voice L3：兼容 aware 输入（先归一到 naive UTC 再加 'Z'，
+    否则 aware 值会得到 '…+00:00Z' 的双重标记）。
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(UTC).replace(tzinfo=None)
+    return dt.isoformat() + 'Z'
+
+
 @router.get('/health')
 def system_health(session: Session = Depends(get_session_dep)):
     sources = session.exec(select(ApiSourceHealth)).all()
-    return {'sources': [{'source': s.source, 'status': s.status} for s in sources]}
+    return {
+        'sources': [
+            {
+                'source': s.source,
+                'status': s.status,
+                'alerted': s.alerted,
+                # eng-voice M6：后端不再截断——截断移到前端 fmtError，
+                # 否则 title 悬浮也只能看到同一份截断文本（D17 全文可见失效）。
+                'error': s.error,
+                'last_success_at': _iso_utc(s.last_success_at),
+                'down_since': _iso_utc(s.down_since),
+            }
+            for s in sources
+        ]
+    }
 
 
 class AdminResetPasswordIn(BaseModel):

@@ -19,6 +19,10 @@ interface User {
 interface HealthSource {
   source: string;
   status: string;
+  alerted: string;
+  error: string | null;
+  last_success_at: string | null;
+  down_since: string | null;
 }
 
 interface SmtpConfig {
@@ -379,6 +383,26 @@ function formatDate(s: string | null): string {
   if (!s) return '—';
   return s.replace('T', ' ').slice(0, 19);
 }
+
+// design-voice D3：时长为主、时区免疫——面板要回答的是「多久了」，不是「几点几分」；
+// 后端已返回显式 UTC（'Z'），前端算差值即可，不引入第二个日期格式——
+// 页面既有 formatDate 管绝对时间，这里管时长。
+// 由显式 UTC（'Z' 后缀）算到当前的时长文本：「X 分钟 / X 小时 N 分 / X 天 N 小时」。
+function fmtDuration(sinceIso: string): string {
+  const ms = Date.now() - new Date(sinceIso).getTime();
+  const minutes = Math.max(0, Math.floor(ms / 60000));
+  if (minutes < 60) return `${minutes} 分钟`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} 小时${minutes % 60 ? ` ${minutes % 60} 分` : ''}`;
+  const days = Math.floor(hours / 24);
+  return `${days} 天${hours % 24 ? ` ${hours % 24} 小时` : ''}`;
+}
+
+// eng-voice M6：error 内联截断（80 字符 + '…'，截断必须可见），全文经 title 悬浮可见。
+// 后端返回全文（不在后端截断——否则 title 也只有截断版，D17 全文可见失效）。
+function fmtError(error: string): string {
+  return error.length > 80 ? `${error.slice(0, 80)}…` : error;
+}
 </script>
 
 <template>
@@ -644,6 +668,12 @@ function formatDate(s: string | null): string {
           <div v-if="health.length > 0" class="source-list">
             <div v-for="s in health" :key="s.source" class="source-item">
               <span class="source-name">{{ s.source }}</span>
+              <span class="source-meta">
+                {{ s.status !== 'ok' && s.down_since ? `已故障 ${fmtDuration(s.down_since)}` : (s.last_success_at ? `最后成功 ${fmtDuration(s.last_success_at)}前` : '—') }}
+                <span v-if="s.error" class="source-error" :title="s.error">{{ fmtError(s.error) }}</span>
+              </span>
+              <span v-if="s.alerted === 'alerted'" class="source-alert-tag">已通知</span>
+              <span v-else-if="s.alerted === 'recovering'" class="source-alert-tag recovering">恢复待通知</span>
               <span class="source-status" :class="s.status">{{ s.status }}</span>
             </div>
           </div>
@@ -1082,5 +1112,56 @@ function formatDate(s: string | null): string {
   .filter-bar {
     grid-template-columns: 1fr;
   }
+}
+
+/* D-4：新增 meta/tag 后行内容变长，375px 下允许换行防挤压 */
+.source-item {
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+
+/* D-2：次要信息用既有 --muted token（tokens.css 含 dark 变体），
+   不引入 --vt-c-text-2（VitePress 变量，本项目不存在）或硬编码 #888 */
+.source-meta {
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+
+/* D4：error 摘要与 meta 同行但更可忽略；全文经 title 悬浮可见（已后端截断 + …） */
+.source-error {
+  margin-left: 6px;
+  opacity: 0.85;
+}
+
+/* D4：告警状态标签（沿用 status-badge 的 pill 模式与 DESIGN.md token） */
+.source-alert-tag {
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  background: var(--surface-2);
+  color: var(--muted);
+}
+
+.source-alert-tag.recovering {
+  background: #fef3c7;
+  color: var(--warning);
+}
+
+/* D-1：健康状态色补齐——plan-11 起 down 真实落表，未定义 class 的状态会裸奔。
+   文字色用 DESIGN.md 语义 token（--danger/--warning/--muted），底色沿用既有 pill 风格 */
+.source-status.down {
+  background: #fee2e2;
+  color: var(--danger);
+}
+
+.source-status.degraded {
+  background: #fef3c7;
+  color: var(--warning);
+}
+
+.source-status.unknown {
+  background: var(--surface-2);
+  color: var(--muted);
 }
 </style>
