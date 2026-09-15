@@ -402,7 +402,7 @@ def test_startup_backfill_paces_fetches_with_interval(db_engine, monkeypatch):
     """启动回填对实际抓取的彩种加 QPS 间隔：第 2 个起每次 fetch 前 sleep（plan-11）。"""
     import app.scheduler.backfill as backfill_mod
 
-    monkeypatch.setattr(backfill_mod, '_INTER_LOTTERY_INTERVAL', 1.2)
+    monkeypatch.setattr(backfill_mod.jobs_mod, '_INTER_LOTTERY_INTERVAL', 1.2)
     sleeps = []
     monkeypatch.setattr(backfill_mod.time, 'sleep', lambda s: sleeps.append(s))
 

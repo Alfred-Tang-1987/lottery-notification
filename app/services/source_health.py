@@ -29,6 +29,10 @@ logger = logging.getLogger(__name__)
 #                         按运行故障告警（key 被删是配置事实，不该「持续失败 1440 分钟」）。
 Outcome = Literal['ok', 'down', 'permanent']
 
+# alerted 状态机词表（altitude 审查 F4）：此前只活在注释/裸字符串里，拼写错无任何层
+# 报错。补公开别名供消费方标注——文档性契约（项目无 mypy，防漂移靠它 + 状态转移测试）。
+AlertedState = Literal['none', 'alerted', 'recovering']
+
 # 告警阈值由 settings.source_health_alert_after_minutes 供给（dx-voice F19 逃生舱：
 # 面向人的告警阈值必须可调，默认 30 分钟；时间窗实现与 tick 次数解耦——
 # 持久、不怕容器重启，2026-09-15 事故中容器恰在故障期重启，内存计数会清零）。
@@ -244,15 +248,27 @@ def evaluate_source_alerts(
         return
     # session 外发送；送达成功的进待落清单
     delivered: list[tuple[str, str]] = []  # (source, 目标 alerted 状态)
-    for source, target, title, body in pending:
-        try:
-            send_alert(title, body)
-        except Exception:
-            # error 级（dx-voice F12：告警链路本身挂了是重大运维事件，
-            # 不是普通 warning；重试语义不变——下轮继续尝试直到送达）。
-            logger.error('source_alert_send_failed source=%s', source, exc_info=True)
-            continue  # 未送达不转移，下轮重试
-        delivered.append((source, target))
+    try:
+        for source, target, title, body in pending:
+            try:
+                send_alert(title, body)
+            except Exception:
+                # error 级（dx-voice F12：告警链路本身挂了是重大运维事件，
+                # 不是普通 warning；重试语义不变——下轮继续尝试直到送达）。
+                logger.error('source_alert_send_failed source=%s', source, exc_info=True)
+                continue  # 未送达不转移，下轮重试
+            delivered.append((source, target))
+    finally:
+        # 确定性释放 sender 持有的 httpx.Client（bark close 一等纪律，/simplify
+        # efficiency 审查 finding）：不 sent 也要关——否则故障期每 15 分钟弃一个
+        # 未关 client 给 GC 兜底。build_admin_alert 的 sender 挂有 close；
+        # 测试注入的假 sender 无此属性自然跳过。close 失败不影响评估结果。
+        close = getattr(send_alert, 'close', None)
+        if close is not None:
+            try:
+                close()
+            except Exception:
+                logger.warning('source_alert_sender_close_failed', exc_info=True)
     if not delivered:
         return
     # 阶段 3：短 session 守卫重读后落转移（recovering 完成时清 down_since）

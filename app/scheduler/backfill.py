@@ -10,7 +10,7 @@ from sqlmodel import Session, select
 from app.config import get_settings
 from app.models import DrawResult, LotteryType
 from app.scheduler import _JobDeps
-from app.scheduler.jobs import _INTER_LOTTERY_INTERVAL
+from app.scheduler import jobs as jobs_mod
 from app.seeds import SPECS
 from app.services.compare_service import CompareService
 from app.services.fetch_service import FetchService
@@ -58,8 +58,10 @@ def run_startup_backfill(deps: _JobDeps) -> None:
             if missed:
                 # QPS 间隔只加在真实请求之间（missed 检查跳过的彩种不白等）；
                 # 首个抓取不等待（plan-11，镜像 jobs._path_a_tick 的 L-20260726 语义）。
+                # 经 jobs_mod 属性访问（/simplify）：from-import 是值拷贝，会把
+                # 「单点 monkeypatch jobs 常量」变成「每个消费者各 patch 一处」。
                 if fetched > 0:
-                    time.sleep(_INTER_LOTTERY_INTERVAL)
+                    time.sleep(jobs_mod._INTER_LOTTERY_INTERVAL)
                 fetch_service.fetch_and_store(code)
                 fetched += 1
         except Exception:
@@ -121,7 +123,7 @@ def _backfill_history(engine: Engine, fetch_service: FetchService, settings) -> 
             # data 为空 → 回填静默失败（silent-failure：只 ssq 有数据，其余彩种空）。
             # 第一个彩种不 sleep（冷启动要快），后续每个彩种前等 1.2s。
             if idx > 0:
-                time.sleep(_INTER_LOTTERY_INTERVAL)
+                time.sleep(jobs_mod._INTER_LOTTERY_INTERVAL)
             draws = primary.fetch_history(code, size=50)
             if not draws:
                 continue

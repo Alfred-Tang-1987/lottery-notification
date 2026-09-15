@@ -193,4 +193,8 @@ def test_source_health_alert_settings_defaults(monkeypatch):
     s = get_settings()
     assert s.source_health_alerts_enabled is True
     assert s.source_health_alert_after_minutes == 30
-    assert s.admin_bark_url == 'https://api.day.app'
+    # 不写裸字面量：admin_bark_url 默认必须与 bark.py 的 DEFAULT_BARK_URL 兜底常量
+    # 一致（否则自建 Bark 场景下 settings 默认与 channel 兜底静默漂移，/simplify 防漂移钉）。
+    from app.notifications.bark import DEFAULT_BARK_URL
+
+    assert s.admin_bark_url == DEFAULT_BARK_URL

@@ -24,9 +24,8 @@ def _disable_inter_lottery_interval(monkeypatch):
 
     monkeypatch.setattr(jobs_mod, '_INTER_LOTTERY_INTERVAL', 0)
 
-    from app.scheduler import backfill as backfill_mod
-
-    monkeypatch.setattr(backfill_mod, '_INTER_LOTTERY_INTERVAL', 0)
+    # backfill 经 jobs_mod 属性访问同一常量（/simplify：from-import 值拷贝会迫使
+    # 每个消费者各 patch 一处），此处单点 patch 即覆盖 path_a_tick 与启动 backfill。
 
 
 @pytest.fixture(autouse=True)

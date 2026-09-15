@@ -27,7 +27,7 @@ from sqlmodel import Session, select
 from app.adapters.base import DrawNumbers, DrawSource, PermanentLookupError
 from app.models import DrawResult, PendingComparison
 from app.seeds import SPECS
-from app.services.source_health import sanitize_error
+from app.services.source_health import Outcome, sanitize_error
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +110,7 @@ class FetchService:
 
     def _try_fetch(
         self, source: DrawSource, lottery_code: str
-    ) -> tuple[DrawNumbers | None, str, str | None]:
+    ) -> tuple[DrawNumbers | None, Outcome, str | None]:
         """返回 (numbers, outcome, error)。outcome: 'ok' | 'down' | 'permanent'。
 
         ok+None=未开奖（源健康）；down=运行故障（网络/限流重试耗尽）；
@@ -123,7 +123,7 @@ class FetchService:
                 return None, 'permanent', str(exc)
             return None, 'down', str(exc)
 
-    def _record_health(self, source_name: str, outcome: str, error: str | None) -> None:
+    def _record_health(self, source_name: str, outcome: Outcome, error: str | None) -> None:
         """写 ApiSourceHealth（plan-11）。独立短事务 + 吞异常：健康落表失败只记日志，
         绝不阻断抓取主流程（spec §1.2）。"""
         try:

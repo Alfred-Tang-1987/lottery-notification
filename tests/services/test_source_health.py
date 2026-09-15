@@ -385,3 +385,42 @@ def test_redown_after_recovering_realerts(db_engine):
     # 新 episode 达阈值 → 重新告警
     evaluate_source_alerts(db_engine, lambda: rec, now=lambda: t1 + timedelta(minutes=31))
     assert len(rec.calls) == 1 and '持续失败' in rec.calls[0][0]
+
+
+def test_evaluator_closes_sender_after_send(db_engine):
+    """评估器发送后确定性关闭 sender（/simplify efficiency 审查修复钉）——
+
+    build_admin_alert 的 sender 挂 close 通道（admin_alert.py），评估器在发送循环
+    finally 里 getattr 探测并调用；无 close 属性的假 sender（其余用例的 _Recorder）
+    自然跳过。不关的代价：故障期每轮评估弃一个未关 httpx.Client 给 GC 兜底。
+    """
+    t = datetime(2026, 9, 15, 13, 0, 0)
+    _seed_down(db_engine, down_since=t - timedelta(minutes=40))
+    closed = []
+
+    class _Closable:
+        def __call__(self, title, body):
+            pass
+
+        def close(self):
+            closed.append(True)
+
+    evaluate_source_alerts(db_engine, _Closable, now=lambda: t)
+    assert closed == [True]
+    assert _get(db_engine).alerted == 'alerted'  # 发送与资源释放两不误
+
+
+def test_sender_close_failure_does_not_break_transition(db_engine):
+    """close 抛异常不得影响已送达的状态转移（资源清理失败 ≠ 告警失败）。"""
+    t = datetime(2026, 9, 15, 13, 0, 0)
+    _seed_down(db_engine, down_since=t - timedelta(minutes=40))
+
+    class _BrokenClose:
+        def __call__(self, title, body):
+            pass
+
+        def close(self):
+            raise RuntimeError('close boom')
+
+    evaluate_source_alerts(db_engine, _BrokenClose, now=lambda: t)
+    assert _get(db_engine).alerted == 'alerted'

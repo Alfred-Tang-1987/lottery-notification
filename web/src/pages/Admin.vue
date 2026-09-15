@@ -403,6 +403,14 @@ function fmtDuration(sinceIso: string): string {
 function fmtError(error: string): string {
   return error.length > 80 ? `${error.slice(0, 80)}…` : error;
 }
+
+// meta 行文案（/simplify 收敛自模板内联嵌套三元）：分支逻辑与 fmtDuration/fmtError
+// 同为可读的纯函数。语义：非 ok 且有故障起点 → 故障时长；否则展示最后成功时间。
+function fmtSourceMeta(s: HealthSource): string {
+  if (s.status !== 'ok' && s.down_since) return `已故障 ${fmtDuration(s.down_since)}`;
+  if (s.last_success_at) return `最后成功 ${fmtDuration(s.last_success_at)}前`;
+  return '—';
+}
 </script>
 
 <template>
@@ -669,7 +677,7 @@ function fmtError(error: string): string {
             <div v-for="s in health" :key="s.source" class="source-item">
               <span class="source-name">{{ s.source }}</span>
               <span class="source-meta">
-                {{ s.status !== 'ok' && s.down_since ? `已故障 ${fmtDuration(s.down_since)}` : (s.last_success_at ? `最后成功 ${fmtDuration(s.last_success_at)}前` : '—') }}
+                {{ fmtSourceMeta(s) }}
                 <span v-if="s.error" class="source-error" :title="s.error">{{ fmtError(s.error) }}</span>
               </span>
               <span v-if="s.alerted === 'alerted'" class="source-alert-tag">已通知</span>
