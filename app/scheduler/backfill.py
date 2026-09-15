@@ -10,9 +10,11 @@ from sqlmodel import Session, select
 from app.config import get_settings
 from app.models import DrawResult, LotteryType
 from app.scheduler import _JobDeps
+from app.scheduler import jobs as jobs_mod
 from app.seeds import SPECS
 from app.services.compare_service import CompareService
 from app.services.fetch_service import FetchService
+from app.services.source_health import admin_alert_sender_factory, evaluate_source_alerts
 
 _CST = ZoneInfo('Asia/Shanghai')
 logger = logging.getLogger(__name__)
@@ -49,14 +51,29 @@ def run_startup_backfill(deps: _JobDeps) -> None:
     today = datetime.now(_CST).date()
     lookback_days = [today - timedelta(days=i) for i in range(_BACKFILL_LOOKBACK_DAYS)]
 
+    fetched = 0
     for code, draw_days in _enabled_lotteries(engine):
         try:
             missed = any(d.weekday() in draw_days and not _has_draw_for_date(engine, code, d) for d in lookback_days)
             if missed:
+                # QPS 间隔只加在真实请求之间（missed 检查跳过的彩种不白等）；
+                # 首个抓取不等待（plan-11，镜像 jobs._path_a_tick 的 L-20260726 语义）。
+                # 经 jobs_mod 属性访问（/simplify）：from-import 是值拷贝，会把
+                # 「单点 monkeypatch jobs 常量」变成「每个消费者各 patch 一处」。
+                if fetched > 0:
+                    time.sleep(jobs_mod._INTER_LOTTERY_INTERVAL)
                 fetch_service.fetch_and_store(code)
+                fetched += 1
         except Exception:
             # 单彩种源故障不得阻断其他彩种（silent-failure 纪律）。
             logger.error('startup_backfill_fetch_failed code=%s', code, exc_info=True)
+
+    # 数据源健康评估（plan-11）：开机即评估一次（覆盖白天故障/停机后恢复场景）。
+    # sender 工厂惰性构造（eng H1/M2，同 jobs.py 尾部）。
+    try:
+        evaluate_source_alerts(engine, admin_alert_sender_factory)
+    except Exception:
+        logger.error('source_alert_evaluate_failed', exc_info=True)
 
 
 def _enabled_lotteries(engine: Engine) -> list[tuple[str, list[int]]]:
@@ -106,7 +123,7 @@ def _backfill_history(engine: Engine, fetch_service: FetchService, settings) -> 
             # data 为空 → 回填静默失败（silent-failure：只 ssq 有数据，其余彩种空）。
             # 第一个彩种不 sleep（冷启动要快），后续每个彩种前等 1.2s。
             if idx > 0:
-                time.sleep(1.2)
+                time.sleep(jobs_mod._INTER_LOTTERY_INTERVAL)
             draws = primary.fetch_history(code, size=50)
             if not draws:
                 continue

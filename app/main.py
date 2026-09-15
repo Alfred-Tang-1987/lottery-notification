@@ -112,6 +112,7 @@ def _build_scheduler_and_deps(engine: Engine, settings: Settings):
     from app.adapters.mxnzp import MxnzpAdapter
     from app.adapters.sporttery_prize import SportteryPrizeSource
     from app.infrastructure.crypto import CryptoService
+    from app.notifications import admin_alert
     from app.notifications.bark import BarkChannel
     from app.notifications.email_channel import EmailChannel
     from app.notifications.feishu import FeishuChannel
@@ -140,9 +141,9 @@ def _build_scheduler_and_deps(engine: Engine, settings: Settings):
         )
     # admin Bark fallback：启用 email 时 Settings.validate_email_bark_fallback 已强制
     # ADMIN_BARK_KEY 存在；未配 email 时 admin_bark_key 可选。
-    admin_bark_config = None
-    if settings.admin_bark_key:
-        admin_bark_config = {'key': settings.admin_bark_key, 'url': 'https://api.day.app'}
+    # 组装收敛到 admin_alert.admin_bark_config（/simplify：与 build_admin_alert 共用
+    # 单一真源，BarkChannel config 契约变化只改一处）。
+    admin_bark_config = admin_alert.admin_bark_config(settings)
 
     notifier = Notifier(
         engine,

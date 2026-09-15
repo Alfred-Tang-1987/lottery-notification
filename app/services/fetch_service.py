@@ -27,6 +27,7 @@ from sqlmodel import Session, select
 from app.adapters.base import DrawNumbers, DrawSource, PermanentLookupError
 from app.models import DrawResult, PendingComparison
 from app.seeds import SPECS
+from app.services.source_health import Outcome, sanitize_error
 
 logger = logging.getLogger(__name__)
 
@@ -91,14 +92,14 @@ class FetchService:
                 return source.fetch(lottery_code)
             except Exception as exc:
                 # 源故障不得静默吞没：结构化日志供告警/排障（silent-failure-hunter）。
-                # 重试耗尽后仍上抛，由 _try_fetch 归类为 ok=False（源故障态）。
+                # 重试耗尽后仍上抛，由 _try_fetch 归类为 outcome='down'（源故障态）。
                 logger.warning(
                     'source_fetch_failed source=%s lottery=%s attempt=%d/%d error=%s',
                     getattr(source, 'name', 'unknown'),
                     lottery_code,
                     attempt + 1,
                     self._max_attempts,
-                    exc,
+                    sanitize_error(str(exc)),
                 )
                 # 永久性错误不重试（重试无意义且阻塞启动）。
                 if isinstance(exc, PermanentLookupError):
@@ -107,17 +108,43 @@ class FetchService:
                     raise
                 self._sleep(self._backoff**attempt + random.random())
 
-    def _try_fetch(self, source: DrawSource, lottery_code: str) -> tuple[DrawNumbers | None, bool]:
-        """返回 (numbers, ok)。ok=False=源故障（异常被吞）；ok=True+None=未开奖。"""
+    def _try_fetch(
+        self, source: DrawSource, lottery_code: str
+    ) -> tuple[DrawNumbers | None, Outcome, str | None]:
+        """返回 (numbers, outcome, error)。outcome: 'ok' | 'down' | 'permanent'。
+
+        ok+None=未开奖（源健康）；down=运行故障（网络/限流重试耗尽）；
+        permanent=配置态错误（key 未配置等）——健康表据此区分（plan-11 spec §1.2）。
+        """
         try:
-            return self._fetch_with_backoff(source, lottery_code), True
+            return self._fetch_with_backoff(source, lottery_code), 'ok', None
+        except Exception as exc:
+            if isinstance(exc, PermanentLookupError):
+                return None, 'permanent', str(exc)
+            return None, 'down', str(exc)
+
+    def _record_health(self, source_name: str, outcome: Outcome, error: str | None) -> None:
+        """写 ApiSourceHealth（plan-11）。独立短事务 + 吞异常：健康落表失败只记日志，
+        绝不阻断抓取主流程（spec §1.2）。"""
+        try:
+            from app.services.source_health import record_source_health
+
+            record_source_health(self._engine, source_name, outcome, error)
         except Exception:
-            return None, False
+            logger.warning(
+                'source_health_write_failed source=%s outcome=%s', source_name, outcome,
+                exc_info=True,
+            )
 
     # ------------------------------------------------------------- main entry
     def fetch_and_store(self, lottery_code: str) -> FetchResult:
-        primary, p_ok = self._try_fetch(self._primary, lottery_code)
-        backup, b_ok = self._try_fetch(self._backup, lottery_code)
+        primary, p_outcome, p_err = self._try_fetch(self._primary, lottery_code)
+        backup, b_outcome, b_err = self._try_fetch(self._backup, lottery_code)
+        # 数据源健康落表（plan-11）：写失败不得阻断抓取（spec §1.2 独立短事务）。
+        self._record_health(self._primary.name, p_outcome, p_err)
+        self._record_health(self._backup.name, b_outcome, b_err)
+        p_ok = p_outcome == 'ok'
+        b_ok = b_outcome == 'ok'
 
         # 双源都故障 → 告警不存（spec §10）
         if not p_ok and not b_ok:
@@ -141,9 +168,9 @@ class FetchService:
         # 重抓三态分流：拿到数据→双源校验（不一致即拒绝，不得降级单源——否则双源
         # 安全网在 grace 路径被绕过，§10 准确性优先）；仍无/故障→单源兜底。
         #
-        # grace 触发条件（2026-07-21 冒烟修正）：仅当缺失源是「未开奖」（ok=True 且
-        # None，数据延迟）时才 grace 等待。缺失源若是「故障」（ok=False，HTTP 异常/
-        # 超时/鉴权失败），sleep 5 分钟注定再次失败——只白白阻塞启动/cron 数分钟
+        # grace 触发条件（2026-07-21 冒烟修正）：仅当缺失源是「未开奖」（outcome='ok'
+        # 且 None=未开奖，数据延迟）时才 grace 等待。缺失源若是「故障」（outcome='down'，
+        # HTTP 异常/超时/鉴权失败），sleep 5 分钟注定再次失败——只白白阻塞启动/cron 数分钟
         # （NAS 场景 healthcheck 超时 → restart 循环）。故障直接走单源兜底。
         present_dn = p if p is not None else b  # 恰一源有效，必非 None
         missing_ok = p_ok if p is None else b_ok  # 缺失源是否「未开奖」而非「故障」
@@ -192,7 +219,11 @@ class FetchService:
         present_source_name: str,
     ) -> FetchResult | None:
         """grace 内重抓缺失源并双源校验。返回 FetchResult=已决（入库/拒绝）；None=重抓仍无/故障。"""
-        m2, m2_ok = self._try_fetch(missing_source, lottery_code)
+        m2, m2_outcome, m2_err = self._try_fetch(missing_source, lottery_code)
+        # grace 重抓结果同样落健康表（autoplan M7）：否则 grace 内恢复的源要等下个
+        # 抓取周期才转 ok，恢复通知无谓延迟一整轮（15 分钟）。
+        self._record_health(missing_source.name, m2_outcome, m2_err)
+        m2_ok = m2_outcome == 'ok'
         if not m2_ok or m2 is None:
             return None  # 仍无/故障 → 回主流程单源兜底
         if _numbers_match(m2, present_dn):

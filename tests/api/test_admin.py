@@ -127,8 +127,10 @@ def test_non_admin_forbidden(db_engine, monkeypatch):
 
 def test_admin_system_health(db_engine, monkeypatch):
     with Session(db_engine) as s:
-        s.add(ApiSourceHealth(source='mxnzp', status='ok'))
-        s.add(ApiSourceHealth(source='juhe', status='degraded'))
+        s.add(ApiSourceHealth(source='mxnzp', status='ok',
+                              last_success_at=datetime(2026, 9, 15, 4, 0, 0)))
+        s.add(ApiSourceHealth(source='juhe', status='degraded',
+                              down_since=datetime(2026, 9, 14, 20, 0, 0)))
         s.commit()
     client = _admin_client(db_engine, monkeypatch)
     r = client.get('/admin/health')
@@ -136,6 +138,34 @@ def test_admin_system_health(db_engine, monkeypatch):
     data = r.json()
     assert len(data['sources']) == 2
     assert {s['source'] for s in data['sources']} == {'mxnzp', 'juhe'}
+    # plan-11：每源返回 last_success_at/down_since（null 安全——空表行也要有键）
+    # design-voice D4：alerted（状态机输出）与 error（故障原因）同返——面板必须
+    # 回答「叫过人没有」「为什么挂」，只给时间是次有用的信息。
+    assert all({'last_success_at', 'down_since', 'alerted', 'error'} <= set(s) for s in data['sources'])
+    # eng-voice L1：按 source 索引而非数组下标——SQLite 返回序不契约化，
+    # 下标断言会把「顺序变了」误报成「值错了」。
+    by = {s['source']: s for s in data['sources']}
+    # autoplan D-3：naive UTC 落库值必须以 'Z' 显式标注 UTC——否则前端
+    # new Date() 按本地时区解析，面板故障起点显示偏差 8 小时（全程 Asia/Shanghai 纪律）。
+    assert by['mxnzp']['last_success_at'].endswith('Z')
+    assert by['juhe']['down_since'].endswith('Z')
+
+
+def test_admin_system_health_null_and_long_error(db_engine, monkeypatch):
+    """eng-voice M8.7/L3：空值与长 error 的边界——
+
+    _iso_utc(None) → None（不抛）；error 全文返回不截断（eng M6：截断移到前端，
+    后端截断会让 title 悬浮也只看到同一份截断文本，D17「全文可见」失效）。
+    """
+    long_error = 'x' * 300
+    with Session(db_engine) as s:
+        s.add(ApiSourceHealth(source='mxnzp', status='down', error=long_error))
+        s.commit()
+    client = _admin_client(db_engine, monkeypatch)
+    data = client.get('/admin/health').json()
+    src = {s['source']: s for s in data['sources']}['mxnzp']
+    assert src['last_success_at'] is None and src['down_since'] is None
+    assert src['error'] == long_error  # 后端不截断
 
 
 def test_admin_force_verify_writes_audit_log(db_engine, monkeypatch):

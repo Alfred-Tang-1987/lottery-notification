@@ -31,6 +31,7 @@ from app.api.security import (
 from app.config import get_cors_origins, get_settings
 from app.infrastructure.crypto import CryptoService
 from app.models import User
+from app.notifications.admin_alert import build_admin_alert
 from app.services.invite_service import InviteService
 from app.services.password_reset_service import (
     PasswordResetService,
@@ -217,7 +218,7 @@ def _reset_service(request: Request, engine: Engine) -> PasswordResetService:
     if limiter is None:
         limiter = RateLimiter(max_per_minute=3)
         request.app.state.password_reset_limiter = limiter
-    admin_alert = _build_admin_alert()
+    admin_alert = build_admin_alert()
     return PasswordResetService(
         engine,
         email_channel=channels.get('email'),
@@ -225,22 +226,6 @@ def _reset_service(request: Request, engine: Engine) -> PasswordResetService:
         rate_limiter=limiter,
         admin_alert=admin_alert,
     )
-
-
-def _build_admin_alert():
-    """admin Bark 告警（autoplan C1）：复用 ADMIN_BARK_KEY，未配则 None。"""
-    key = get_settings().admin_bark_key
-    if not key:
-        return None
-    from app.notifications.bark import BarkChannel
-    from app.notifications.base import NotificationPayload
-    bark = BarkChannel()
-    config = {'key': key, 'url': 'https://api.day.app'}
-
-    def _alert(title: str, body: str) -> None:
-        bark.send(NotificationPayload(title=title, body=body), config)
-
-    return _alert
 
 
 @router.post('/forgot-password')

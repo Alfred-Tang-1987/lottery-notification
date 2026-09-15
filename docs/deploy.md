@@ -84,6 +84,48 @@ docker compose exec app uv run python -m app.cli create-admin --username admin -
 - **升级**：`docker compose exec app /app/backup.sh && git pull && docker compose up -d --build`（Alembic 自动迁移；前端重新构建）
 - **健康**：`curl http://<主机>:8280/health`（200=正常；503=DB/启动校验失败）
 
+## 数据源健康告警
+
+- 机制：fetch 按源三态（ok/down/permanent）落 `api_source_health` 表；
+  `down` 持续 ≥ `SOURCE_HEALTH_ALERT_AFTER_MINUTES`（默认 30 分钟）→ admin Bark；
+  恢复 → 「已恢复」通知（故障时长）。送达失败下轮重试直到送达。
+  sender 惰性构造：无待发送项时不建 BarkChannel/httpx.Client（eng M2）。
+- 已知取舍（eng L2）：告警送达成功但落状态前恰好被并发 fetch 改写时，下一轮会
+  重发一次同样的告警（duplicate > silence）——看到重复告警不是 bug，不必追查。
+- 检测时机：path_a tick 尾部（开奖日 21:30–01:00 每 15 分钟）+ 每次启动 backfill 尾部。
+  **白天无抓取，故障最早在当晚 21:30 窗口发现**——「30 分钟」指进入抓取窗口后的计时。
+- 升级注意：旧版本升级的存量行 down_since 为 NULL——部署后需经过一个完整抓取
+  周期才开始记录故障起点（dx-voice F2）。
+- 面板：/admin/health（admin）返回 status/alerted/error/last_success_at/down_since
+  （时间为显式 UTC 'Z' 后缀）。示例：
+
+  ```bash
+  curl -b cookies.txt http://localhost:8280/admin/health | jq .sources
+  ```
+
+- 配置：ADMIN_BARK_KEY（通道）、SOURCE_HEALTH_ALERTS_ENABLED（独立开关，默认 true，
+  不影响密码重置 admin 通知）、SOURCE_HEALTH_ALERT_AFTER_MINUTES（阈值，默认 30）、
+  ADMIN_BARK_URL（自建 Bark 服务端时覆盖）。
+- 手工冒烟（dx-voice F1：不等真实故障，直接验证告警链路）：
+  SOURCE_HEALTH_ALERT_AFTER_MINUTES=0 重启后执行——
+
+  ```bash
+  docker compose exec app uv run python -c "
+  from app.db.engine import build_engine
+  from app.config import get_settings
+  from app.services.source_health import (
+      admin_alert_sender_factory, evaluate_source_alerts, record_source_health,
+  )
+  eng = build_engine(get_settings().database_url)
+  record_source_health(eng, 'mxnzp', 'down', 'manual smoke')
+  evaluate_source_alerts(eng, admin_alert_sender_factory)
+  print('check your Bark now')"
+  ```
+
+  预期：手机收到「开奖抓取持续失败」；随后
+  record_source_health(eng, 'mxnzp', 'ok') 再评估一次应收到「已恢复」，
+  且 /admin/health 该源回到 ok（alerted=none）。
+
 ## 密码重置
 
 三条路径，按场景选用，互不冲突（改密均同事务作废该用户活跃验证码，防止旧码把刚重置的密码改回）：

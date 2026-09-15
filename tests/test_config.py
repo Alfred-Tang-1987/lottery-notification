@@ -148,3 +148,53 @@ def test_get_settings_thread_safe(monkeypatch):
         t.join()
     first = instances[0]
     assert all(inst is first for inst in instances), 'get_settings returned distinct instances'
+
+
+def test_reset_settings_env_clears_source_health_env_vars(monkeypatch):
+    """conftest 自动 fixture 的 env 清除清单必须包含 plan-11 三个新 env（fixture 完整性守卫）。
+
+    终审 deferred：conftest._reset_settings_and_env 删除固定 env 清单，但漏了
+    SOURCE_HEALTH_ALERT_AFTER_MINUTES / SOURCE_HEALTH_ALERTS_ENABLED / ADMIN_BARK_URL——
+    任何依赖「测试间 env 隔离」的 plan-11 用例都会被前一个测试泄漏的 env 污染。
+
+    本测试先证明三个 env 确实映射进 Settings（env→Settings 映射有效），再结构性断言
+    conftest 删除清单包含三个名字——今日 RED（清单缺失），补清单后 GREEN。
+    """
+    from pathlib import Path
+
+    monkeypatch.setenv('JWT_SECRET', 'x' * 32)
+    monkeypatch.setenv('CRYPTO_KEY_V1', Fernet.generate_key().decode())
+    monkeypatch.setenv('SOURCE_HEALTH_ALERT_AFTER_MINUTES', '45')
+    monkeypatch.setenv('SOURCE_HEALTH_ALERTS_ENABLED', 'false')
+    monkeypatch.setenv('ADMIN_BARK_URL', 'https://bark.nas.local')
+    reset_settings_cache()
+    s = Settings()
+    assert s.source_health_alert_after_minutes == 45
+    assert s.source_health_alerts_enabled is False
+    assert s.admin_bark_url == 'https://bark.nas.local'
+
+    # 结构性守卫：conftest 删除清单必须覆盖三个 plan-11 env 名。
+    conftest_src = (Path(__file__).parent / 'conftest.py').read_text()
+    for name in (
+        'SOURCE_HEALTH_ALERT_AFTER_MINUTES',
+        'SOURCE_HEALTH_ALERTS_ENABLED',
+        'ADMIN_BARK_URL',
+    ):
+        assert name in conftest_src, f'conftest env 清除清单漏了 {name}（测试间 env 会泄漏）'
+
+
+def test_source_health_alert_settings_defaults(monkeypatch):
+    """plan-11 健康告警逃生舱默认值（F18/F19/F20）。"""
+    monkeypatch.setenv('JWT_SECRET', 'x' * 32)
+    from cryptography.fernet import Fernet
+    monkeypatch.setenv('CRYPTO_KEY_V1', Fernet.generate_key().decode())
+    from app.config import get_settings, reset_settings_cache
+    reset_settings_cache()
+    s = get_settings()
+    assert s.source_health_alerts_enabled is True
+    assert s.source_health_alert_after_minutes == 30
+    # 不写裸字面量：admin_bark_url 默认必须与 bark.py 的 DEFAULT_BARK_URL 兜底常量
+    # 一致（否则自建 Bark 场景下 settings 默认与 channel 兜底静默漂移，/simplify 防漂移钉）。
+    from app.notifications.bark import DEFAULT_BARK_URL
+
+    assert s.admin_bark_url == DEFAULT_BARK_URL

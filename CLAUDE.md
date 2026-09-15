@@ -116,6 +116,7 @@ export WORKFLOW_ENGINE_URL=<内网引擎仓库地址>   # 本机 shell 配置，
 - 通知渠道：bark/feishu/email（可插拔，每用户配置）
 - 推送策略：`every`(每期推) / `win_only`(仅中奖推)
 - 推送时机：大奖当晚即时简讯 + 次日 07:00 汇总
+- 数据源健康：fetch 三态落 `api_source_health`（ok/down/permanent→degraded）；down ≥ `SOURCE_HEALTH_ALERT_AFTER_MINUTES`（默认 30min，path_a 窗口内检测）→ admin Bark，恢复再通知；面板 `/admin/health`
 - 全程时区 Asia/Shanghai
 
 ## 文档导航

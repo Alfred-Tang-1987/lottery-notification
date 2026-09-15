@@ -396,3 +396,55 @@ def test_backfill_history_idempotent_on_restart(db_engine):
         from sqlmodel import select
         rows = list(s.exec(select(DrawResult).where(DrawResult.lottery_code == 'ssq')).all())
         assert len(rows) == 1
+
+
+def test_startup_backfill_paces_fetches_with_interval(db_engine, monkeypatch):
+    """启动回填对实际抓取的彩种加 QPS 间隔：第 2 个起每次 fetch 前 sleep（plan-11）。"""
+    import app.scheduler.backfill as backfill_mod
+
+    monkeypatch.setattr(backfill_mod.jobs_mod, '_INTER_LOTTERY_INTERVAL', 1.2)
+    sleeps = []
+    monkeypatch.setattr(backfill_mod.time, 'sleep', lambda s: sleeps.append(s))
+
+    # 3 个彩种全部 missed（DB 无开奖 + draw_days 覆盖回看窗口）
+    monkeypatch.setattr(
+        backfill_mod, '_enabled_lotteries',
+        lambda engine: [('a', [0, 1, 2, 3, 4, 5, 6]), ('b', [0, 1, 2, 3, 4, 5, 6]),
+                        ('c', [0, 1, 2, 3, 4, 5, 6])],
+    )
+    monkeypatch.setattr(backfill_mod, '_has_draw_for_date', lambda engine, code, d: False)
+
+    deps = _make_deps(db_engine)
+    run_startup_backfill(deps)
+    assert deps['fetch_service'].fetch_and_store.call_count == 3
+    assert sleeps == [1.2, 1.2]  # 首个抓取不 sleep
+
+
+def test_startup_backfill_evaluates_source_alerts(db_engine, monkeypatch):
+    """启动 backfill 尾部评估健康告警（plan-11：开机即评估）。"""
+    import app.scheduler.backfill as backfill_mod
+
+    spy = MagicMock()
+    monkeypatch.setattr(backfill_mod, 'evaluate_source_alerts', spy)
+    run_startup_backfill(_make_deps(db_engine))
+    assert spy.call_count == 1
+
+
+def test_startup_backfill_evaluate_failure_isolated(db_engine, monkeypatch, caplog):
+    """启动 backfill 尾部 evaluate_source_alerts 抛异常不得阻断/上抛（characterization 回归钉）。
+
+    终审 deferred：评估失败隔离 try/except 位于 run_startup_backfill 函数尾部、独立于
+    抓取循环的 try/except（backfill.py 尾部），行为已正确，本测试为 characterization
+    测试（预期无 RED）——钉死「不传播 + 记录 source_alert_evaluate_failed」契约。
+    """
+    import logging
+
+    import app.scheduler.backfill as backfill_mod
+
+    def _boom(engine, factory):
+        raise RuntimeError('evaluate outage (transient DB/alert channel)')
+
+    monkeypatch.setattr(backfill_mod, 'evaluate_source_alerts', _boom)
+    with caplog.at_level(logging.WARNING, logger='app.scheduler.backfill'):
+        run_startup_backfill(_make_deps(db_engine))  # 不传播 = 调用正常完成
+    assert 'source_alert_evaluate_failed' in caplog.text

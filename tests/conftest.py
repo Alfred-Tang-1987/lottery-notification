@@ -14,7 +14,7 @@ def _cookie_secure_off(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _disable_inter_lottery_interval(monkeypatch):
-    """全局：测试环境把 path_a_tick 彩种间 sleep 间隔降为 0，避免每测试 sleep 8s 拖慢套件。
+    """全局：测试环境把 path_a_tick / 启动 backfill 彩种间 sleep 间隔降为 0，避免每测试 sleep 8s 拖慢套件。
 
     生产默认 _INTER_LOTTERY_INTERVAL=1.2s（MXNZP 1 QPS 预防，L-20260726T013000Z）。
     需验证间隔逻辑的测试自行 monkeypatch 恢复 1.2（见
@@ -23,6 +23,9 @@ def _disable_inter_lottery_interval(monkeypatch):
     from app.scheduler import jobs as jobs_mod
 
     monkeypatch.setattr(jobs_mod, '_INTER_LOTTERY_INTERVAL', 0)
+
+    # backfill 经 jobs_mod 属性访问同一常量（/simplify：from-import 值拷贝会迫使
+    # 每个消费者各 patch 一处），此处单点 patch 即覆盖 path_a_tick 与启动 backfill。
 
 
 @pytest.fixture(autouse=True)
@@ -50,6 +53,9 @@ def _reset_settings_and_env(monkeypatch):
         'SMTP_PASS',
         'SMTP_FROM',
         'ADMIN_BARK_KEY',
+        'SOURCE_HEALTH_ALERT_AFTER_MINUTES',
+        'SOURCE_HEALTH_ALERTS_ENABLED',
+        'ADMIN_BARK_URL',
     ):
         monkeypatch.delenv(key, raising=False)
     reset_settings_cache()

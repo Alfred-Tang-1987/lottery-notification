@@ -338,4 +338,65 @@ describe("Admin.vue (T6f)", () => {
       fetch("/admin/unknown-endpoint"),
     ).rejects.toThrow(/Unexpected fetch/);
   });
+
+  // ─── plan-11 Task 6: 数据源健康卡（down 时长 / 告警标签 / error 摘要） ───
+
+  it('健康卡渲染 down 状态：时长、状态色 class、告警标签、error 摘要', async () => {
+    const downSince = new Date(Date.now() - 40 * 60000).toISOString();
+    await mount({
+      health: {
+        sources: [
+          { source: 'mxnzp', status: 'down', alerted: 'alerted',
+            error: 'dns boom', last_success_at: null, down_since: downSince },
+          { source: 'juhe', status: 'ok', alerted: 'none',
+            error: null, last_success_at: new Date().toISOString(), down_since: null },
+        ],
+      },
+    });
+    const items = host.querySelectorAll('.source-item');
+    expect(items).toHaveLength(2);
+    const down = items[0];
+    expect(down.querySelector('.source-status')!.classList.contains('down')).toBe(true);
+    expect(down.querySelector('.source-meta')!.textContent).toContain('已故障');
+    expect(down.querySelector('.source-meta')!.textContent).toContain('分钟');
+    expect(down.querySelector('.source-alert-tag')!.textContent).toBe('已通知');
+    expect(down.querySelector('.source-error')!.textContent).toContain('dns boom');
+  });
+
+  it('健康卡空态保留（v-else 不被模板改动删除）', async () => {
+    await mount({ health: { sources: [] } });
+    expect(host.querySelector('.empty-tip')).not.toBeNull();
+  });
+
+  it('eng M3a：recovering 的 ok 行显示「最后成功」而非「已故障」（面板不说谎）', async () => {
+    await mount({
+      health: {
+        sources: [
+          { source: 'mxnzp', status: 'ok', alerted: 'recovering',
+            error: null, last_success_at: new Date().toISOString(),
+            down_since: new Date(Date.now() - 2 * 3600000).toISOString() },
+        ],
+      },
+    });
+    const meta = host.querySelector('.source-item .source-meta')!;
+    expect(meta.textContent).toContain('最后成功');
+    expect(meta.textContent).not.toContain('已故障');
+    expect(host.querySelector('.source-alert-tag')!.textContent).toBe('恢复待通知');
+  });
+
+  it('eng M6：长 error 内联截断 + 省略号可见，title 悬浮为全文', async () => {
+    const longError = 'e'.repeat(300);
+    await mount({
+      health: {
+        sources: [
+          { source: 'mxnzp', status: 'down', alerted: 'none',
+            error: longError, last_success_at: null, down_since: null },
+        ],
+      },
+    });
+    const err = host.querySelector('.source-error')!;
+    expect(err.textContent).toHaveLength(81); // 80 + '…'
+    expect(err.textContent!.endsWith('…')).toBe(true);
+    expect(err.getAttribute('title')).toBe(longError);
+  });
 });

@@ -396,7 +396,8 @@ def test_httpx_channels_close_cleanly():
 # API 契约（app/api/channels.py _REQUIRED_CONFIG_KEYS['bark']={'key'}）明确 url 可选，
 # 注释「url 有服务端默认」。但旧 BarkChannel.send 用 config['url'] 直接取，缺 url 即
 # KeyError -> 被 send 的 except 吞成 FAILED -> 全渠道失败 -> admin 告警 -> 推送丢失。
-# 与 main.py admin_bark_config 默认 https://api.day.app 对齐，缺 url 时走该默认。
+# 与 settings.admin_bark_url 默认（= bark.DEFAULT_BARK_URL，防漂移钉见
+# test_source_health_alert_settings_defaults）对齐，缺 url 时走该默认。
 # ---------------------------------------------------------------------------
 
 
