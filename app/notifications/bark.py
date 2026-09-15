@@ -11,7 +11,8 @@ from app.notifications.base import (
 # API 层 _REQUIRED_CONFIG_KEYS['bark']={'key'} 明确 url 可选（channels.py:46），
 # Channel 实现必须与此契约对齐，否则用户只填 key 时 send 在 config['url'] 处
 # KeyError -> 被吞成 FAILED -> 全渠道失败 -> 推送静默丢失（2026-07-28 NAS 实测）。
-# 与 main.py admin_bark_config 默认 url 同源，保持单一默认真源。
+# 与 settings.admin_bark_url 默认值同源（admin_alert.admin_bark_config 组装；
+# test_source_health_alert_settings_defaults 钉住两者一致），保持单一默认真源。
 DEFAULT_BARK_URL = 'https://api.day.app'
 
 
