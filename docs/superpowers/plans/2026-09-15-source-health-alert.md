@@ -618,6 +618,25 @@ def test_threshold_falls_back_when_settings_unavailable(db_engine, caplog):
     assert 'alert_threshold_settings_unavailable' in caplog.text
 ```
 
+
+def test_fallback_threshold_matches_settings_default():
+    """兜底常量必须与 settings 默认值一致（防漂移，复核修订 2026-09-15）。
+
+    阈值真值源是 `settings.source_health_alert_after_minutes`（F19 逃生舱，可配可改）；
+    `_DEFAULT_ALERT_AFTER_MINUTES` 只是「settings 读不到」时的兜底值。两处若漂移，
+    故障场景下会静默使用错误阈值——用测试钉住。
+
+    本用例只读类级字段（不实例化 Settings），故在无密钥环境下也成立。
+    """
+    from app.config import Settings
+
+    from app.services.source_health import _DEFAULT_ALERT_AFTER_MINUTES
+
+    assert _DEFAULT_ALERT_AFTER_MINUTES == (
+        Settings.model_fields['source_health_alert_after_minutes'].default
+    )
+```
+
 - [ ] **Step 2: 跑测试确认失败**
 
 Run: `uv run pytest tests/services/test_source_health.py -q`
@@ -673,6 +692,8 @@ def _down_alert_after() -> timedelta:
     ValidationError，实测）会沿调用链上抛；写入侧那个异常还会被 `_record_health` 的
     `except Exception` 吞掉——健康表从此**静默停写**（silent-failure 纪律不允许）。
     回退到 30 分钟 + warning 留痕：告警阈值退化，但健康观测链路继续工作。
+    **真值源仍是 settings**（F19 逃生舱：正常路径一律读配置，可随环境调整）；
+    本常量仅兜底，并由 `test_fallback_threshold_matches_settings_default` 钉住不漂移。
     """
     try:
         from app.config import get_settings
@@ -771,7 +792,7 @@ def record_source_health(
 - [ ] **Step 4: 跑测试确认通过**
 
 Run: `uv run pytest tests/services/test_source_health.py -q`
-Expected: 11 passed（原 5 + M11×2 + M13×1 + D7×1 + eng M3b×1 + 阈值回退×1；M3a 改写 1 个既有用例期望）。
+Expected: 12 passed（原 5 + M11×2 + M13×1 + D7×1 + eng M3b×1 + 阈值回退×1 + 兜底常量防漂移×1；M3a 改写 1 个既有用例期望）。
 
 - [ ] **Step 5: FetchService 三态接线（回归保护既有语义）**
 
@@ -1305,7 +1326,7 @@ def admin_alert_sender_factory() -> Callable[[str, str], None] | None:
 - [ ] **Step 4: 跑测试确认通过**
 
 Run: `uv run pytest tests/services/test_source_health.py -q`
-Expected: 24 passed（Task 3 的 11 + 本任务 13：原 9 + eng M2 工厂惰性回归 + M8.4 影响分支×2 + M3a 重告警）。
+Expected: 25 passed（Task 3 的 12 + 本任务 13：原 9 + eng M2 工厂惰性回归 + M8.4 影响分支×2 + M3a 重告警）。
 
 - [ ] **Step 5: Commit**
 
@@ -2568,7 +2589,7 @@ marker 的 `newText` 还原）：
 
 | # | 缺陷（实测复现） | 修复 |
 |---|---|---|
-| R1 | `_down_alert_after()` 直接调 `get_settings()`：测试环境 conftest 删必填密钥 → `ValidationError` 沿调用链上抛，写入侧还被 `_record_health` 的 except 吞掉（**健康表静默停写**）；Task 3/4 大面积用例不可达。上轮 E2 只修了 sender 侧，漏了阈值侧 | 阈值读取加安全回退（默认 30 分钟 + warning），新增 `test_threshold_falls_back_when_settings_unavailable` |
+| R1 | `_down_alert_after()` 直接调 `get_settings()`：测试环境 conftest 删必填密钥 → `ValidationError` 沿调用链上抛，写入侧还被 `_record_health` 的 except 吞掉（**健康表静默停写**）；Task 3/4 大面积用例不可达。上轮 E2 只修了 sender 侧，漏了阈值侧 | 阈值读取加安全回退（默认 30 分钟 + warning），新增 `test_threshold_falls_back_when_settings_unavailable`；settings 仍为唯一真值源（F19 逃生舱未被架空），兜底常量由 `test_fallback_threshold_matches_settings_default` 钉住与 settings 默认值一致 |
 | R2 | Task 2 实现用 `settings.admin_bark_url`，该字段原在 Task 5 Step 5.5 才创建 → `AttributeError`，Task 2 全挂 | config 三字段 + `main.py` 同源 + 默认值测试**前移**为 Task 2 Step 1-4；Task 5 对应步改为指针（保留编号以免破坏交叉引用） |
 | R3 | 迁移测试裸 SQL `INSERT (source)` 漏 `created_at`/`status`（二者 NOT NULL 且无 server_default）→ `IntegrityError`，正确实现也失败 | INSERT 补齐两列；对真实迁移库实测通过（含 t11 加列后 `alerted` 缺省回读 = `none`） |
 | R4 | M8.1 守卫用例 `monkeypatch.setattr(FetchService, '_record_health', _boom)`：类属性替换变 bound method → `TypeError`；且连带替换掉它要守的 except/日志两行，断言永假 | 改为 patch 模块属性 `app.services.source_health.record_source_health`（`_record_health` 函数内 import → 调用时解析，实测生效），构造按该测试文件既有 `_src` + `FetchService(...)` 惯例写出 |
