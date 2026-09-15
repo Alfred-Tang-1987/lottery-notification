@@ -49,8 +49,8 @@ mxnzp code=101）。
 
 | 源抓取结果 | 健康表动作 |
 |---|---|
-| ok（含未开奖） | `status=ok`、`last_success_at=now`、`down_since=NULL`、`alerted` 非 `none` → `recovering` |
-| 失败（Transient 层异常耗尽） | `status=down`、`error=摘要`、`down_since` 为空则置 `now`（非空保留原值——故障起点不刷新） |
+| ok（含未开奖） | `status=ok`、`last_success_at=now`、`error=None`；`alerted` 为 `none` → 清 `down_since`；`alerted` 非 `none` → 转 `recovering` 且**保留 `down_since`**（供恢复通知计算故障时长，评估侧送达后清除） |
+| 失败（Transient 层异常耗尽） | `status=down`、`error=摘要`、`down_since` 为空则置 `now`（非空保留原值——故障起点不刷新）；`alerted=='recovering'` → 回 `'alerted'`（抖动源在恢复通知送出前再次失败，取消过时的待发通知） |
 | `PermanentLookupError` | 仅 `error=摘要`，其余不动 |
 
 ### 1.3 评估与告警状态机（新函数 `_evaluate_source_alerts(engine)`）
@@ -67,7 +67,7 @@ mxnzp code=101）。
 |---|---|---|
 | `none` | down ≥ 30min | 发 Bark「开奖抓取持续失败」（源 / 故障起点 / 已持续时长 / 最近 error 摘要）；**送达成功** → `alerted`；发送异常 → 保持 `none`（下轮重试） |
 | `alerted` | 仍 down | 不发（防每 15 分钟轰炸） |
-| `recovering` | （待送恢复通知） | 发 Bark「已恢复」（源 / 故障时长）；送达成功 → `none`；发送异常 → 保持 `recovering`（下轮重试） |
+| `recovering` | （待送恢复通知，status=ok） | 发 Bark「已恢复」（源 / 故障时长，取 `down_since` 计算）；送达成功 → `none` 并清 `down_since`；发送异常 → 保持 `recovering`（下轮重试） |
 | `none` | 正常 | 无动作 |
 
 注 1：`alerted → recovering` 的转移发生在**写入侧**（1.2：恢复成功的抓取把非 `none`
@@ -99,9 +99,10 @@ naive/aware 混比。
 ## 二、启动回填 QPS 间隔
 
 `app/scheduler/backfill.py` `run_startup_backfill` 第 4 步（missed-draw 检查循环，
-backfill.py:52-56）：第二个彩种起抓取前 `time.sleep(_INTER_LOTTERY_INTERVAL)`——镜像
-`_path_a_tick` 既有做法（jobs.py:177，L-20260726T013000Z 同源理由：mxnzp 免费账号
-QPS=1，连续请求触发 code=101 白耗重试）。
+backfill.py:52-56）：**对实际发起抓取的彩种**，第二个起抓取前 `time.sleep
+(_INTER_LOTTERY_INTERVAL)`（missed 检查命中的彩种才 fetch，间隔只加在真实请求之间，
+不为跳过的彩种白等）——镜像 `_path_a_tick` 既有做法（jobs.py:177，L-20260726T013000Z
+同源理由：mxnzp 免费账号 QPS=1，连续请求触发 code=101 白耗重试）。
 
 - 常量在 backfill.py 本地定义 `_INTER_LOTTERY_INTERVAL = 1.2`（backfill 被 jobs import，
   反向 import 会循环依赖）；注释注明与 jobs.py 同源同值。
