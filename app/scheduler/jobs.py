@@ -15,6 +15,7 @@ from app.scheduler import _JobDeps
 from app.services.compare_service import CompareService
 from app.services.fetch_service import FetchService
 from app.services.refill_service import _FLOAT_TIERS, FloatRefillWorker
+from app.services.source_health import admin_alert_sender_factory, evaluate_source_alerts
 
 _CST = ZoneInfo('Asia/Shanghai')
 
@@ -247,6 +248,14 @@ def _path_a_tick(db_url: str) -> None:
         # 调度器无法启动 → 中奖静默漏通知（spec §10）。运行时经 _resolve_deps(db_url) 取回
         # notifier 后调用，与 _path_a_tick/_path_b_summary 同构（见 _push_big_win）。
         sched.add_job(_push_big_win, 'date', args=[db_url], kwargs=params)
+
+    # 数据源健康评估（plan-11）：tick 尾部评估告警状态机（down≥阈值 → admin bark）。
+    # sender 经工厂惰性构造（eng H1/M2）：无待发送项时不碰 get_settings/httpx；
+    # 评估失败不阻断本 tick 收尾。
+    try:
+        evaluate_source_alerts(engine, admin_alert_sender_factory)
+    except Exception:
+        logger.error('source_alert_evaluate_failed', exc_info=True)
 
 
 def _push_big_win(db_url: str, **params) -> None:

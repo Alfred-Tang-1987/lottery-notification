@@ -1218,3 +1218,68 @@ def test_period_summary_does_not_deadlock_with_real_notifier(db_engine):
     with Session(db_engine) as s:
         logs = s.exec(select(NotificationLog).where(NotificationLog.user_id == uid)).all()
         assert len(logs) >= 1, '修复后必须写出 NotificationLog（死锁时 0 条）'
+
+
+def test_path_a_tick_evaluates_source_alerts(db_engine, monkeypatch):
+    """path_a_tick 尾部必须评估数据源健康告警（plan-11：tick 即评估点）。"""
+    from unittest.mock import MagicMock
+
+    import app.scheduler.jobs as jobs_mod
+    from app.scheduler.jobs import register_all_jobs
+    from app.scheduler.setup import build_scheduler
+
+    spy = MagicMock()
+    monkeypatch.setattr(jobs_mod, 'evaluate_source_alerts', spy)
+    sched = build_scheduler(db_engine)
+    register_all_jobs(
+        sched,
+        {
+            'engine': db_engine,
+            'fetch_service': MagicMock(),
+            'compare_service': MagicMock(),
+            'refill_worker': MagicMock(),
+            'notifier': MagicMock(),
+        },
+    )
+    _invoke_job(sched, 'path_a_poll_evening')
+    assert spy.call_count == 1
+    # engine 为第一参数；第二参数是 sender 工厂（eng H1/M2 惰性设计：本测试健康表
+    # 为空、无待发送项，真实评估器根本不会调用工厂——无需注入 JWT_SECRET 等 env）。
+    assert spy.call_args.args[0] is db_engine
+
+
+def test_path_a_tick_sender_none_when_alerts_disabled(db_engine, monkeypatch):
+    """SOURCE_HEALTH_ALERTS_ENABLED=false → sender 工厂返回 None（dx-voice F18 独立开关：
+
+    配了 ADMIN_BARK_KEY 也不发——健康告警与密码重置告警不共用一个总开关）。
+    eng-voice H1：直接调用工厂验证开关语义，需合法 JWT_SECRET/CRYPTO_KEY_V1 env
+    （conftest autouse 会删，test_admin.py:15-18 范式补回）。
+    """
+    from unittest.mock import MagicMock
+
+    import app.scheduler.jobs as jobs_mod
+    from app.scheduler.jobs import register_all_jobs
+    from app.scheduler.setup import build_scheduler
+
+    monkeypatch.setenv('JWT_SECRET', 'x' * 32)
+    from cryptography.fernet import Fernet
+    monkeypatch.setenv('CRYPTO_KEY_V1', Fernet.generate_key().decode())
+    monkeypatch.setenv('ADMIN_BARK_KEY', 'test-key')
+    monkeypatch.setenv('SOURCE_HEALTH_ALERTS_ENABLED', 'false')
+    spy = MagicMock()
+    monkeypatch.setattr(jobs_mod, 'evaluate_source_alerts', spy)
+    sched = build_scheduler(db_engine)
+    register_all_jobs(
+        sched,
+        {
+            'engine': db_engine,
+            'fetch_service': MagicMock(),
+            'compare_service': MagicMock(),
+            'refill_worker': MagicMock(),
+            'notifier': MagicMock(),
+        },
+    )
+    _invoke_job(sched, 'path_a_poll_evening')
+    assert spy.call_count == 1
+    factory = spy.call_args.args[1]
+    assert factory() is None  # 开关关闭 → 工厂拒绝构造 sender（F6 由此触发）
