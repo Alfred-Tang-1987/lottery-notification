@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from sqlalchemy.engine import Engine
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from app.models import ApiSourceHealth
 
@@ -138,3 +138,147 @@ def record_source_health(
         else:
             raise ValueError(f'unknown outcome: {outcome}')
         s.commit()
+
+
+def evaluate_source_alerts(
+    engine: Engine,
+    sender_factory: Callable[[], Callable[[str, str], None] | None],
+    now: NowFn = now_naive_utc,
+) -> None:
+    """评估健康表驱动告警状态机（spec §1.3；挂载于 path_a tick 尾 + 启动 backfill 尾）。
+
+    sender_factory（eng-voice H1/M2）：惰性构造 sender 的工厂——只在确有告警/恢复
+    待发送时才调用。无待发送项时绝不调用：不新建未关闭的 BarkChannel/httpx.Client
+    （bark.py:35-37，client 仅经 close() 释放），也不在健康表全 ok 时触碰
+    get_settings()（H1：调度测试环境 conftest 删 JWT_SECRET/CRYPTO_KEY_V1，
+    无条件调 get_settings() 会 ValidationError 被外层 except 吞掉，评估静默不执行）。
+    工厂返回 None（ADMIN_BARK_KEY 未配 / SOURCE_HEALTH_ALERTS_ENABLED=false）→
+    不发送也**不转移**（dx-voice F6：alerted 的语义是「故障告警已送达」（spec §1.1），
+    未送达就标 alerted 是状态说谎——面板会显示「已通知」而实际无人收到；保持 none
+    并每次评估 warning 一次，配好 key 后下一轮评估自然补发）。
+    发送异常不转移状态（下轮重试直到送达）——2026-09-15 DNS 事故教训：故障期
+    告警通道大概率同时挂。
+
+    两阶段（autoplan M1，pool_size=1 纪律）：短 session 读+决策后关闭 → session
+    外发 HTTP 告警 → 短 session 守卫重读后落转移。绝不在持有唯一连接的 session
+    内做 httpx 调用——DNS 故障（本 plan 目标场景）下 Bark 挂到 10s 超时，同期
+    其他 job/请求借不到连接撞 busy_timeout，告警机制反而制造它要防的漏通知
+    （jobs.py:276-278/339、password_reset_service.py:131/204 两次实测事故同型）。
+    落转移前重读校验状态未变：读与落之间若有 fetch 写入（如故障恰好恢复），
+    放弃本轮转移下轮重评，不覆盖并发写入（eng-voice L2 已知取舍：此时已送达的
+    告警下一轮可能因状态未落而重复发送一次——duplicate > silence，运维看到
+    重复告警比漏告警安全；deploy.md 写明避免误当 bug 追查）。
+    """
+    t = now()
+    # 阶段 1：短 session 读 + 决策（快照出 session，不留 ORM 对象跨 session）
+    with Session(engine) as s:
+        rows = [
+            (h.source, h.status, h.alerted, h.down_since, h.error)
+            for h in s.exec(select(ApiSourceHealth)).all()
+        ]
+    # 备源状态速查（design-voice D5：告警体必须回答「开奖是否受影响」——
+    # 单源 down 但备源正常时，告警文案若暗示漏开奖是最快的静音之路）。
+    peer_status = {source: status for source, status, *_ in rows}
+
+    # 阶段 1.5：先决策出全部待发送项；没有就直接返回——工厂不被调用（eng M2）。
+    pending: list[tuple[str, str, str, str]] = []  # (source, 目标 alerted, title, body)
+    for source, status, alerted, down_since, error in rows:
+        if (
+            status == 'down'
+            and alerted == 'none'
+            and down_since is not None
+            and t - down_since >= _down_alert_after()
+        ):
+            minutes = int((t - down_since).total_seconds() // 60)
+            peers = {p: ps for p, ps in peer_status.items() if p != source}
+            if not peers:
+                impact = '仅此一个数据源，开奖可能延迟入库'
+            elif all(ps == 'ok' for ps in peers.values()):
+                impact = f'备用源正常（{"、".join(peers)}），开奖未受影响'
+            elif any(ps == 'down' for ps in peers.values()):
+                impact = '双源同时故障，开奖可能延迟入库'
+            else:
+                # 备源 unknown/degraded（如 juhe 未配置）——不是「双源故障」，
+                # 但主源 down 时实际上只剩单点，延迟风险同样要说清。
+                impact = (
+                    f'备用源非健康（{"、".join(f"{p}={ps}" for p, ps in peers.items())}），'
+                    f'开奖可能延迟入库'
+                )
+            # 文案不带绝对时间（design-voice D3：UTC 括号与同句的分钟数
+            # 相差 8h 自相矛盾；时长已足够定位）。fix 指引（dx-voice F10：
+            # problem+cause+fix——半夜收到的人需要知道下一步做什么）。
+            pending.append((
+                source,
+                'alerted',
+                '开奖抓取持续失败',
+                f'数据源 {source} 已持续失败约 {minutes} 分钟。{impact}。'
+                f'最近错误：{(error or "")[:200]}。'
+                f'处理：检查 NAS 网络/DNS 与上游状态；面板 /admin/health 查看；'
+                f'详见 docs/deploy.md「数据源健康告警」。',
+            ))
+        elif alerted == 'recovering' and status == 'ok':
+            duration = t - down_since if down_since else timedelta(0)
+            minutes = int(duration.total_seconds() // 60)
+            # 诚实声明缺口（design-voice D6：闭环不能只到「恢复」——
+            # 故障窗口的开奖是否补回，admin 必须知道要不要人工介入）。
+            pending.append((
+                source,
+                'none',
+                '开奖抓取已恢复',
+                f'数据源 {source} 已恢复抓取（故障持续约 {minutes} 分钟）。'
+                f'故障期间的开奖缺失将随今晚 path_a 轮询与启动回填'
+                f'（最近 2 天）覆盖；更长缺口请人工确认是否需要补抓。',
+            ))
+    if not pending:
+        return
+
+    # 阶段 2：惰性取 sender（此刻才碰 settings/BarkChannel，eng H1/M2）；
+    # F6：取不到就不发送不转移，每次评估 warning 一次。
+    send_alert = sender_factory()
+    if send_alert is None:
+        logger.warning(
+            'source_alerts_disabled reason=no_sender '
+            '(ADMIN_BARK_KEY 未配或 SOURCE_HEALTH_ALERTS_ENABLED=false)：'
+            '健康告警只落表不发送'
+        )
+        return
+    # session 外发送；送达成功的进待落清单
+    delivered: list[tuple[str, str]] = []  # (source, 目标 alerted 状态)
+    for source, target, title, body in pending:
+        try:
+            send_alert(title, body)
+        except Exception:
+            # error 级（dx-voice F12：告警链路本身挂了是重大运维事件，
+            # 不是普通 warning；重试语义不变——下轮继续尝试直到送达）。
+            logger.error('source_alert_send_failed source=%s', source, exc_info=True)
+            continue  # 未送达不转移，下轮重试
+        delivered.append((source, target))
+    if not delivered:
+        return
+    # 阶段 3：短 session 守卫重读后落转移（recovering 完成时清 down_since）
+    with Session(engine) as s:
+        for source, target in delivered:
+            h = s.get(ApiSourceHealth, source)
+            if h is None:
+                continue
+            if target == 'alerted' and h.alerted == 'none' and h.status == 'down':
+                h.alerted = 'alerted'
+            elif target == 'none' and h.alerted == 'recovering' and h.status == 'ok':
+                h.alerted = 'none'
+                h.down_since = None
+        s.commit()
+
+
+def admin_alert_sender_factory() -> Callable[[str, str], None] | None:
+    """健康告警 sender 工厂（dx-voice F18 独立开关 + eng-voice H1/M2 惰性构造）。
+
+    SOURCE_HEALTH_ALERTS_ENABLED=false → None（健康告警与密码重置告警不共用
+    一个总开关）；开关开但 ADMIN_BARK_KEY 未配 → build_admin_alert() 自身返回 None。
+    评估器只在确有待发送项时才调用本工厂——无待发送项不碰 settings/httpx。
+    """
+    from app.config import get_settings
+    from app.notifications.admin_alert import build_admin_alert
+
+    if not get_settings().source_health_alerts_enabled:
+        return None
+    return build_admin_alert()

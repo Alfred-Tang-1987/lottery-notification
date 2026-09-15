@@ -1,11 +1,12 @@
 """数据源健康落表语义（plan-11 spec §1.2）。时间均 naive UTC。"""
 
+import logging
 from datetime import datetime, timedelta
 
 from sqlmodel import Session
 
 from app.models import ApiSourceHealth
-from app.services.source_health import record_source_health
+from app.services.source_health import evaluate_source_alerts, record_source_health
 
 
 def _get(engine, source='mxnzp') -> ApiSourceHealth:
@@ -176,3 +177,211 @@ def test_fallback_threshold_matches_settings_default():
     assert (
         Settings.model_fields['source_health_alert_after_minutes'].default
     ) == _DEFAULT_ALERT_AFTER_MINUTES
+
+
+# ---------- evaluate_source_alerts 状态机（spec §1.3） ----------
+
+
+class _Recorder:
+    """记 send_alert 调用；可控抛异常模拟「告警通道也挂了」（DNS 教训）。"""
+
+    def __init__(self, fail_first=0):
+        self.calls = []
+        self.fail_first = fail_first
+
+    def __call__(self, title, body):
+        if self.fail_first > 0:
+            self.fail_first -= 1
+            raise ConnectionError('bark down')
+        self.calls.append((title, body))
+
+
+def _seed_down(engine, down_since, alerted='none', status='down'):
+    with Session(engine) as s:
+        s.add(ApiSourceHealth(source='mxnzp', status=status, alerted=alerted,
+                              down_since=down_since, last_success_at=None))
+        s.commit()
+
+
+def test_evaluate_no_alert_before_threshold(db_engine):
+    """down 不足 30 分钟 → 不告警。"""
+    t = datetime(2026, 9, 15, 13, 0, 0)
+    _seed_down(db_engine, down_since=t - timedelta(minutes=29))
+    rec = _Recorder()
+    evaluate_source_alerts(db_engine, lambda: rec, now=lambda: t)
+    assert rec.calls == []
+    assert _get(db_engine).alerted == 'none'
+
+
+def test_evaluate_alerts_once_after_threshold(db_engine):
+    """down ≥30 分钟 → 告警一次并置 alerted；继续 down 不重复告警。"""
+    t = datetime(2026, 9, 15, 13, 0, 0)
+    _seed_down(db_engine, down_since=t - timedelta(minutes=31))
+    rec = _Recorder()
+    evaluate_source_alerts(db_engine, lambda: rec, now=lambda: t)
+    evaluate_source_alerts(db_engine, lambda: rec, now=lambda: t + timedelta(minutes=15))
+    assert len(rec.calls) == 1 and '持续失败' in rec.calls[0][0]
+    assert _get(db_engine).alerted == 'alerted'
+
+
+def test_evaluate_send_failure_keeps_state_and_retries(db_engine):
+    """发送异常 → 状态保持 none，下轮重试；送达成功才转移（DNS 教训回归）。"""
+    t = datetime(2026, 9, 15, 13, 0, 0)
+    _seed_down(db_engine, down_since=t - timedelta(minutes=40))
+    rec = _Recorder(fail_first=1)
+    evaluate_source_alerts(db_engine, lambda: rec, now=lambda: t)
+    assert rec.calls == [] and _get(db_engine).alerted == 'none'
+    evaluate_source_alerts(db_engine, lambda: rec, now=lambda: t + timedelta(minutes=15))
+    assert len(rec.calls) == 1 and _get(db_engine).alerted == 'alerted'
+
+
+def test_recovery_notice_sent_then_reset(db_engine):
+    """alerted → 抓取恢复（写入侧置 recovering）→ 评估送出恢复通知 → none+清 down_since。"""
+    t = datetime(2026, 9, 15, 13, 0, 0)
+    _seed_down(db_engine, down_since=t - timedelta(hours=2), alerted='alerted')
+    record_source_health(db_engine, 'mxnzp', 'ok', now=lambda: t)  # → recovering
+    rec = _Recorder()
+    evaluate_source_alerts(db_engine, lambda: rec, now=lambda: t)
+    assert len(rec.calls) == 1 and '恢复' in rec.calls[0][0]
+    h = _get(db_engine)
+    assert h.alerted == 'none' and h.down_since is None
+
+
+def test_recovery_send_failure_retries(db_engine):
+    """恢复通知发送失败 → 保持 recovering，下轮送达才回 none。"""
+    t = datetime(2026, 9, 15, 13, 0, 0)
+    _seed_down(db_engine, down_since=t - timedelta(hours=2), alerted='alerted')
+    record_source_health(db_engine, 'mxnzp', 'ok', now=lambda: t)
+    rec = _Recorder(fail_first=1)
+    evaluate_source_alerts(db_engine, lambda: rec, now=lambda: t)
+    assert _get(db_engine).alerted == 'recovering'
+    evaluate_source_alerts(db_engine, lambda: rec, now=lambda: t + timedelta(minutes=15))
+    assert _get(db_engine).alerted == 'none'
+
+
+def test_no_sender_keeps_state_and_logs(db_engine, caplog):
+    """sender_factory 返回 None（未配 key / 开关关闭）→ 不发送也**不转移**（dx-voice F6：
+
+    alerted 的语义是「故障告警已送达」（spec §1.1），未送达标 alerted 是状态说谎——
+    面板会显示「已通知」而无人收到。保持 none + 每次评估 warning 一次；
+    配好 key 后下一轮自然补发。
+    """
+    t = datetime(2026, 9, 15, 13, 0, 0)
+    _seed_down(db_engine, down_since=t - timedelta(minutes=40))
+    with caplog.at_level(logging.WARNING, logger='app.services.source_health'):
+        evaluate_source_alerts(db_engine, lambda: None, now=lambda: t)
+    assert _get(db_engine).alerted == 'none'
+    assert 'source_alerts_disabled' in caplog.text
+
+
+def test_record_down_then_permanent_stops_alerting(db_engine):
+    """down（down_since 已置）之后接 permanent（运行中 key 被删）→ 清 down_since
+    置 degraded，评估器不再按运行故障告警（dx-voice F11：否则「持续失败 1440 分钟」
+    误报，与「配置态不告警」立意冲突）。"""
+    t0 = datetime(2026, 9, 15, 4, 0, 0)
+    record_source_health(db_engine, 'juhe', 'down', 'boom', now=lambda: t0)
+    record_source_health(db_engine, 'juhe', 'permanent', 'juhe api_key not configured',
+                         now=lambda: t0 + timedelta(hours=1))
+    h = _get(db_engine, 'juhe')
+    assert h.status == 'degraded' and h.down_since is None
+    rec = _Recorder()
+    evaluate_source_alerts(db_engine, lambda: rec, now=lambda: t0 + timedelta(hours=2))
+    assert rec.calls == []
+
+
+def test_evaluate_sends_outside_db_session(db_engine):
+    """M1 回归：send_alert 调用时评估器不得持有 DB 连接（pool_size=1 纪律）。
+
+    若评估器在 session 内发送（plan 原稿），DNS 故障下 Bark 挂 10s 超时期间
+    唯一连接被占，其他 job/请求撞 busy_timeout——jobs.py:276-278 两次事故同型。
+    """
+    t = datetime(2026, 9, 15, 13, 0, 0)
+    _seed_down(db_engine, down_since=t - timedelta(minutes=40))
+    checked_out_during_send = []
+
+    def _sender(title, body):
+        checked_out_during_send.append(db_engine.pool.checkedout())
+
+    evaluate_source_alerts(db_engine, lambda: _sender, now=lambda: t)
+    assert checked_out_during_send == [0]
+
+
+def test_alert_body_includes_peer_source_status(db_engine):
+    """告警体必须含备源状态（design-voice D5）：备源 ok 时明说「开奖未受影响」，
+    避免单源故障的告警读起来像已经漏开奖（告警疲劳最快路径）。"""
+    t = datetime(2026, 9, 15, 13, 0, 0)
+    _seed_down(db_engine, down_since=t - timedelta(minutes=40))
+    with Session(db_engine) as s:
+        s.add(ApiSourceHealth(source='juhe', status='ok'))
+        s.commit()
+    rec = _Recorder()
+    evaluate_source_alerts(db_engine, lambda: rec, now=lambda: t)
+    assert len(rec.calls) == 1
+    assert '备用源正常' in rec.calls[0][1] and '开奖未受影响' in rec.calls[0][1]
+    assert '（自' not in rec.calls[0][1]  # D3：不带 UTC 绝对时间（与同句分钟数矛盾）
+
+
+def test_factory_not_called_when_nothing_pending(db_engine):
+    """eng-voice M2 回归：无待发送项时 sender 工厂不得被调用——
+
+    工厂背后是 build_admin_alert()（新建 BarkChannel/httpx.Client）。若每 tick
+    无条件构造，pool_size=1 单连接进程每天泄漏 ~96 个未关闭 client（bark.py:35-37
+    client 仅经 close() 释放；notifier.py:271-290 把 close 当一等纪律）。
+    """
+    factory_spy = _Recorder()  # 复用 calls 记录；作为工厂被调即留痕
+    with Session(db_engine) as s:
+        s.add(ApiSourceHealth(source='mxnzp', status='ok',
+                              last_success_at=datetime(2026, 9, 15, 12, 0, 0)))
+        s.commit()
+    evaluate_source_alerts(db_engine, factory_spy, now=lambda: datetime(2026, 9, 15, 13, 0, 0))
+    assert factory_spy.calls == []
+
+
+def test_alert_body_when_both_sources_down(db_engine):
+    """eng-voice M8.4：双源同时故障 → 告警体如实声明（不得复用「备用源正常」文案）。"""
+    t = datetime(2026, 9, 15, 13, 0, 0)
+    _seed_down(db_engine, down_since=t - timedelta(minutes=40))
+    with Session(db_engine) as s:
+        s.add(ApiSourceHealth(source='juhe', status='down',
+                              down_since=t - timedelta(minutes=35)))
+        s.commit()
+    rec = _Recorder()
+    evaluate_source_alerts(db_engine, lambda: rec, now=lambda: t)
+    bodies = [b for _, b in rec.calls]
+    assert any('双源同时故障' in b for b in bodies)
+
+
+def test_alert_body_when_peer_degraded(db_engine):
+    """eng-voice M8.4：备源 degraded（如 juhe 未配 key）→ 明说单点风险，不伪装双源在线。"""
+    t = datetime(2026, 9, 15, 13, 0, 0)
+    _seed_down(db_engine, down_since=t - timedelta(minutes=40))
+    with Session(db_engine) as s:
+        s.add(ApiSourceHealth(source='juhe', status='degraded',
+                              error='juhe api_key not configured'))
+        s.commit()
+    rec = _Recorder()
+    evaluate_source_alerts(db_engine, lambda: rec, now=lambda: t)
+    assert len(rec.calls) == 1
+    assert '备用源非健康' in rec.calls[0][1] and 'juhe=degraded' in rec.calls[0][1]
+    assert '备用源正常' not in rec.calls[0][1]
+
+
+def test_redown_after_recovering_realerts(db_engine):
+    """eng-voice M3a 评估侧：recovering 期间再 down（写入侧翻 none + 重置 episode）→
+
+    达阈值后重新告警。翻回 none 是诚实状态（本次故障尚未送达），评估器据此重新决策。
+    """
+    t0 = datetime(2026, 9, 15, 4, 0, 0)
+    with Session(db_engine) as s:
+        s.add(ApiSourceHealth(source='mxnzp', status='ok', alerted='recovering',
+                              down_since=t0))
+        s.commit()
+    t1 = t0 + timedelta(minutes=5)
+    record_source_health(db_engine, 'mxnzp', 'down', 'again', now=lambda: t1)
+    rec = _Recorder()
+    # 新 episode 不足阈值 → 不告警
+    evaluate_source_alerts(db_engine, lambda: rec, now=lambda: t1 + timedelta(minutes=10))
+    assert rec.calls == []
+    # 新 episode 达阈值 → 重新告警
+    evaluate_source_alerts(db_engine, lambda: rec, now=lambda: t1 + timedelta(minutes=31))
+    assert len(rec.calls) == 1 and '持续失败' in rec.calls[0][0]
