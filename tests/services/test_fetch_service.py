@@ -522,3 +522,57 @@ def test_fetch_primary_ok_backup_not_drawn_keeps_grace(db_engine):
     # grace 触发 → 重抓到备源且一致 → 双源 verified（不是 single_source）
     assert r.stored and r.verified and not r.single_source
     assert len(slept) == 1  # grace 确实 sleep 了一次（正确用途）
+
+
+def test_health_write_failure_does_not_break_fetch(db_engine, monkeypatch, caplog):
+    """eng-voice M8.1：健康落表失败绝不阻断抓取主流程（plan-11 的核心纪律，必须有测试）。
+
+    _record_health 的 except Exception + logger.warning 是本 plan 唯一保证「写健康表
+    坏了不影响中奖比对」的代码——没有测试，一次重构就能悄悄移除它。
+    （复核修订 2026-09-15：原稿 monkeypatch 整个 `_record_health` 会连带替换掉它要守的
+    except/日志两行，且类属性替换会变 bound method 引发 TypeError——实测复现。）
+    """
+    import logging
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError('db gone')
+
+    # 注入真正的失败点：_record_health 内部 `from app.services.source_health import
+    # record_source_health` 是调用时解析模块属性 → patch 该属性即生效，
+    # 同时保留 _record_health 自身的 except + logger.warning（本用例要守的正是这两行）。
+    monkeypatch.setattr('app.services.source_health.record_source_health', _boom)
+
+    primary = _src(None, name='mxnzp')
+    primary.fetch.side_effect = RuntimeError('timeout')
+    backup = _src(None, name='juhe')
+    backup.fetch.side_effect = RuntimeError('timeout')
+    svc = FetchService(
+        primary, backup, db_engine,
+        max_attempts=1, backoff_base=0, sleep=lambda *_: None,
+    )
+    with caplog.at_level(logging.WARNING, logger='app.services.fetch_service'):
+        result = svc.fetch_and_store('ssq')
+    assert result is not None  # 抓取照常完成（未被健康写失败打断）
+    assert 'source_health_write_failed' in caplog.text
+
+
+def test_fetch_error_logged_with_redacted_secret(db_engine, caplog):
+    """eng-voice M4 回归：juhe key 出现在异常 URL 时，日志输出必须脱敏。"""
+    import logging
+
+    primary = _src(None, name='mxnzp')
+    primary.fetch.side_effect = RuntimeError(
+        "Client error '403' for url "
+        "'https://v.juhe.cn/lottery/query?lottery_id=ssq&key=SECRETKEY123'"
+    )
+    backup = _src(None, name='juhe')
+    backup.fetch.side_effect = RuntimeError('timeout')
+    # max_attempts=1 + sleep 置空：否则默认 6 次退避会真睡 ~31s（该文件既有失败用例同法）
+    svc = FetchService(
+        primary, backup, db_engine,
+        max_attempts=1, backoff_base=0, sleep=lambda *_: None,
+    )
+    with caplog.at_level(logging.WARNING, logger='app.services.fetch_service'):
+        svc.fetch_and_store('ssq')
+    assert 'SECRETKEY123' not in caplog.text
+    assert 'key=[REDACTED]' in caplog.text
