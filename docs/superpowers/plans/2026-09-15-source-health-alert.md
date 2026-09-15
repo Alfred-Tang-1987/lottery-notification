@@ -2573,8 +2573,10 @@ E1-E13 已全部直接落入 Task 1-7 的 TDD 步骤文本（测试先行），�
 ---
 
 > **autoplan baseline-edits 记录已移出正文**：本轮审查三阶段的 baseline-edit marker
-> （ceo / design / eng，合计 282KB 内嵌审查前旧文本）移至同目录
-> `2026-09-15-source-health-alert.autoplan-baseline.md`——那些旧文本含已被后续审查推翻的
+> （ceo / design / eng，合计 282KB 内嵌审查前旧文本）移至
+> `docs/superpowers/reviews/2026-09-15-source-health-alert.autoplan-baseline.md`——
+> **不放在 plans/ 内**：CLAUDE.md 声明内部引擎按 `docs/superpowers/plans/*.md` glob 取计划，
+> 放在该目录会被当计划读走（文件内含旧任务文本）；那些旧文本含已被后续审查推翻的
 > 实现（如 `DOWN_ALERT_AFTER` 常量、`_sanitize_error` 私有名、recovering 再故障「回
 > alerted」语义），留在正文会让按符号检索的实现者读到与现行 plan 相反的代码。移出后
 > `gstack-autoplan-snapshot check/amend eng` 不再通过校验（本轮审查已结束、不再 amend）；
@@ -2584,8 +2586,8 @@ E1-E13 已全部直接落入 Task 1-7 的 TDD 步骤文本（测试先行），�
 
 Phase 4 批准后，另派子代理按 `writing-plans` 技能标准（含其 plan-document-reviewer 模板）
 核验本计划**是否真的可直接实施**，结论「Issues Found」；主审查对每条实测复现后确认属实，
-经用户确认全部修复（修复前的原稿可从同目录 `…autoplan-baseline.md` 中 design/eng 阶段
-marker 的 `newText` 还原）：
+经用户确认全部修复（修复前的原稿可从 `docs/superpowers/reviews/
+2026-09-15-source-health-alert.autoplan-baseline.md` 中 design/eng 阶段 marker 的 `newText` 还原）：
 
 | # | 缺陷（实测复现） | 修复 |
 |---|---|---|
@@ -2595,7 +2597,7 @@ marker 的 `newText` 还原）：
 | R4 | M8.1 守卫用例 `monkeypatch.setattr(FetchService, '_record_health', _boom)`：类属性替换变 bound method → `TypeError`；且连带替换掉它要守的 except/日志两行，断言永假 | 改为 patch 模块属性 `app.services.source_health.record_source_health`（`_record_health` 函数内 import → 调用时解析，实测生效），构造按该测试文件既有 `_src` + `FetchService(...)` 惯例写出 |
 | R5 | 引用仓库不存在的 helper（`_make_service_with_mock_sources` 等）并把构造方式甩给实现者（No Placeholders 违规） | 直接写出完整片段（`_src` + `fetch.side_effect` + `max_attempts=1/backoff_base=0/sleep=lambda`），删掉「以既有写法为准」兜底；顺带修掉原片段默认退避会真睡 ~31s 的问题 |
 | R6 | Task 5 Step 3 命令点了尚未编写的 `test_source_health_alert_settings_defaults` → pytest exit 4，非「5 FAIL」 | 从命令移除；该用例已随 R2 前移并在 Task 2 走完整 RED→GREEN |
-| R7 | 可读性：三个 baseline-edit marker 单行内嵌审查前旧文本共 282KB（占文件 64%），含**已被推翻的旧实现**（`DOWN_ALERT_AFTER`、`_sanitize_error`、recovering「回 alerted」），grep 型实现者会读到反的代码 | marker 移出为同目录 `…autoplan-baseline.md`（逐字节保留），正文留指针；代价：snapshot `check/amend eng` 不再通过（审查已结束，不再 amend） |
+| R7 | 可读性：三个 baseline-edit marker 单行内嵌审查前旧文本共 282KB（占文件 64%），含**已被推翻的旧实现**（`DOWN_ALERT_AFTER`、`_sanitize_error`、recovering「回 alerted」），grep 型实现者会读到反的代码 | marker 移出为 `docs/superpowers/reviews/…autoplan-baseline.md`（逐字节保留；**不放 plans/**——该目录会被引擎按 `*.md` glob 当计划读），正文留指针；代价：snapshot `check/amend eng` 不再通过（审查已结束，不再 amend） |
 
 附带修正：Task 5 测试片段补 `register_all_jobs` 显式 import（实测该文件顶部无此 import）、
 Task 6 Files 补 `Admin.test.ts` 及其 describe 作用域说明、Self-Review 的陈旧签名

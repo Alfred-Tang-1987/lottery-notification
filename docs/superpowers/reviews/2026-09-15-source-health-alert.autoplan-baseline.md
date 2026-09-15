@@ -1,5 +1,7 @@
 # plan-11 计划文件的 autoplan baseline-edits 记录（已移出正文）
 
+> 位置：`docs/superpowers/reviews/`（**刻意不放 `plans/`**：CLAUDE.md 声明内部引擎按
+> `docs/superpowers/plans/*.md` glob 取计划，放该目录会被当计划执行）。
 > 迁移时间：2026-09-15。迁移原因：三行 marker 内嵌审查前的整份 plan 文本，合计 282KB，
 > 占原文件 440KB 的 64%；且内含**已被后续审查推翻的旧实现文本**（如 `DOWN_ALERT_AFTER`
 > 常量、`_sanitize_error` 私有名、recovering→down「回 alertede」语义），按符号 grep 的
