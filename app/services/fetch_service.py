@@ -27,6 +27,7 @@ from sqlmodel import Session, select
 from app.adapters.base import DrawNumbers, DrawSource, PermanentLookupError
 from app.models import DrawResult, PendingComparison
 from app.seeds import SPECS
+from app.services.source_health import sanitize_error
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +99,7 @@ class FetchService:
                     lottery_code,
                     attempt + 1,
                     self._max_attempts,
-                    exc,
+                    sanitize_error(str(exc)),
                 )
                 # 永久性错误不重试（重试无意义且阻塞启动）。
                 if isinstance(exc, PermanentLookupError):
@@ -107,17 +108,43 @@ class FetchService:
                     raise
                 self._sleep(self._backoff**attempt + random.random())
 
-    def _try_fetch(self, source: DrawSource, lottery_code: str) -> tuple[DrawNumbers | None, bool]:
-        """返回 (numbers, ok)。ok=False=源故障（异常被吞）；ok=True+None=未开奖。"""
+    def _try_fetch(
+        self, source: DrawSource, lottery_code: str
+    ) -> tuple[DrawNumbers | None, str, str | None]:
+        """返回 (numbers, outcome, error)。outcome: 'ok' | 'down' | 'permanent'。
+
+        ok+None=未开奖（源健康）；down=运行故障（网络/限流重试耗尽）；
+        permanent=配置态错误（key 未配置等）——健康表据此区分（plan-11 spec §1.2）。
+        """
         try:
-            return self._fetch_with_backoff(source, lottery_code), True
+            return self._fetch_with_backoff(source, lottery_code), 'ok', None
+        except Exception as exc:
+            if isinstance(exc, PermanentLookupError):
+                return None, 'permanent', str(exc)
+            return None, 'down', str(exc)
+
+    def _record_health(self, source_name: str, outcome: str, error: str | None) -> None:
+        """写 ApiSourceHealth（plan-11）。独立短事务 + 吞异常：健康落表失败只记日志，
+        绝不阻断抓取主流程（spec §1.2）。"""
+        try:
+            from app.services.source_health import record_source_health
+
+            record_source_health(self._engine, source_name, outcome, error)
         except Exception:
-            return None, False
+            logger.warning(
+                'source_health_write_failed source=%s outcome=%s', source_name, outcome,
+                exc_info=True,
+            )
 
     # ------------------------------------------------------------- main entry
     def fetch_and_store(self, lottery_code: str) -> FetchResult:
-        primary, p_ok = self._try_fetch(self._primary, lottery_code)
-        backup, b_ok = self._try_fetch(self._backup, lottery_code)
+        primary, p_outcome, p_err = self._try_fetch(self._primary, lottery_code)
+        backup, b_outcome, b_err = self._try_fetch(self._backup, lottery_code)
+        # 数据源健康落表（plan-11）：写失败不得阻断抓取（spec §1.2 独立短事务）。
+        self._record_health(self._primary.name, p_outcome, p_err)
+        self._record_health(self._backup.name, b_outcome, b_err)
+        p_ok = p_outcome == 'ok'
+        b_ok = b_outcome == 'ok'
 
         # 双源都故障 → 告警不存（spec §10）
         if not p_ok and not b_ok:
@@ -192,7 +219,11 @@ class FetchService:
         present_source_name: str,
     ) -> FetchResult | None:
         """grace 内重抓缺失源并双源校验。返回 FetchResult=已决（入库/拒绝）；None=重抓仍无/故障。"""
-        m2, m2_ok = self._try_fetch(missing_source, lottery_code)
+        m2, m2_outcome, m2_err = self._try_fetch(missing_source, lottery_code)
+        # grace 重抓结果同样落健康表（autoplan M7）：否则 grace 内恢复的源要等下个
+        # 抓取周期才转 ok，恢复通知无谓延迟一整轮（15 分钟）。
+        self._record_health(missing_source.name, m2_outcome, m2_err)
+        m2_ok = m2_outcome == 'ok'
         if not m2_ok or m2 is None:
             return None  # 仍无/故障 → 回主流程单源兜底
         if _numbers_match(m2, present_dn):
