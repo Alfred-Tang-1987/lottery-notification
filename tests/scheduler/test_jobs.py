@@ -1248,6 +1248,39 @@ def test_path_a_tick_evaluates_source_alerts(db_engine, monkeypatch):
     assert spy.call_args.args[0] is db_engine
 
 
+def test_path_a_tick_evaluate_failure_isolated(db_engine, monkeypatch, caplog):
+    """path_a_tick 尾部 evaluate_source_alerts 抛异常不得阻断本 tick（ characterization 回归钉）。
+
+    终审 deferred：评估失败隔离 try/except 已正确实现（jobs.py 尾部），但无回归钉。
+    本测试为 characterization 测试：行为已正确，预期无 RED——只是把「评估失败不传播 +
+    记录 source_alert_evaluate_failed」的现有契约钉死，防未来重构悄悄去掉 try/except。
+    """
+    import logging
+    from unittest.mock import MagicMock
+
+    import app.scheduler.jobs as jobs_mod
+    from app.scheduler.jobs import register_all_jobs
+
+    def _boom(engine, factory):
+        raise RuntimeError('evaluate outage (transient DB/alert channel)')
+
+    monkeypatch.setattr(jobs_mod, 'evaluate_source_alerts', _boom)
+    sched = build_scheduler(db_engine)
+    register_all_jobs(
+        sched,
+        {
+            'engine': db_engine,
+            'fetch_service': MagicMock(),
+            'compare_service': MagicMock(),
+            'refill_worker': MagicMock(),
+            'notifier': MagicMock(),
+        },
+    )
+    with caplog.at_level(logging.WARNING, logger='app.scheduler.jobs'):
+        _invoke_job(sched, 'path_a_poll_evening')  # 不传播 = 调用正常完成
+    assert 'source_alert_evaluate_failed' in caplog.text
+
+
 def test_path_a_tick_sender_none_when_alerts_disabled(db_engine, monkeypatch):
     """SOURCE_HEALTH_ALERTS_ENABLED=false → sender 工厂返回 None（dx-voice F18 独立开关：
 

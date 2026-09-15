@@ -92,7 +92,7 @@ class FetchService:
                 return source.fetch(lottery_code)
             except Exception as exc:
                 # 源故障不得静默吞没：结构化日志供告警/排障（silent-failure-hunter）。
-                # 重试耗尽后仍上抛，由 _try_fetch 归类为 ok=False（源故障态）。
+                # 重试耗尽后仍上抛，由 _try_fetch 归类为 outcome='down'（源故障态）。
                 logger.warning(
                     'source_fetch_failed source=%s lottery=%s attempt=%d/%d error=%s',
                     getattr(source, 'name', 'unknown'),
@@ -168,9 +168,9 @@ class FetchService:
         # 重抓三态分流：拿到数据→双源校验（不一致即拒绝，不得降级单源——否则双源
         # 安全网在 grace 路径被绕过，§10 准确性优先）；仍无/故障→单源兜底。
         #
-        # grace 触发条件（2026-07-21 冒烟修正）：仅当缺失源是「未开奖」（ok=True 且
-        # None，数据延迟）时才 grace 等待。缺失源若是「故障」（ok=False，HTTP 异常/
-        # 超时/鉴权失败），sleep 5 分钟注定再次失败——只白白阻塞启动/cron 数分钟
+        # grace 触发条件（2026-07-21 冒烟修正）：仅当缺失源是「未开奖」（outcome='ok'
+        # 且 None=未开奖，数据延迟）时才 grace 等待。缺失源若是「故障」（outcome='down'，
+        # HTTP 异常/超时/鉴权失败），sleep 5 分钟注定再次失败——只白白阻塞启动/cron 数分钟
         # （NAS 场景 healthcheck 超时 → restart 循环）。故障直接走单源兜底。
         present_dn = p if p is not None else b  # 恰一源有效，必非 None
         missing_ok = p_ok if p is None else b_ok  # 缺失源是否「未开奖」而非「故障」

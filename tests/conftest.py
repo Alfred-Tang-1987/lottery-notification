@@ -54,6 +54,9 @@ def _reset_settings_and_env(monkeypatch):
         'SMTP_PASS',
         'SMTP_FROM',
         'ADMIN_BARK_KEY',
+        'SOURCE_HEALTH_ALERT_AFTER_MINUTES',
+        'SOURCE_HEALTH_ALERTS_ENABLED',
+        'ADMIN_BARK_URL',
     ):
         monkeypatch.delenv(key, raising=False)
     reset_settings_cache()

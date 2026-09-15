@@ -428,3 +428,23 @@ def test_startup_backfill_evaluates_source_alerts(db_engine, monkeypatch):
     monkeypatch.setattr(backfill_mod, 'evaluate_source_alerts', spy)
     run_startup_backfill(_make_deps(db_engine))
     assert spy.call_count == 1
+
+
+def test_startup_backfill_evaluate_failure_isolated(db_engine, monkeypatch, caplog):
+    """启动 backfill 尾部 evaluate_source_alerts 抛异常不得阻断/上抛（characterization 回归钉）。
+
+    终审 deferred：评估失败隔离 try/except 位于 run_startup_backfill 函数尾部、独立于
+    抓取循环的 try/except（backfill.py 尾部），行为已正确，本测试为 characterization
+    测试（预期无 RED）——钉死「不传播 + 记录 source_alert_evaluate_failed」契约。
+    """
+    import logging
+
+    import app.scheduler.backfill as backfill_mod
+
+    def _boom(engine, factory):
+        raise RuntimeError('evaluate outage (transient DB/alert channel)')
+
+    monkeypatch.setattr(backfill_mod, 'evaluate_source_alerts', _boom)
+    with caplog.at_level(logging.WARNING, logger='app.scheduler.backfill'):
+        run_startup_backfill(_make_deps(db_engine))  # 不传播 = 调用正常完成
+    assert 'source_alert_evaluate_failed' in caplog.text

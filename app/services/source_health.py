@@ -163,7 +163,7 @@ def evaluate_source_alerts(
     外发 HTTP 告警 → 短 session 守卫重读后落转移。绝不在持有唯一连接的 session
     内做 httpx 调用——DNS 故障（本 plan 目标场景）下 Bark 挂到 10s 超时，同期
     其他 job/请求借不到连接撞 busy_timeout，告警机制反而制造它要防的漏通知
-    （jobs.py:276-278/339、password_reset_service.py:131/204 两次实测事故同型）。
+    （jobs.py:255-258、password_reset_service.py:249-255 两次实测事故同型）。
     落转移前重读校验状态未变：读与落之间若有 fetch 写入（如故障恰好恢复），
     放弃本轮转移下轮重评，不覆盖并发写入（eng-voice L2 已知取舍：此时已送达的
     告警下一轮可能因状态未落而重复发送一次——duplicate > silence，运维看到

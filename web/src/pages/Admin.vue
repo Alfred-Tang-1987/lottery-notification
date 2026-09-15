@@ -1127,7 +1127,8 @@ function fmtError(error: string): string {
   font-size: var(--text-xs);
 }
 
-/* D4：error 摘要与 meta 同行但更可忽略；全文经 title 悬浮可见（已后端截断 + …） */
+/* D4：error 摘要与 meta 同行但更可忽略；全文经 title 悬浮可见（后端返回全文，
+   截断仅前端 fmtError 的 80 字符 + '…'——后端不做截断，否则 title 也只有截断版） */
 .source-error {
   margin-left: 6px;
   opacity: 0.85;
