@@ -7,8 +7,12 @@
 → 中奖静默漏通知（违反 spec §10 核心价值）。
 
 判定规则：
-  - 迟到 = comparison.created_at（naive UTC）晚于「开奖日+2天（CST）」——此刻
-    常规路径（当晚 path_a / 次日 07:00 path_b，含 DND 顺延余量）均已不可能覆盖它；
+  - 迟到 = comparison 活动时间（created_at，更正后取 corrected_at；naive UTC）晚于
+    「开奖日次日 07:00（CST）」——path_b 对该期的唯一一次汇总在 D+1 07:00 执行
+    （只汇总昨天，之后永不重扫；DND 07:00 不触发无顺延余量），此刻之后创建的
+    比对常规路径（当晚 path_a / path_b）均已不可能覆盖它。注意：cutoff 不能晚于
+    该时刻——曾用「开奖日+2天」，D+1 07:00~24:00 恢复补比的中奖被永久跳过
+    （path_b 已跑过/只汇总昨天），构成真空窗口静默漏推（code-review CRITICAL-1）；
   - 从未通知 = 无 status='sent' 的 NotificationLog.comparison_id 直连记录
     （与 jobs._path_a_tick 的去重语义一致：failed 记录代表从未送达，须重试）；
   - 年龄上限 = 比对创建距今 ≤ _CATCHUP_MAX_AGE_DAYS 天——历史中奖多已被汇总推送
@@ -42,14 +46,15 @@ def _now_utc() -> datetime:
 
 
 def _cutoff_utc(draw_date: datetime) -> datetime:
-    """开奖日的常规推送窗口关闭时刻（naive UTC）。
+    """开奖日的常规推送窗口关闭时刻（naive UTC）= 开奖日次日 07:00 CST。
 
-    draw_date 存的是 CST 墙钟数值（fetch_service 以 aware-CST 写入，SQLite 存取
-    剥 tzinfo，CLAUDE.md datetime 纪律）；+2 天后转 UTC 再剥 tzinfo，与
-    created_at（naive UTC）同时区同数值比较。
+    即 path_b 汇总该期的执行时刻：只汇总「昨天」，07:00 之后创建的比对该路径
+    永不覆盖。draw_date 存的是 CST 墙钟数值（fetch_service 以 aware-CST 写入，
+    SQLite 存取剥 tzinfo，CLAUDE.md datetime 纪律）；+1天7小时 后转 UTC 再剥
+    tzinfo，与 created_at（naive UTC）同时区同数值比较。
     """
     draw_cst = draw_date.replace(tzinfo=_CST)
-    return (draw_cst + timedelta(days=2)).astimezone(UTC).replace(tzinfo=None)
+    return (draw_cst + timedelta(days=1, hours=7)).astimezone(UTC).replace(tzinfo=None)
 
 
 def find_catchup_candidates(engine: Engine) -> list[dict]:
