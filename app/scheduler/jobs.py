@@ -320,8 +320,10 @@ def _weekly_report(db_url: str) -> None:
         _defer_summary(sched, db_url, _weekly_report, 'weekly_report')
         return
     today = datetime.now(_CST).date()
-    # 上周日 = today - weekday - 1（若 today 是周日，则上周日 = today - 7）
-    days_since_sunday = (today.weekday() + 1) % 7
+    # 上周日 = today - weekday - 1（若 today 是周日，则上周日 = today - 7）。
+    # (weekday()+1) % 7 在周日得 0，须 `or 7` 兜底——否则周日时区间错为
+    # [本周一, 今天]，周日开奖期（ssq/qxc）结构性进不了任何周报（CRITICAL-1b）。
+    days_since_sunday = (today.weekday() + 1) % 7 or 7
     last_sunday = today - timedelta(days=days_since_sunday)
     last_monday = last_sunday - timedelta(days=6)
     _push_period_summary(engine, notifier, last_monday, last_sunday)
