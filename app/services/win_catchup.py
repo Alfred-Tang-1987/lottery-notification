@@ -104,17 +104,19 @@ def find_catchup_candidates(engine: Engine) -> list[dict]:
 
 
 def push_win_catchups(deps: dict) -> int:
-    """对全部补推候选执行推送，返回成功数。单候选故障不中断批次（隔离纪律）。
+    """对全部补推候选执行推送，返回真实送达数。单候选故障不中断批次（隔离纪律）。
 
     deps 即 scheduler 的 _JobDeps 注册表项（取 engine/notifier 两键）；用 dict
     而非 _JobDeps 类型，避免 services → scheduler 的模块依赖。
+    计数只计 notify_win_catchup 返回 True（真实送达）的——全渠道失败/数据缺失
+    返回 False 不计入，故障恢复时 win_catchup_pushed 日志才可信（MEDIUM-2）。
     """
     engine: Engine = deps['engine']
     notifier = deps['notifier']
     sent = 0
     for c in find_catchup_candidates(engine):
         try:
-            notifier.notify_win_catchup(
+            delivered = notifier.notify_win_catchup(
                 comparison_id=c['comparison_id'],
                 lottery_name=c['lottery_name'],
                 draw_no=c['draw_no'],
@@ -122,7 +124,8 @@ def push_win_catchups(deps: dict) -> int:
                 tier=c['tier'],
                 amount=c['amount'],
             )
-            sent += 1
+            if delivered:
+                sent += 1
         except Exception:
             # per-row 隔离：单笔补推故障（DB 错/渠道异常）不得中断其余补推
             # （CLAUDE.md 批量循环单行故障纪律）；下轮扫描未 sent 的自然重试。

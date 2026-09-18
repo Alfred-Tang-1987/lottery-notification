@@ -134,16 +134,18 @@ class Notifier:
 
     def notify_win_catchup(
         self, *, comparison_id: int, lottery_name: str, draw_no: str, draw_date_str: str, tier: int, amount: int | None
-    ) -> None:
+    ) -> bool:
         """中奖补推（win catch-up）：故障恢复后回填补比出的隔期中奖兜底推送。
 
         与 notify_path_a 同构（单笔中奖、DND 破例、Session 外发送），差异仅在
         文案模板（标注补推 + 带开奖日期）。由 services.win_catchup 扫描触发。
+        返回是否真实送达（全渠道失败/数据缺失返回 False）——push_win_catchups
+        按返回值计数，失败不计入，下轮扫描凭 failed 记录自然重试。
         """
         with Session(self._engine) as s:
             cmp = s.get(Comparison, comparison_id)
             if cmp is None:
-                return
+                return False
             dr = s.get(DrawResult, cmp.draw_result_id)
             if dr is None:
                 logger.error(
@@ -152,7 +154,7 @@ class Notifier:
                     comparison_id,
                     cmp.draw_result_id,
                 )
-                return
+                return False
             user_id = cmp.user_id
             channels_data = self._load_channels(s, user_id)
             payload = build_win_catchup(
@@ -167,6 +169,7 @@ class Notifier:
 
         result = self._send_to_user_channels(user_id, channels_data, payload, force=True)
         self._update_log_status(log_id, result)
+        return result.status == ChannelStatus.SENT
 
     @staticmethod
     def _insert_pending_log(s: Session, *, user_id: int, payload: NotificationPayload, comparison_id: int | None) -> int | None:
