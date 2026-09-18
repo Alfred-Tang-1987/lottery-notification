@@ -604,6 +604,56 @@ def test_weekly_report_aggregates_last_week(db_engine):
     assert (end - start).days == 6
 
 
+def test_weekly_report_range_when_today_is_sunday(db_engine, monkeypatch):
+    """today=周日时周报区间应为 [上周一, 上周日]，不含今天。
+
+    既有 bug（code-review CRITICAL-1b）：`(today.weekday()+1) % 7` 在周日（weekday=6）
+    得 0 → last_sunday=today → 区间错为 [本周一, 今天]；周报又跑在周日 09:00（开奖
+    21:25 之前）→ 周日开奖期（ssq/qxc）结构性进不了任何周报，叠加补推 cutoff 的
+    真空窗口会永久静默漏推。钉住 today=2026-09-13（周日）锁定正确区间。
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from sqlmodel import Session
+
+    from app.models import User
+    from app.scheduler import jobs as jobs_mod
+    from app.scheduler.jobs import register_all_jobs
+
+    fixed_now = datetime(2026, 9, 13, 9, 0, 0, tzinfo=ZoneInfo('Asia/Shanghai'))
+    assert fixed_now.weekday() == 6  # 2026-09-13 确为周日
+
+    class _FixedNow(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now if tz is None else fixed_now.astimezone(tz)
+
+    monkeypatch.setattr(jobs_mod, 'datetime', _FixedNow)
+    with Session(db_engine) as s:
+        # 推送循环按用户迭代，至少一个用户才会调 notify_period_summary
+        s.add(User(username='weekly_sun', password_hash='x', role='user', invite_code='WS'))
+        s.commit()
+    sched = build_scheduler(db_engine)
+    notifier = MagicMock()
+    notifier.is_dnd_active.return_value = False
+    register_all_jobs(
+        sched,
+        {
+            'engine': db_engine,
+            'fetch_service': MagicMock(),
+            'compare_service': MagicMock(),
+            'refill_worker': MagicMock(),
+            'notifier': notifier,
+        },
+    )
+    _invoke_job(sched, 'weekly_report')
+    notifier.notify_period_summary.assert_called_once()
+    kwargs = notifier.notify_period_summary.call_args.kwargs
+    assert kwargs['start_date_str'] == '2026-08-31'  # 上周一
+    assert kwargs['end_date_str'] == '2026-09-06'  # 上周日（≠ 今天）
+
+
 def test_expire_claims_marks_overdue_as_expired(db_engine):
     """兑奖过期扫描应把 deadline 已过的 pending 兑奖标为 expired。"""
     from datetime import datetime, timedelta
