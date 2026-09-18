@@ -58,7 +58,7 @@ def _cutoff_utc(draw_date: datetime) -> datetime:
 
 
 def find_catchup_candidates(engine: Engine) -> list[dict]:
-    """返回需补推的中奖比对列表（按 created_at 升序，一次事故按时间线补）。"""
+    """返回需补推的中奖比对列表（按 comparison_id 升序，一次事故按时间线补）。"""
     age_floor = _now_utc() - timedelta(days=_CATCHUP_MAX_AGE_DAYS)
     sent_log = sa_select(NotificationLog.id).where(
         NotificationLog.comparison_id == Comparison.id,
@@ -100,7 +100,8 @@ def find_catchup_candidates(engine: Engine) -> list[dict]:
         candidates.append(
             {
                 'comparison_id': cmp.id,
-                'user_id': cmp.user_id,
+                # 不放 user_id：notify_win_catchup 以 DB 的 cmp.user_id 为准重取，
+                # 防未来有人改走候选快照引入 TOCTOU 用户错配（code-review LOW）。
                 'lottery_code': dr.lottery_code,
                 'lottery_name': code_to_name.get(dr.lottery_code, dr.lottery_code),
                 'draw_no': dr.draw_no,

@@ -10,14 +10,11 @@ sent 推送记录的 is_win 比对 → 补推。
 """
 from datetime import datetime
 from unittest.mock import MagicMock
-from zoneinfo import ZoneInfo
 
 from sqlmodel import Session
 
 from app.models import Comparison, DrawResult, NotificationLog, Ticket, User
 from app.services.win_catchup import find_catchup_candidates, push_win_catchups
-
-_CST = ZoneInfo('Asia/Shanghai')
 
 # 固定基准时间（避免依赖 now）：
 #   开奖日 2026-09-10（CST）→ 常规窗口关闭于 2026-09-12 00:00 CST（= 09-11 16:00 UTC）
