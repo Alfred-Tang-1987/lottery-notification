@@ -26,15 +26,15 @@ def build_win_catchup(
 
     场景：系统故障恢复后回填补比出的隔期中奖（常规推送路径已错过）。
     与 build_path_a 的差异：标题明确标注「补推」、正文带开奖日期（隔期中奖
-    用户需要知道是哪一期）、保留 60 天兑奖提示（补推时窗口已消耗一部分，
-    此时提示更关键）。
+    用户需要知道是哪一期）、兑奖提示以开奖日为锚（补推时窗口已消耗一部分，
+    「请在 60 天内兑奖」会夸大剩余有效期）。
     """
     amt = _fmt_amount(amount)
     title = f'🎉 补推：恭喜中奖！{lottery_name} {tier_name}'
     body = (
         f'{draw_date_str} 第 {draw_no} 期开奖（故障期间漏推，现补送），'
         f'你追投的号码命中 {tier_name}，奖金 {amt}。'
-        f'请在 60 天内兑奖；单注 ≥1 万元将代扣 20% 偶然所得税。'
+        f'兑奖有效期为开奖之日起 60 个自然日，请尽快兑奖；单注 ≥1 万元将代扣 20% 偶然所得税。'
         f'以官方开奖为准。理性购彩，量力而行。'
     )
     return NotificationPayload(title=title, body=body, draw_no=draw_no, tier=tier, amount=amount)
