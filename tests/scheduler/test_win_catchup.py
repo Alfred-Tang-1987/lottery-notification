@@ -110,11 +110,38 @@ def test_find_returns_late_unnotified_win(db_engine, monkeypatch):
 
 
 def test_find_skips_fresh_win_within_normal_window(db_engine, monkeypatch):
-    """比对创建于常规窗口内（开奖次日）→ 由路径A/B 覆盖，不进补推候选。"""
+    """比对创建于常规窗口内（开奖当晚，path_b 次日 07:00 汇总前）→ 由路径A/B 覆盖，不进补推候选。"""
     monkeypatch.setattr('app.services.win_catchup._now_utc', lambda: _NOW)
-    # 开奖 09-17，比对 09-18 创建（< 开奖+2天 09-19 00:00 CST）→ 非迟到。
-    _seed(db_engine, draw_date=datetime(2026, 9, 17), compared_at=datetime(2026, 9, 18, 3, 0, 0))
+    # 开奖 09-17，比对 09-17 22:00 CST（= 14:00 UTC）创建——早于 cutoff（D+1 07:00 CST
+    # = 09-17 23:00 UTC），次日 07:00 path_b 会覆盖 → 非迟到。
+    _seed(db_engine, draw_date=datetime(2026, 9, 17), compared_at=datetime(2026, 9, 17, 14, 0, 0))
     assert find_catchup_candidates(db_engine) == []
+
+
+def test_find_returns_win_created_after_path_b_run(db_engine, monkeypatch):
+    """隔夜故障恢复场景：比对创建于 path_b 汇总（D+1 07:00 CST）之后 → path_b 对 D 期
+    永不再扫（只汇总昨天），必须补推，否则真空窗口静默漏推（code-review CRITICAL-1）。"""
+    monkeypatch.setattr('app.services.win_catchup._now_utc', lambda: _NOW)
+    # 开奖 09-10，比对 09-11 09:00 CST（= 09-11 01:00 UTC）创建——隔夜故障恢复的
+    # 典型形状；晚于 cutoff（D+1 07:00 CST = 09-10 23:00 UTC）→ 迟到，须补推。
+    cid, _ = _seed(db_engine, draw_date=datetime(2026, 9, 10), compared_at=datetime(2026, 9, 11, 1, 0, 0))
+    assert [c['comparison_id'] for c in find_catchup_candidates(db_engine)] == [cid]
+
+
+def test_find_returns_win_created_exactly_at_cutoff(db_engine, monkeypatch):
+    """created_at == cutoff（D+1 07:00 CST）：path_b 读取与该提交可能竞态，
+    补推是安全方向（重复远轻于漏推）→ 进候选。"""
+    monkeypatch.setattr('app.services.win_catchup._now_utc', lambda: _NOW)
+    cid, _ = _seed(db_engine, draw_date=datetime(2026, 9, 10), compared_at=datetime(2026, 9, 10, 23, 0, 0))
+    assert [c['comparison_id'] for c in find_catchup_candidates(db_engine)] == [cid]
+
+
+def test_find_includes_win_exactly_at_age_floor(db_engine, monkeypatch):
+    """年龄边界：created_at == now-14d 恰在第 14 天 → 含（>= 语义，无 off-by-one）。"""
+    monkeypatch.setattr('app.services.win_catchup._now_utc', lambda: _NOW)
+    # created = 2026-09-04 04:00 UTC（= _NOW - 14d）；draw 08-30 → cutoff 早已过。
+    cid, _ = _seed(db_engine, draw_date=datetime(2026, 8, 30), compared_at=datetime(2026, 9, 4, 4, 0, 0))
+    assert [c['comparison_id'] for c in find_catchup_candidates(db_engine)] == [cid]
 
 
 def test_find_skips_win_already_sent(db_engine, monkeypatch):
