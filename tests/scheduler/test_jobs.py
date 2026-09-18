@@ -1316,3 +1316,59 @@ def test_path_a_tick_sender_none_when_alerts_disabled(db_engine, monkeypatch):
     assert spy.call_count == 1
     factory = spy.call_args.args[1]
     assert factory() is None  # 开关关闭 → 工厂拒绝构造 sender（F6 由此触发）
+
+
+def test_register_all_jobs_adds_win_catchup_sweep_daily_0715(db_engine):
+    """每日 07:15 应登记回填中奖补推扫描（path_b 汇总 07:00 之后兜底扫漏）。"""
+    from app.scheduler.jobs import _win_catchup_sweep, register_all_jobs
+
+    sched = build_scheduler(db_engine)
+    register_all_jobs(
+        sched,
+        {
+            'engine': db_engine,
+            'fetch_service': MagicMock(),
+            'compare_service': MagicMock(),
+            'refill_worker': MagicMock(),
+            'notifier': MagicMock(),
+        },
+    )
+    jobs_by_id = {j.id: j for j in sched.get_jobs()}
+    assert 'win_catchup_sweep' in jobs_by_id
+    job = jobs_by_id['win_catchup_sweep']
+    assert job.func is _win_catchup_sweep
+    from apscheduler.triggers.cron import CronTrigger
+
+    assert isinstance(job.trigger, CronTrigger)
+    fields = {f.name: str(f) for f in job.trigger.fields}
+    assert fields['hour'] == '7'
+    assert fields['minute'] == '15'
+
+
+def test_win_catchup_sweep_invokes_push(db_engine, monkeypatch):
+    """win_catchup_sweep job 应经注册表解析 deps 并调用 push_win_catchups，
+    返回补推成功数（供日志观测）。"""
+    from app.scheduler import jobs as jobs_mod
+    from app.scheduler.jobs import register_all_jobs
+
+    sched = build_scheduler(db_engine)
+    register_all_jobs(
+        sched,
+        {
+            'engine': db_engine,
+            'fetch_service': MagicMock(),
+            'compare_service': MagicMock(),
+            'refill_worker': MagicMock(),
+            'notifier': MagicMock(),
+        },
+    )
+    seen = {}
+
+    def fake_push(deps):
+        seen['deps'] = deps
+        return 3
+
+    monkeypatch.setattr(jobs_mod, 'push_win_catchups', fake_push)
+    result = _invoke_job(sched, 'win_catchup_sweep')
+    assert result == 3
+    assert seen['deps']['engine'] is db_engine

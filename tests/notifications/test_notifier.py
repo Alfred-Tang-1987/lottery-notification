@@ -926,3 +926,56 @@ def test_path_b_counts_lotteries_not_tickets_when_multi_tickets_same_lottery(db_
     assert '5 个追投彩种' not in payload.body, payload.body
     assert '中奖 0 笔' in payload.body, payload.body
     assert '未中奖彩种（1）：双色球' in payload.body, payload.body
+
+
+def test_notify_win_catchup_sends_and_logs(db_engine):
+    """中奖补推：发送到用户渠道并写 notification_logs（comparison_id 直连，
+    供补推扫描按「已有 sent 记录」去重）。"""
+    _, cmp_id = _seed(db_engine, prize_tier=6)
+    bark = MagicMock()
+    bark.send.return_value = SendResult(status=ChannelStatus.SENT, error=None)
+    crypto = MagicMock()
+    crypto.decrypt.return_value = '{"key":"k","url":"https://api.day.app"}'
+    notifier = Notifier(db_engine, channels={'bark': bark}, crypto=crypto)
+    notifier.notify_win_catchup(
+        comparison_id=cmp_id,
+        lottery_name='双色球',
+        draw_no='106',
+        draw_date_str='2026-09-13',
+        tier=6,
+        amount=500,
+    )
+    bark.send.assert_called_once()
+    sent = bark.send.call_args[0][0]
+    assert '补推' in sent.title, sent.title
+    with Session(db_engine) as s:
+        log = s.exec(select(NotificationLog)).first()
+        assert log is not None
+        assert log.comparison_id == cmp_id
+        assert log.status == 'sent'
+
+
+def test_notify_win_catchup_missing_draw_skips(db_engine, caplog):
+    """comparison 引用的开奖结果缺失：记 ERROR 跳过，不发送不写 log
+    （与 notify_path_a 同构的数据异常防御）。"""
+    _, cmp_id = _seed(db_engine)
+    with Session(db_engine) as s:
+        # 直接删 draw_result 制造悬挂引用（comparison 仍指向它）
+        dr_id = s.get(Comparison, cmp_id).draw_result_id
+        s.delete(s.get(DrawResult, dr_id))
+        s.commit()
+    bark = MagicMock()
+    crypto = MagicMock()
+    crypto.decrypt.return_value = '{}'
+    notifier = Notifier(db_engine, channels={'bark': bark}, crypto=crypto)
+    notifier.notify_win_catchup(
+        comparison_id=cmp_id,
+        lottery_name='双色球',
+        draw_no='106',
+        draw_date_str='2026-09-13',
+        tier=6,
+        amount=500,
+    )
+    bark.send.assert_not_called()
+    with Session(db_engine) as s:
+        assert s.exec(select(NotificationLog)).first() is None

@@ -156,3 +156,27 @@ def test_path_a_fixed_prize_rendered_in_yuan_correctly():
     p = build_path_a(lottery_name='双色球', draw_no='062', tier_name='三等奖', tier=3, amount=300000)
     assert '3000.00 元' in p.body, p.body
     assert p.amount == 300000
+
+
+def test_build_win_catchup_marks_catchup_and_keeps_claim_guidance():
+    """中奖补推文案：明确标注「补推」+ 带开奖日期（隔期中奖用户需知道是哪期）
+    + 保留 60 天兑奖提示（补推时兑奖窗口已消耗一部分，提示更重要）。"""
+    from app.notifications.templates import build_win_catchup
+
+    p = build_win_catchup(
+        lottery_name='双色球',
+        draw_no='106',
+        draw_date_str='2026-09-13',
+        tier_name='六等奖',
+        tier=6,
+        amount=500,
+    )
+    assert '补推' in p.title, p.title
+    assert '双色球' in p.title and '六等奖' in p.title, p.title
+    assert '2026-09-13' in p.body, p.body
+    assert '106' in p.body, p.body
+    assert '5.00 元' in p.body, p.body
+    assert '60 天' in p.body, p.body
+    assert p.draw_no == '106'
+    assert p.tier == 6
+    assert p.amount == 500

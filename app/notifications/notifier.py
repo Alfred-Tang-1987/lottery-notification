@@ -18,7 +18,7 @@ from app.models import (
 )
 from app.notifications._decrypt import decrypt_channel_config
 from app.notifications.base import ChannelStatus, NotificationPayload, NotifierChannel, SendResult
-from app.notifications.templates import build_path_a, build_path_b
+from app.notifications.templates import build_path_a, build_path_b, build_win_catchup
 
 _CST = ZoneInfo('Asia/Shanghai')
 
@@ -124,25 +124,65 @@ class Notifier:
                 tier=tier,
                 amount=amount,
             )
-            # 先写 pending log（无 sent_at）
-            log = NotificationLog(
-                user_id=user_id,
-                comparison_id=comparison_id,
-                type=payload.title,
-                payload=payload.body,
-                status='pending',
-                error=None,
-                sent_at=None,
-            )
-            s.add(log)
-            s.commit()
-            log_id = log.id
+            log_id = self._insert_pending_log(s, user_id=user_id, payload=payload, comparison_id=comparison_id)
 
         # Step 2: Session 已关闭，做网络发送（重试/退避不阻塞 DB）
         result = self._send_to_user_channels(user_id, channels_data, payload, force=True)
 
         # Step 3: 更新 log 状态（新开短 Session）
         self._update_log_status(log_id, result)
+
+    def notify_win_catchup(
+        self, *, comparison_id: int, lottery_name: str, draw_no: str, draw_date_str: str, tier: int, amount: int | None
+    ) -> None:
+        """中奖补推（win catch-up）：故障恢复后回填补比出的隔期中奖兜底推送。
+
+        与 notify_path_a 同构（单笔中奖、DND 破例、Session 外发送），差异仅在
+        文案模板（标注补推 + 带开奖日期）。由 services.win_catchup 扫描触发。
+        """
+        with Session(self._engine) as s:
+            cmp = s.get(Comparison, comparison_id)
+            if cmp is None:
+                return
+            dr = s.get(DrawResult, cmp.draw_result_id)
+            if dr is None:
+                logger.error(
+                    'notify_win_catchup_missing_draw comparison_id=%s draw_result_id=%s '
+                    '（开奖结果缺失，跳过补推）',
+                    comparison_id,
+                    cmp.draw_result_id,
+                )
+                return
+            user_id = cmp.user_id
+            channels_data = self._load_channels(s, user_id)
+            payload = build_win_catchup(
+                lottery_name=lottery_name,
+                draw_no=draw_no,
+                draw_date_str=draw_date_str,
+                tier_name=_tier_name(dr.lottery_code, tier),
+                tier=tier,
+                amount=amount,
+            )
+            log_id = self._insert_pending_log(s, user_id=user_id, payload=payload, comparison_id=comparison_id)
+
+        result = self._send_to_user_channels(user_id, channels_data, payload, force=True)
+        self._update_log_status(log_id, result)
+
+    @staticmethod
+    def _insert_pending_log(s: Session, *, user_id: int, payload: NotificationPayload, comparison_id: int | None) -> int | None:
+        """Session 内写 pending log 并返回其 id（路径A/补推共用骨架）。"""
+        log = NotificationLog(
+            user_id=user_id,
+            comparison_id=comparison_id,
+            type=payload.title,
+            payload=payload.body,
+            status='pending',
+            error=None,
+            sent_at=None,
+        )
+        s.add(log)
+        s.commit()
+        return log.id
 
     def notify_path_b(self, *, user_id: int, date_str: str) -> int:
         """路径B：次日 07:00 汇总。DND 时顺延（返回 0，由调度器重排）。返回已推用户数。
