@@ -126,6 +126,21 @@ docker compose exec app uv run python -m app.cli create-admin --username admin -
   record_source_health(eng, 'mxnzp', 'ok') 再评估一次应收到「已恢复」，
   且 /admin/health 该源回到 ok（alerted=none）。
 
+## 回填中奖补推（win catch-up）
+
+- 机制：兜底扫描「迟到且从未送达」的中奖比对并补推，杜绝故障恢复后的静默漏推
+  （2026-09-15 NAS 事故复盘产出）。迟到判定 = 比对活动时间（created_at，更正后取
+  corrected_at）晚于开奖日次日 07:00 CST（path_b 汇总执行时刻，此后常规路径
+  不可能覆盖）；去重 = 无 status='sent' 且 comparison_id 直连的 notification_logs
+  （failed 视为未送达，下轮重试）；年龄上限 14 天（防机制上线时重推全部历史中奖）。
+- 触发时机：每次启动 backfill 收尾（补抓遗漏开奖后先补跑一次比对再扫描）+
+  每日 07:15 `win_catchup_sweep` cron（path_b 07:00 汇总之后扫漏）。
+- 失败语义：单笔失败不中断批次（log ERROR + exc_info）；全渠道失败首轮 admin
+  Bark 告警，同笔中奖持续失败期间告警冷却不重复（重试与 failed 落库照常）。
+- 已知取舍：周报/月报按开奖日区间聚合，可能把已补推的中奖再「回顾」一次——
+  重复回顾远轻于静默漏推，不做交叉去重。
+- 观测：日志 `win_catchup_pushed count=N`（N 为真实送达数，渠道失败不计入）。
+
 ## 密码重置
 
 三条路径，按场景选用，互不冲突（改密均同事务作废该用户活跃验证码，防止旧码把刚重置的密码改回）：

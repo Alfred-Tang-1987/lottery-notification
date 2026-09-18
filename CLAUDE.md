@@ -115,7 +115,7 @@ export WORKFLOW_ENGINE_URL=<内网引擎仓库地址>   # 本机 shell 配置，
 - 开奖日 `draw_days` 用 Python 0-based 周几（`date.weekday()`）：周一=0 … 周日=6
 - 通知渠道：bark/feishu/email（可插拔，每用户配置）
 - 推送策略：`every`(每期推) / `win_only`(仅中奖推)
-- 推送时机：大奖当晚即时简讯 + 次日 07:00 汇总
+- 推送时机：大奖当晚即时简讯 + 次日 07:00 汇总 + 中奖补推兜底（启动 backfill 收尾 + 每日 07:15 `win_catchup_sweep`，扫「比对活动晚于开奖日次日 07:00 CST 且无 sent 记录」的迟到中奖，14 天年龄上限）
 - 数据源健康：fetch 三态落 `api_source_health`（ok/down/permanent→degraded）；down ≥ `SOURCE_HEALTH_ALERT_AFTER_MINUTES`（默认 30min，path_a 窗口内检测）→ admin Bark，恢复再通知；面板 `/admin/health`
 - 全程时区 Asia/Shanghai
 
