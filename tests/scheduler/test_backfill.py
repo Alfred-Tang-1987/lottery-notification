@@ -41,13 +41,18 @@ def _backfill_settings_with_keys(monkeypatch):
 
 
 def test_backfill_processes_pending_comparisons(db_engine):
-    """启动 backfill 应处理未认领的 pending_comparisons。"""
+    """启动 backfill 应处理未认领的 pending_comparisons。
+
+    空库场景 missed 检查命中、触发补抓，步骤 5 会再跑一次 outbox 处理
+    （次数语义由 test_backfill_reprocesses_outbox_after_missed_draw_fetch 锁定），
+    此处只断言「被处理」这一核心不变量。
+    """
     deps = _make_deps(db_engine)
     deps['compare_service'].process_pending = MagicMock(return_value=0)
 
     run_startup_backfill(deps)
 
-    deps['compare_service'].process_pending.assert_called_once()
+    deps['compare_service'].process_pending.assert_called()
 
 
 def test_enabled_lotteries_reads_draw_schedule_json(db_engine):
@@ -140,7 +145,9 @@ def test_backfill_isolates_fetch_failure_per_lottery(db_engine):
 
     run_startup_backfill(deps)
 
-    deps['compare_service'].process_pending.assert_called_once()
+    # ssq 之外的彩种补抓成功（fetched>0）→ 步骤 5 再跑一次 outbox 处理也属预期；
+    # 本测试锁定的核心不变量是「fetch 故障不阻断 outbox 处理」。
+    deps['compare_service'].process_pending.assert_called()
     # 其余彩种仍被补抓
     assert fetch.fetch_and_store.call_count > 1
 
@@ -448,3 +455,66 @@ def test_startup_backfill_evaluate_failure_isolated(db_engine, monkeypatch, capl
     with caplog.at_level(logging.WARNING, logger='app.scheduler.backfill'):
         run_startup_backfill(_make_deps(db_engine))  # 不传播 = 调用正常完成
     assert 'source_alert_evaluate_failed' in caplog.text
+
+
+def test_backfill_reprocesses_outbox_after_missed_draw_fetch(db_engine, monkeypatch):
+    """步骤 4 补抓遗漏开奖后应再跑一次 process_pending。
+
+    抓取落库同事务写 pending_comparisons outbox；步骤 1 的处理在抓取**之前**，
+    只补抓不补比会让遗漏期的比对迟到当晚 21:30 tick（半天的中奖静默窗口）。
+    """
+    deps = _make_deps(db_engine)
+    monkeypatch.setattr(
+        'app.scheduler.backfill.push_win_catchups', MagicMock(return_value=0)
+    )
+    fixed_now = datetime(2026, 9, 15, 13, 0, 0, tzinfo=_CST)
+
+    class _FixedNow(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now if tz is None else fixed_now.astimezone(tz)
+
+    monkeypatch.setattr('app.scheduler.backfill.datetime', _FixedNow)
+    # 已无 9-15 当期数据 → missed 检查命中 → 触发补抓
+    run_startup_backfill(deps)
+    assert deps['compare_service'].process_pending.call_count == 2
+
+
+def test_backfill_runs_win_catchup_sweep(db_engine, monkeypatch):
+    """启动 backfill 收尾应执行回填中奖补推（2026-09-15 事故：补抓+补比产生的
+    隔期中奖无常规推送路径覆盖，须当场补推）。"""
+    deps = _make_deps(db_engine)
+    called = {}
+    monkeypatch.setattr(
+        'app.scheduler.backfill.push_win_catchups',
+        lambda d: called.update(deps=d) or 2,
+    )
+    run_startup_backfill(deps)
+    assert called.get('deps') is deps
+
+
+def test_backfill_runs_win_catchup_sweep_even_when_keys_empty(db_engine, monkeypatch):
+    """无数据源 key 提前 return 的路径也要跑补推扫描——outbox（步骤 1）已处理，
+    其中产生的迟到中奖同样不能静默漏推。"""
+    deps = _make_deps(db_engine)
+    called = {}
+    monkeypatch.setattr(
+        'app.scheduler.backfill.get_settings',
+        lambda: MagicMock(mxnzp_api_key='', juhe_api_key=''),
+    )
+    monkeypatch.setattr(
+        'app.scheduler.backfill.push_win_catchups',
+        lambda d: called.update(deps=d) or 0,
+    )
+    run_startup_backfill(deps)
+    assert called.get('deps') is deps
+
+
+def test_backfill_win_catchup_failure_does_not_block_startup(db_engine, monkeypatch):
+    """补推扫描自身抛异常不得阻断启动（与 fetch/compare 失败隔离同构）。"""
+    deps = _make_deps(db_engine)
+    monkeypatch.setattr(
+        'app.scheduler.backfill.push_win_catchups',
+        MagicMock(side_effect=RuntimeError('boom')),
+    )
+    run_startup_backfill(deps)  # 不应抛出

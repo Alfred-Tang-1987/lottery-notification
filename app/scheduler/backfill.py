@@ -15,6 +15,7 @@ from app.seeds import SPECS
 from app.services.compare_service import CompareService
 from app.services.fetch_service import FetchService
 from app.services.source_health import admin_alert_sender_factory, evaluate_source_alerts
+from app.services.win_catchup import push_win_catchups
 
 _CST = ZoneInfo('Asia/Shanghai')
 logger = logging.getLogger(__name__)
@@ -39,6 +40,7 @@ def run_startup_backfill(deps: _JobDeps) -> None:
     settings = get_settings()
     if not settings.mxnzp_api_key and not settings.juhe_api_key:
         logger.info('startup_backfill_skip_fetch reason=no_data_source_key')
+        _run_win_catchup(deps)
         return
 
     # 3. 冷启动历史回填：对 DB 中无数据的彩种，抓取最近 50 期历史开奖，让走势页
@@ -74,6 +76,27 @@ def run_startup_backfill(deps: _JobDeps) -> None:
         evaluate_source_alerts(engine, admin_alert_sender_factory)
     except Exception:
         logger.error('source_alert_evaluate_failed', exc_info=True)
+
+    # 5. 补抓的遗漏开奖同事务写入了 pending_comparisons outbox，但步骤 1 的
+    #    process_pending 在抓取**之前**——确有补抓时须再跑一次让遗漏期当场完成
+    #    比对，否则要等到当晚 21:30 tick（半天的中奖静默窗口）。
+    if fetched > 0:
+        try:
+            compare_service.process_pending()
+        except Exception:
+            logger.error('startup_backfill_reprocess_pending_failed', exc_info=True)
+
+    # 6. 回填中奖补推（2026-09-15 事故）：补抓+补比产生的隔期中奖无常规推送
+    #    路径覆盖（path_a 只推当晚窗口、path_b 只汇总昨天），当场兜底补推。
+    _run_win_catchup(deps)
+
+
+def _run_win_catchup(deps: _JobDeps) -> None:
+    """执行回填中奖补推；自身故障不得阻断启动/调度（每日 07:15 cron 兜底重扫）。"""
+    try:
+        push_win_catchups(deps)
+    except Exception:
+        logger.error('startup_backfill_win_catchup_failed', exc_info=True)
 
 
 def _enabled_lotteries(engine: Engine) -> list[tuple[str, list[int]]]:

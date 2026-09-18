@@ -18,7 +18,7 @@ from app.models import (
 )
 from app.notifications._decrypt import decrypt_channel_config
 from app.notifications.base import ChannelStatus, NotificationPayload, NotifierChannel, SendResult
-from app.notifications.templates import build_path_a, build_path_b
+from app.notifications.templates import build_path_a, build_path_b, build_win_catchup
 
 _CST = ZoneInfo('Asia/Shanghai')
 
@@ -124,25 +124,76 @@ class Notifier:
                 tier=tier,
                 amount=amount,
             )
-            # 先写 pending log（无 sent_at）
-            log = NotificationLog(
-                user_id=user_id,
-                comparison_id=comparison_id,
-                type=payload.title,
-                payload=payload.body,
-                status='pending',
-                error=None,
-                sent_at=None,
-            )
-            s.add(log)
-            s.commit()
-            log_id = log.id
+            log_id = self._insert_pending_log(s, user_id=user_id, payload=payload, comparison_id=comparison_id)
 
         # Step 2: Session 已关闭，做网络发送（重试/退避不阻塞 DB）
         result = self._send_to_user_channels(user_id, channels_data, payload, force=True)
 
         # Step 3: 更新 log 状态（新开短 Session）
         self._update_log_status(log_id, result)
+
+    def notify_win_catchup(
+        self, *, comparison_id: int, lottery_name: str, draw_no: str, draw_date_str: str, tier: int, amount: int | None
+    ) -> bool:
+        """中奖补推（win catch-up）：故障恢复后回填补比出的隔期中奖兜底推送。
+
+        与 notify_path_a 同构（单笔中奖、DND 破例、Session 外发送），差异仅在
+        文案模板（标注补推 + 带开奖日期）。由 services.win_catchup 扫描触发。
+        返回是否真实送达（全渠道失败/数据缺失返回 False）——push_win_catchups
+        按返回值计数，失败不计入，下轮扫描凭 failed 记录自然重试。
+        """
+        with Session(self._engine) as s:
+            cmp = s.get(Comparison, comparison_id)
+            if cmp is None:
+                return False
+            dr = s.get(DrawResult, cmp.draw_result_id)
+            if dr is None:
+                logger.error(
+                    'notify_win_catchup_missing_draw comparison_id=%s draw_result_id=%s '
+                    '（开奖结果缺失，跳过补推）',
+                    comparison_id,
+                    cmp.draw_result_id,
+                )
+                return False
+            user_id = cmp.user_id
+            channels_data = self._load_channels(s, user_id)
+            payload = build_win_catchup(
+                lottery_name=lottery_name,
+                draw_no=draw_no,
+                draw_date_str=draw_date_str,
+                tier_name=_tier_name(dr.lottery_code, tier),
+                tier=tier,
+                amount=amount,
+            )
+            # admin 告警冷却：该中奖已有 failed 记录 = 首轮失败时已告警过，
+            # 持续失败期间不再每日重复 Bark（噪音淹没真实故障）；重试与落 log 不变。
+            already_alerted = s.exec(
+                select(NotificationLog.id).where(
+                    NotificationLog.comparison_id == comparison_id,
+                    NotificationLog.status == 'failed',
+                )
+            ).first() is not None
+            log_id = self._insert_pending_log(s, user_id=user_id, payload=payload, comparison_id=comparison_id)
+
+        result = self._send_to_user_channels(user_id, channels_data, payload, force=True, alert_admin=not already_alerted)
+        self._update_log_status(log_id, result)
+        return result.status == ChannelStatus.SENT
+
+    @staticmethod
+    def _insert_pending_log(s: Session, *, user_id: int, payload: NotificationPayload, comparison_id: int | None) -> int | None:
+        """Session 内写 pending log 并返回其 id（路径A/补推共用骨架）。"""
+        log = NotificationLog(
+            user_id=user_id,
+            comparison_id=comparison_id,
+            type=payload.title,
+            payload=payload.body,
+            status='pending',
+            error=None,
+            sent_at=None,
+        )
+        s.add(log)
+        s.commit()
+        return log.id
 
     def notify_path_b(self, *, user_id: int, date_str: str) -> int:
         """路径B：次日 07:00 汇总。DND 时顺延（返回 0，由调度器重排）。返回已推用户数。
@@ -223,12 +274,15 @@ class Notifier:
             s.commit()
 
     def _send_to_user_channels(
-        self, user_id: int, channels_data: list, payload: NotificationPayload, force: bool
+        self, user_id: int, channels_data: list, payload: NotificationPayload, force: bool,
+        alert_admin: bool = True,
     ) -> SendResult:
         """Session 外发送（路径A/B 共用）。channels_data: [(plugin, config, type), ...]
 
         DND 检查由调用方负责：路径B notify_path_b 入口已检 DND 顺延；路径A force=True
         破例。此处不再二次检查（force 参数保留供未来扩展，当前恒由调用方保证 DND 语义）。
+        alert_admin=False 抑制全渠道失败时的 admin 告警（补推重试冷却：同一中奖
+        首轮已告警，持续失败期间不再每日重复）。
         """
         # 空渠道 ≠ 全渠道失败：用户未配/全禁用渠道（新用户）不应触发 admin 告警——
         # 否则每次有内容都告警，噪音淹没真实「全渠道失败」（N4）。
@@ -244,8 +298,9 @@ class Notifier:
             last = self._send_with_retry(plugin, payload, config)
             if last.status == ChannelStatus.SENT:
                 return last
-        # 全渠道失败 → admin Bark fallback（spec §8.1/§10）
-        self._alert_admin(payload, user_id=user_id)
+        # 全渠道失败 → admin Bark fallback（spec §8.1/§10；补推重试冷却时抑制）
+        if alert_admin:
+            self._alert_admin(payload, user_id=user_id)
         return last
 
     def _send_with_retry(self, plugin: NotifierChannel, payload: NotificationPayload, config: dict) -> SendResult:

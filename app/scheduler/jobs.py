@@ -16,6 +16,7 @@ from app.services.compare_service import CompareService
 from app.services.fetch_service import FetchService
 from app.services.refill_service import _FLOAT_TIERS, FloatRefillWorker
 from app.services.source_health import admin_alert_sender_factory, evaluate_source_alerts
+from app.services.win_catchup import push_win_catchups
 
 _CST = ZoneInfo('Asia/Shanghai')
 
@@ -137,6 +138,18 @@ def register_all_jobs(sched: BackgroundScheduler, deps: _JobDeps) -> None:
         hour=7,
         minute=30,
         id='claim_expire_scan',
+        args=[db_url],
+        replace_existing=True,
+    )
+
+    # 回填中奖补推扫描：每日 07:15（path_b 汇总 07:00 之后兜底扫漏，
+    # 2026-09-15 事故：回填补比的隔期中奖两头够不着 → 静默漏推）。
+    sched.add_job(
+        _win_catchup_sweep,
+        'cron',
+        hour=7,
+        minute=15,
+        id='win_catchup_sweep',
         args=[db_url],
         replace_existing=True,
     )
@@ -307,8 +320,10 @@ def _weekly_report(db_url: str) -> None:
         _defer_summary(sched, db_url, _weekly_report, 'weekly_report')
         return
     today = datetime.now(_CST).date()
-    # 上周日 = today - weekday - 1（若 today 是周日，则上周日 = today - 7）
-    days_since_sunday = (today.weekday() + 1) % 7
+    # 上周日 = today - weekday - 1（若 today 是周日，则上周日 = today - 7）。
+    # (weekday()+1) % 7 在周日得 0，须 `or 7` 兜底——否则周日时区间错为
+    # [本周一, 今天]，周日开奖期（ssq/qxc）结构性进不了任何周报（CRITICAL-1b）。
+    days_since_sunday = (today.weekday() + 1) % 7 or 7
     last_sunday = today - timedelta(days=days_since_sunday)
     last_monday = last_sunday - timedelta(days=6)
     _push_period_summary(engine, notifier, last_monday, last_sunday)
@@ -402,6 +417,21 @@ def _defer_summary(
         args=[db_url],
         replace_existing=True,
     )
+
+
+def _win_catchup_sweep(db_url: str) -> int:
+    """回填中奖补推扫描 job 入口：经注册表解析 deps 后执行 push_win_catchups。
+
+    返回补推成功数（APScheduler 不会持久化返回值，仅供日志/测试观测）。
+    """
+    deps = _resolve_deps(db_url)
+    try:
+        return push_win_catchups(deps)
+    except Exception:
+        # 扫描整体故障不得拖垮调度器线程（与 _run_float_refill 同构）；
+        # 未 sent 的候选下轮扫描自然重试（幂等）。
+        logger.error('win_catchup_sweep_failed', exc_info=True)
+        return 0
 
 
 def _expire_claims(db_url: str) -> None:
