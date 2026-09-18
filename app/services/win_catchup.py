@@ -67,8 +67,10 @@ def find_catchup_candidates(engine: Engine) -> list[dict]:
     with Session(engine) as s:
         rows = list(
             s.exec(
+                # outer join：悬挂比对（draw_result 被删）须进入循环记 ERROR，
+                # inner join 会把数据异常静默吞掉（静默失败纪律）。
                 select(Comparison, DrawResult)
-                .join(DrawResult, Comparison.draw_result_id == DrawResult.id)
+                .join(DrawResult, Comparison.draw_result_id == DrawResult.id, isouter=True)
                 .where(
                     Comparison.is_win == True,  # noqa: E712
                     ~sent_log.exists(),
@@ -83,6 +85,14 @@ def find_catchup_candidates(engine: Engine) -> list[dict]:
     code_to_name = {x['code']: x['name'] for x in SPECS}
     candidates = []
     for cmp, dr in rows:
+        if dr is None:
+            logger.error(
+                'win_catchup_dangling_comparison comparison_id=%s draw_result_id=%s'
+                '（比对引用的开奖结果缺失，数据异常，跳过）',
+                cmp.id,
+                cmp.draw_result_id,
+            )
+            continue
         # 活动时间 = 该行走上当前判定结果的时刻：更正重比（corrected_at）晚于首比。
         activity_at = cmp.corrected_at or cmp.created_at
         if activity_at < _cutoff_utc(dr.draw_date):
