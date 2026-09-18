@@ -937,7 +937,7 @@ def test_notify_win_catchup_sends_and_logs(db_engine):
     crypto = MagicMock()
     crypto.decrypt.return_value = '{"key":"k","url":"https://api.day.app"}'
     notifier = Notifier(db_engine, channels={'bark': bark}, crypto=crypto)
-    notifier.notify_win_catchup(
+    ret = notifier.notify_win_catchup(
         comparison_id=cmp_id,
         lottery_name='双色球',
         draw_no='106',
@@ -945,6 +945,7 @@ def test_notify_win_catchup_sends_and_logs(db_engine):
         tier=6,
         amount=500,
     )
+    assert ret is True  # 送达成功 → True（push_win_catchups 按返回值计数）
     bark.send.assert_called_once()
     sent = bark.send.call_args[0][0]
     assert '补推' in sent.title, sent.title
@@ -968,7 +969,7 @@ def test_notify_win_catchup_missing_draw_skips(db_engine, caplog):
     crypto = MagicMock()
     crypto.decrypt.return_value = '{}'
     notifier = Notifier(db_engine, channels={'bark': bark}, crypto=crypto)
-    notifier.notify_win_catchup(
+    ret = notifier.notify_win_catchup(
         comparison_id=cmp_id,
         lottery_name='双色球',
         draw_no='106',
@@ -976,6 +977,32 @@ def test_notify_win_catchup_missing_draw_skips(db_engine, caplog):
         tier=6,
         amount=500,
     )
+    assert ret is False  # 未送达 → False
     bark.send.assert_not_called()
     with Session(db_engine) as s:
         assert s.exec(select(NotificationLog)).first() is None
+
+
+def test_notify_win_catchup_returns_false_on_channel_failure(db_engine):
+    """全渠道失败：返回 False（push 计数据此区分尝试与送达），log 落 failed，
+    下轮扫描重试。"""
+    _, cmp_id = _seed(db_engine, prize_tier=6)
+    bark = MagicMock()
+    bark.send.return_value = SendResult(status=ChannelStatus.FAILED, error='boom')
+    crypto = MagicMock()
+    crypto.decrypt.return_value = '{"key":"k","url":"https://api.day.app"}'
+    notifier = Notifier(db_engine, channels={'bark': bark}, crypto=crypto)
+    ret = notifier.notify_win_catchup(
+        comparison_id=cmp_id,
+        lottery_name='双色球',
+        draw_no='106',
+        draw_date_str='2026-09-13',
+        tier=6,
+        amount=500,
+    )
+    assert ret is False
+    with Session(db_engine) as s:
+        log = s.exec(select(NotificationLog)).first()
+        assert log is not None
+        assert log.comparison_id == cmp_id
+        assert log.status == 'failed'

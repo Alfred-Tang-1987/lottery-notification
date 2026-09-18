@@ -234,7 +234,20 @@ def test_push_isolates_per_candidate_failure(db_engine, monkeypatch):
     _seed(db_engine)
     _seed(db_engine)
     notifier = MagicMock()
-    notifier.notify_win_catchup.side_effect = [RuntimeError('boom'), None]
+    notifier.notify_win_catchup.side_effect = [RuntimeError('boom'), True]
+    sent = push_win_catchups({'engine': db_engine, 'notifier': notifier})
+    assert notifier.notify_win_catchup.call_count == 2
+    assert sent == 1
+
+
+def test_push_counts_only_successful_sends(db_engine, monkeypatch):
+    """notify_win_catchup 返回 False（全渠道失败/数据缺失未送达）不得计入成功数——
+    故障恢复时运维靠 win_catchup_pushed 日志判断补推成效，计数必须真实（MEDIUM-2）。"""
+    monkeypatch.setattr('app.services.win_catchup._now_utc', lambda: _NOW)
+    _seed(db_engine)
+    _seed(db_engine)
+    notifier = MagicMock()
+    notifier.notify_win_catchup.side_effect = [False, True]
     sent = push_win_catchups({'engine': db_engine, 'notifier': notifier})
     assert notifier.notify_win_catchup.call_count == 2
     assert sent == 1
