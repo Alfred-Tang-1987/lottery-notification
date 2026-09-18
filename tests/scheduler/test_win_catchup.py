@@ -29,11 +29,12 @@ _USER_SEQ = 0
 
 
 def _seed(db_engine, *, draw_date=_LATE_DRAW_DATE, compared_at=_LATE_COMPARED_AT,
-          is_win=True, lottery_code='ssq', log_status=None):
+          is_win=True, lottery_code='ssq', log_status=None, corrected_at=None):
     """建一个用户 + 一期开奖 + 一注票 + 一条比对（created_at 可控）。
 
     log_status 非 None 时额外插一条引用该比对的 notification_logs
     （path_a/catch-up 风格，comparison_id 直连），用于验证去重。
+    corrected_at 非 None 时模拟官方更正重比（created_at 保留首比时刻）。
     返回 (comparison_id, draw_no)。
     """
     global _USER_SEQ
@@ -80,6 +81,7 @@ def _seed(db_engine, *, draw_date=_LATE_DRAW_DATE, compared_at=_LATE_COMPARED_AT
         s.commit()
         s.refresh(cmp)
         cmp.created_at = compared_at
+        cmp.corrected_at = corrected_at
         if log_status is not None:
             s.add(
                 NotificationLog(
@@ -141,6 +143,38 @@ def test_find_includes_win_exactly_at_age_floor(db_engine, monkeypatch):
     monkeypatch.setattr('app.services.win_catchup._now_utc', lambda: _NOW)
     # created = 2026-09-04 04:00 UTC（= _NOW - 14d）；draw 08-30 → cutoff 早已过。
     cid, _ = _seed(db_engine, draw_date=datetime(2026, 8, 30), compared_at=datetime(2026, 9, 4, 4, 0, 0))
+    assert [c['comparison_id'] for c in find_catchup_candidates(db_engine)] == [cid]
+
+
+def test_find_returns_win_flipped_by_late_correction(db_engine, monkeypatch):
+    """更正重比翻转的中奖：首比在常规窗口内（created_at 早），但官方更正把 is_win
+    翻为 True 的时刻晚于 cutoff → 以 corrected_at 判迟到，须补推（MEDIUM-1）。
+
+    只看 created_at 会漏：首比当晚完成 + 次日更正翻转的行，path_b 已跑过、
+    win_catchup 又判「未迟到」→ 静默漏推。
+    """
+    monkeypatch.setattr('app.services.win_catchup._now_utc', lambda: _NOW)
+    # 开奖 09-10，首比当晚 21:30 CST（= 13:30 UTC，cutoff 前）；更正 09-12 10:00 CST
+    #（= 09-12 02:00 UTC，cutoff 后、年龄内）翻转为中奖 → 候选。
+    cid, _ = _seed(
+        db_engine,
+        draw_date=datetime(2026, 9, 10),
+        compared_at=datetime(2026, 9, 10, 13, 30, 0),
+        corrected_at=datetime(2026, 9, 12, 2, 0, 0),
+    )
+    assert [c['comparison_id'] for c in find_catchup_candidates(db_engine)] == [cid]
+
+
+def test_find_correction_refreshes_age_window(db_engine, monkeypatch):
+    """年龄上限以活动时间（corrected_at 优先）计：创建虽久、更正刚发生的行仍须补推。"""
+    monkeypatch.setattr('app.services.win_catchup._now_utc', lambda: _NOW)
+    # 创建 08-02（远超 14 天上限），更正 09-17 12:00 CST（= 04:00 UTC，1 天前）→ 候选。
+    cid, _ = _seed(
+        db_engine,
+        draw_date=datetime(2026, 8, 1),
+        compared_at=datetime(2026, 8, 2, 13, 30, 0),
+        corrected_at=datetime(2026, 9, 17, 4, 0, 0),
+    )
     assert [c['comparison_id'] for c in find_catchup_candidates(db_engine)] == [cid]
 
 
