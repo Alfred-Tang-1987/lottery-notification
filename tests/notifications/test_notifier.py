@@ -1006,3 +1006,57 @@ def test_notify_win_catchup_returns_false_on_channel_failure(db_engine):
         assert log is not None
         assert log.comparison_id == cmp_id
         assert log.status == 'failed'
+
+
+def _make_failing_notifier(db_engine):
+    """渠道恒失败 + admin bark 已配置的 Notifier；返回 (notifier, admin_ch mock)。"""
+    _, cmp_id = _seed(db_engine, prize_tier=6)
+    bark = MagicMock()
+    bark.send.return_value = SendResult(status=ChannelStatus.FAILED, error='boom')
+    crypto = MagicMock()
+    crypto.decrypt.return_value = '{"key":"k","url":"https://api.day.app"}'
+    notifier = Notifier(db_engine, channels={'bark': bark}, crypto=crypto, admin_bark_config={'key': 'admin'})
+    admin_ch = MagicMock()
+    admin_ch.send.return_value = SendResult(status=ChannelStatus.SENT, error=None)
+    notifier._admin_bark_channel = admin_ch
+    return notifier, admin_ch, cmp_id
+
+
+def _catchup_kwargs(cmp_id):
+    return dict(
+        comparison_id=cmp_id,
+        lottery_name='双色球',
+        draw_no='106',
+        draw_date_str='2026-09-13',
+        tier=6,
+        amount=500,
+    )
+
+
+def test_notify_win_catchup_alerts_admin_on_first_failure(db_engine):
+    """首次全渠道失败仍须 admin Bark 告警（冷却只压重复，不压首发）。"""
+    notifier, admin_ch, cmp_id = _make_failing_notifier(db_engine)
+    ret = notifier.notify_win_catchup(**_catchup_kwargs(cmp_id))
+    assert ret is False
+    admin_ch.send.assert_called_once()
+
+
+def test_notify_win_catchup_suppresses_repeat_admin_alert(db_engine):
+    """渠道持续失败时同一中奖的 admin 告警只发一次（冷却）：
+
+    该比对已有 failed 记录（上轮已告警过）→ 本轮仍正常重试发送 + 落 failed log，
+    但不再重复 Bark 告警——否则 14 天年龄窗内同笔中奖每日一条告警淹没真实故障
+    （code-review LOW，告警噪音）。
+    """
+    notifier, admin_ch, cmp_id = _make_failing_notifier(db_engine)
+    with Session(db_engine) as s:
+        user_id = s.get(Comparison, cmp_id).user_id
+        s.add(NotificationLog(user_id=user_id, comparison_id=cmp_id, type='x', payload='x', status='failed'))
+        s.commit()
+    ret = notifier.notify_win_catchup(**_catchup_kwargs(cmp_id))
+    assert ret is False
+    admin_ch.send.assert_not_called()
+    with Session(db_engine) as s:
+        # 重试语义不变：本轮仍落一条 failed（旧 1 + 新 1）
+        fails = [x for x in s.exec(select(NotificationLog)).all() if x.status == 'failed']
+        assert len(fails) == 2
