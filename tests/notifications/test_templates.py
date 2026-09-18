@@ -176,7 +176,9 @@ def test_build_win_catchup_marks_catchup_and_keeps_claim_guidance():
     assert '2026-09-13' in p.body, p.body
     assert '106' in p.body, p.body
     assert '5.00 元' in p.body, p.body
-    assert '60 天' in p.body, p.body
+    # 兑奖提示须以开奖日为锚（补推时窗口已消耗一部分，「请在 60 天内兑奖」会夸大剩余期）
+    assert '开奖之日起 60 个自然日' in p.body, p.body
+    assert '请在 60 天内兑奖' not in p.body, p.body
     assert p.draw_no == '106'
     assert p.tier == 6
     assert p.amount == 500
