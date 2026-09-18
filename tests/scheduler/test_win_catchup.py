@@ -212,6 +212,25 @@ def test_find_skips_win_older_than_max_age(db_engine, monkeypatch):
     assert find_catchup_candidates(db_engine) == []
 
 
+def test_find_logs_dangling_comparison(db_engine, monkeypatch, caplog):
+    """悬挂比对（draw_result 被删）不得被 join 静默吞掉：记 ERROR 并跳过。
+
+    静默失败纪律：数据异常必须可观测。inner join 会把悬挂行无声排除，
+    生产上永远无人察觉（code-review LOW）。"""
+    import logging
+
+    monkeypatch.setattr('app.services.win_catchup._now_utc', lambda: _NOW)
+    cid, _ = _seed(db_engine)
+    with Session(db_engine) as s:
+        cmp = s.get(Comparison, cid)
+        s.delete(s.get(DrawResult, cmp.draw_result_id))
+        s.commit()
+    with caplog.at_level(logging.ERROR, logger='app.services.win_catchup'):
+        assert find_catchup_candidates(db_engine) == []
+    assert 'win_catchup_dangling_comparison' in caplog.text
+    assert str(cid) in caplog.text
+
+
 def test_push_calls_notifier_per_candidate(db_engine, monkeypatch):
     """push_win_catchups 对每个候选调用 notifier.notify_win_catchup，返回成功数。"""
     monkeypatch.setattr('app.services.win_catchup._now_utc', lambda: _NOW)
