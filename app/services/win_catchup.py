@@ -72,7 +72,9 @@ def find_catchup_candidates(engine: Engine) -> list[dict]:
                 .where(
                     Comparison.is_win == True,  # noqa: E712
                     ~sent_log.exists(),
-                    Comparison.created_at >= age_floor,
+                    # 年龄上限按活动时间计：首比或最近一次更正任一在上限内即入选
+                    #（更正重比保留 created_at，只看它会把更正翻转的中奖挡在窗外）。
+                    (Comparison.created_at >= age_floor) | (Comparison.corrected_at >= age_floor),
                 )
             ).all()
         )
@@ -81,7 +83,9 @@ def find_catchup_candidates(engine: Engine) -> list[dict]:
     code_to_name = {x['code']: x['name'] for x in SPECS}
     candidates = []
     for cmp, dr in rows:
-        if cmp.created_at < _cutoff_utc(dr.draw_date):
+        # 活动时间 = 该行走上当前判定结果的时刻：更正重比（corrected_at）晚于首比。
+        activity_at = cmp.corrected_at or cmp.created_at
+        if activity_at < _cutoff_utc(dr.draw_date):
             continue  # 未过常规窗口，路径A/B 仍会覆盖（防与汇总重复推送）
         candidates.append(
             {
